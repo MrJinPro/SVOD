@@ -22,10 +22,23 @@ def create_app() -> FastAPI:
         await init_db(engine)
 
     origins = settings.cors_origins_list()
+    origin_regex = settings.cors_origin_regex.strip()
+
+    # If explicit origins are provided, use them.
+    # Otherwise, in dev allow typical Vite dev/prod-preview ports via regex.
     if origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    elif origin_regex or settings.app_env.lower() == "dev":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[],
+            allow_origin_regex=origin_regex or r"^https?://.+(:5173|:4173)$",
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],

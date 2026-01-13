@@ -1,6 +1,14 @@
-const DEFAULT_API_BASE_URL = 'http://localhost:8000/api/v1';
+function getDefaultApiBaseUrl(): string {
+  // Dev-friendly default: same host as the UI, API on port 8000.
+  // This prevents "localhost" from being used when UI is opened over LAN.
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    return `${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
+  }
 
-export const API_BASE_URL: string = (import.meta as any).env?.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
+  return 'http://localhost:8000/api/v1';
+}
+
+export const API_BASE_URL: string = (import.meta as any).env?.VITE_API_BASE_URL || getDefaultApiBaseUrl();
 const API_TOKEN: string | undefined = (import.meta as any).env?.VITE_API_TOKEN;
 
 export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {

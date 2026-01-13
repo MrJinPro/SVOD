@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     enable_demo_seed: bool = False
 
     cors_origins: str = ""
+    cors_origin_regex: str = ""
 
     jwt_secret: str = "dev-secret-change-me"
 
