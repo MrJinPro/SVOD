@@ -1,0 +1,173 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* S.V.O.D Dark Corporate Theme */
+    --background: 222 47% 6%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 47% 10%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 217 33% 14%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 217 33% 20%;
+    --accent-foreground: 210 40% 96%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.5rem;
+
+    /* Severity Colors */
+    --severity-critical: 0 72% 51%;
+    --severity-critical-bg: 0 72% 51% / 0.15;
+    --severity-warning: 38 92% 50%;
+    --severity-warning-bg: 38 92% 50% / 0.15;
+    --severity-info: 217 91% 60%;
+    --severity-info-bg: 217 91% 60% / 0.15;
+    --severity-success: 142 71% 45%;
+    --severity-success-bg: 142 71% 45% / 0.15;
+
+    /* Status Colors */
+    --status-active: 142 71% 45%;
+    --status-pending: 38 92% 50%;
+    --status-resolved: 217 91% 60%;
+
+    /* Sidebar */
+    --sidebar-background: 222 47% 5%;
+    --sidebar-foreground: 210 40% 80%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 222 47% 6%;
+    --sidebar-accent: 217 33% 12%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 217 33% 12%;
+    --sidebar-ring: 217 91% 60%;
+
+    /* Chart Colors */
+    --chart-1: 217 91% 60%;
+    --chart-2: 142 71% 45%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 0 72% 51%;
+    --chart-5: 280 65% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-muted/30;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/30 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/50;
+  }
+}
+
+@layer components {
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Severity badges */
+  .badge-critical {
+    @apply bg-[hsl(var(--severity-critical-bg))] text-[hsl(var(--severity-critical))] border border-[hsl(var(--severity-critical))]/30;
+  }
+
+  .badge-warning {
+    @apply bg-[hsl(var(--severity-warning-bg))] text-[hsl(var(--severity-warning))] border border-[hsl(var(--severity-warning))]/30;
+  }
+
+  .badge-info {
+    @apply bg-[hsl(var(--severity-info-bg))] text-[hsl(var(--severity-info))] border border-[hsl(var(--severity-info))]/30;
+  }
+
+  .badge-success {
+    @apply bg-[hsl(var(--severity-success-bg))] text-[hsl(var(--severity-success))] border border-[hsl(var(--severity-success))]/30;
+  }
+
+  /* Card hover effect */
+  .card-hover {
+    @apply transition-all duration-200 hover:bg-accent/50 hover:border-primary/30;
+  }
+
+  /* Glow effects */
+  .glow-primary {
+    box-shadow: 0 0 20px hsl(var(--primary) / 0.3);
+  }
+
+  .glow-critical {
+    box-shadow: 0 0 20px hsl(var(--severity-critical) / 0.4);
+  }
+
+  /* Table styles */
+  .table-row-hover {
+    @apply transition-colors hover:bg-accent/50;
+  }
+
+  /* Stat card gradient */
+  .stat-card-gradient {
+    background: linear-gradient(135deg, hsl(var(--card)) 0%, hsl(var(--accent)) 100%);
+  }
+}
+
+@layer utilities {
+  .text-gradient-primary {
+    @apply bg-gradient-to-r from-primary to-[hsl(200,80%,60%)] bg-clip-text text-transparent;
+  }
+
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
