@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: svod
+      POSTGRES_PASSWORD: svod
+      POSTGRES_DB: svod
+    ports:
+      - "5432:5432"
+    volumes:
+      - svod_pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: dev
+      CORS_ORIGINS: http://localhost:5173,http://localhost
+      DATABASE_URL: postgresql+psycopg://svod:svod@postgres:5432/svod
+      # Опционально: источник MySQL агентства (если доступен из окружения)
+      # Пример: mysql+pymysql://user:pass@10.10.8.5:3306/dbalarm20?charset=cp1251
+      AGENCY_DATABASE_URL: ""
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-secret-change-me
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  celery_worker:
+    build:
+      context: ./backend
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "-l", "info"]
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+psycopg://svod:svod@postgres:5432/svod
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-secret-change-me
+      AGENCY_DATABASE_URL: ""
+    depends_on:
+      - backend
+      - redis
+
+  frontend:
+    build:
+      context: ./svod-command-center
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  svod_pgdata:

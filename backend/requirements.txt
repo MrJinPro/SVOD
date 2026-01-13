@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic-settings==2.6.1
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.3
+greenlet==3.0.3
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+celery==5.4.0
+redis==5.2.1
+PyMySQL==1.1.1
+pyodbc==5.2.0

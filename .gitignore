@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+.venv*/
+
+# Local DB / state
+*.db
+*.sqlite
+*.sqlite3
+backend/svod.db
+
+# Env / secrets
+.env
+backend/.env
+svod-command-center/.env
+*.local
+
+# Node
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/

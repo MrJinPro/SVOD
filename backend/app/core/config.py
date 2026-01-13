@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    app_env: str = "dev"
+
+    # Дефолт позволяет стартовать сервис даже без .env (подключение к БД
+    # фактически происходит только при обращении к эндпоинтам, использующим session).
+    database_url: str = "postgresql+psycopg://svod:svod@localhost:5432/svod"
+    agency_database_url: str | None = None
+
+    # MSSQL: имя базы с архивными таблицами archiveYYYYMM01/eventserviceYYYYMM01
+    agency_archives_db_name: str = "pult4db_archives"
+
+    # Демо-эндпоинты для заполнения мок-данными (по умолчанию выключены)
+    enable_demo_seed: bool = False
+
+    cors_origins: str = ""
+
+    jwt_secret: str = "dev-secret-change-me"
+
+    # Celery / Redis
+    redis_url: str = "redis://localhost:6379/0"
+    celery_broker_url: str | None = None
+    celery_result_backend: str | None = None
+
+    def cors_origins_list(self) -> list[str]:
+        if not self.cors_origins.strip():
+            return []
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+
+settings = Settings()  # type: ignore[call-arg]
