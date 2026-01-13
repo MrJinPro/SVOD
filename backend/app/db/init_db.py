@@ -15,6 +15,11 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
         dialect_name = getattr(dialect, "name", "") if dialect is not None else ""
 
         if dialect_name == "sqlite":
+            # Improve SQLite concurrency: allow reads during writes and wait for locks.
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA synchronous=NORMAL"))
+            await conn.execute(text("PRAGMA busy_timeout=60000"))
+
             cols = (await conn.execute(text("PRAGMA table_info(events)"))).all()
             col_names = {c[1] for c in cols}
             if "object_id" not in col_names:
