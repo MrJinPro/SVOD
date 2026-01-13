@@ -36,21 +36,23 @@ def create_app() -> FastAPI:
     origins = settings.cors_origins_list()
     origin_regex = settings.cors_origin_regex.strip()
 
-    # If explicit origins are provided, use them.
-    # Otherwise, in dev allow typical Vite dev/prod-preview ports via regex.
-    if origins:
+    default_dev_origin_regex = r"^https?://.+(:5173|:4173)$"
+
+    allow_origin_regex: str | None
+    if origin_regex:
+        allow_origin_regex = origin_regex
+    elif not origins and settings.app_env.lower() == "dev":
+        allow_origin_regex = default_dev_origin_regex
+    else:
+        allow_origin_regex = None
+
+    # If regex is provided, enable it even when allow_origins is also set.
+    # This helps LAN/dev setups where multiple hosts access the UI.
+    if origins or allow_origin_regex:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-    elif origin_regex or settings.app_env.lower() == "dev":
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=[],
-            allow_origin_regex=origin_regex or r"^https?://.+(:5173|:4173)$",
+            allow_origin_regex=allow_origin_regex,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
