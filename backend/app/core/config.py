@@ -5,12 +5,18 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-_BACKEND_DIR = Path(__file__).resolve().parents[3]
+# backend/app/core/config.py -> parents[2] is the backend/ directory.
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+_PROJECT_DIR = _BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
     # Always load backend/.env regardless of current working directory.
-    model_config = SettingsConfigDict(env_file=str(_BACKEND_DIR / ".env"), extra="ignore")
+    # Also allow a project-root .env as a fallback for legacy setups.
+    model_config = SettingsConfigDict(
+        env_file=(str(_BACKEND_DIR / ".env"), str(_PROJECT_DIR / ".env")),
+        extra="ignore",
+    )
 
     app_env: str = "dev"
 
