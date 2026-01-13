@@ -165,7 +165,8 @@ async def seed_demo_events(count: int = Query(300, ge=1, le=5000)) -> dict[str, 
             elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
                 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-                await session.execute(sqlite_insert(Object).values(object_rows))
+                # Use executemany to avoid SQLite variable limit for large batches.
+                await session.execute(sqlite_insert(Object), object_rows)
             else:
                 for r in object_rows:
                     session.add(Object(**r))
@@ -184,8 +185,8 @@ async def seed_demo_events(count: int = Query(300, ge=1, le=5000)) -> dict[str, 
         elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
             from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-            stmt = sqlite_insert(Event).values(rows)
-            await session.execute(stmt)
+            # Use executemany to avoid SQLite variable limit for large batches.
+            await session.execute(sqlite_insert(Event), rows)
         else:
             for r in rows:
                 session.add(Event(**r))

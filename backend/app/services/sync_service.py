@@ -143,8 +143,10 @@ async def sync_events_from_agency_mysql(
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        stmt = sqlite_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
-        result = await session.execute(stmt)
+        # For SQLite, avoid generating a single massive VALUES (...) statement
+        # which can exceed SQLite's variable limit (~999) for large batches.
+        stmt = sqlite_insert(Event).on_conflict_do_nothing(index_elements=[Event.id])
+        result = await session.execute(stmt, events_to_insert)
     else:
         # Fallback: insert one by one, ignoring duplicates
         existing_ids = set(
@@ -435,8 +437,10 @@ async def sync_events_from_agency_mssql_archives(
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        stmt = sqlite_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
-        result = await session.execute(stmt)
+        # For SQLite, avoid generating a single massive VALUES (...) statement
+        # which can exceed SQLite's variable limit (~999) for large batches.
+        stmt = sqlite_insert(Event).on_conflict_do_nothing(index_elements=[Event.id])
+        result = await session.execute(stmt, events_to_insert)
     else:
         existing_ids = set(
             (
