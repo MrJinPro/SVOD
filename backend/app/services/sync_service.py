@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.agency_mysql import fetch_alarms_since
 from app.integrations.agency_mssql import fetch_archive_events_since, fetch_objects_snapshot
+from app.core.config import settings
 from app.models.event import Event
 from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
 from app.models.sync_state import SyncState
@@ -177,9 +178,12 @@ async def get_mssql_event_cursor(session: AsyncSession) -> tuple[int, int]:
     """Возвращает (Date_Key, Event_id)."""
     row = await session.get(SyncState, SYNC_KEY_MSSQL_EVENT_CURSOR)
     if not row or not row.value:
-        # По умолчанию: стартуем с сегодняшнего дня (ничего не подтянет без новых событий)
-        today_key = int(datetime.utcnow().strftime("%Y%m%d"))
-        return (today_key, 0)
+        # По умолчанию: стартуем с первого числа текущего месяца,
+        # либо с явно заданного Date_Key через env.
+        if settings.agency_mssql_archive_start_date_key is not None:
+            return (int(settings.agency_mssql_archive_start_date_key), 0)
+        month_start_key = int(datetime.utcnow().strftime("%Y%m01"))
+        return (month_start_key, 0)
     try:
         parts = row.value.split(":", 1)
         return (int(parts[0]), int(parts[1] if len(parts) > 1 else 0))

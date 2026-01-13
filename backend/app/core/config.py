@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # MSSQL: имя базы с архивными таблицами archiveYYYYMM01/eventserviceYYYYMM01
     agency_archives_db_name: str = "pult4db_archives"
 
+    # MSSQL archives: с какого Date_Key начинать первичную загрузку,
+    # если курсора ещё нет в sync_state. Формат: YYYYMMDD (например 20260101).
+    # Если не задано, используется первое число текущего месяца.
+    agency_mssql_archive_start_date_key: int | None = None
+
     # Демо-эндпоинты для заполнения мок-данными (по умолчанию выключены)
     enable_demo_seed: bool = False
 
