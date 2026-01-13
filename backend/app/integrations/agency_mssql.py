@@ -29,7 +29,7 @@ def _month_table_suffix(d: date) -> str:
 
 def parse_mssql_url(url: str) -> MSSQLConnInfo:
     # Accept SQLAlchemy-like URLs:
-    # - mssql+pyodbc://user:pass@host:1433/Pult4DB?driver=ODBC+Driver+17+for+SQL+Server
+    # - mssql+pyodbc://user:pass@host:1433/Pult4DB?driver=ODBC+Driver+18+for+SQL+Server
     # - mssql://user:pass@host:1433/Pult4DB?driver=...
     u = urlparse(url)
     scheme = (u.scheme or "").lower()
@@ -47,7 +47,9 @@ def parse_mssql_url(url: str) -> MSSQLConnInfo:
     port = int(u.port or 1433)
 
     qs = parse_qs(u.query or "")
-    driver = unquote((qs.get("driver", [""]) or [""])[0]) or "ODBC Driver 17 for SQL Server"
+    # На Linux чаще установлен msodbcsql18, поэтому дефолтим на 18.
+    # Если в окружении стоит только 17 — укажите driver=ODBC+Driver+17+for+SQL+Server в URL.
+    driver = unquote((qs.get("driver", [""]) or [""])[0]) or "ODBC Driver 18 for SQL Server"
 
     trust = (qs.get("TrustServerCertificate", [""]) or [""])[0].lower()
     trust_server_certificate = trust in ("1", "true", "yes")
