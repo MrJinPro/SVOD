@@ -163,7 +163,8 @@ async def sync_events_from_agency_mysql(
     # rowcount can be None for some drivers; fall back to len
     inserted = 0
     if result is not None:
-        inserted = result.rowcount if result.rowcount is not None else len(events_to_insert)
+        rc = result.rowcount
+        inserted = len(events_to_insert) if (rc is None or rc < 0) else int(rc)
     else:
         inserted = len(events_to_insert)
     return {"status": "ok", "processed": int(inserted), "lastId": max_id}
@@ -460,7 +461,8 @@ async def sync_events_from_agency_mssql_archives(
 
     inserted = 0
     if result is not None:
-        inserted = result.rowcount if result.rowcount is not None else len(events_to_insert)
+        rc = result.rowcount
+        inserted = len(events_to_insert) if (rc is None or rc < 0) else int(rc)
     else:
         inserted = len(events_to_insert)
 
