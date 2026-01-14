@@ -16,6 +16,54 @@ export interface Event {
   operatorId?: string;
 }
 
+// Object Types
+export interface ObjectListItem {
+  id: string;
+  name: string;
+  address?: string;
+  clientName?: string;
+  disabled: boolean;
+  lastEventAt?: string | null;
+  eventsToday?: number;
+}
+
+export interface ObjectGroup {
+  group: number;
+  name?: string;
+  isOpen?: boolean;
+  timeEvent?: string | null;
+}
+
+export interface ObjectResponsible {
+  id: string;
+  name: string;
+  address?: string;
+  group?: number;
+  order?: number;
+  phones: string[];
+}
+
+export interface ObjectDetails {
+  id: string;
+  name: string;
+  address?: string;
+  clientName?: string;
+  disabled: boolean;
+  remarks?: string | null;
+  additionalInfo?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  groups: ObjectGroup[];
+  responsibles: ObjectResponsible[];
+  stats?: {
+    eventsTotal: number;
+    eventsToday: number;
+    lastEventAt?: string | null;
+  };
+}
+
 // Report Types
 export type ReportType = 'daily' | 'weekly' | 'monthly';
 export type ReportStatus = 'generated' | 'sent' | 'pending' | 'failed';

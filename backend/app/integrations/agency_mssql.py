@@ -263,6 +263,11 @@ def fetch_archive_events_since(
             archive_table = f"{archives_db_name}.dbo.archive{suffix}"
             service_table = f"{archives_db_name}.dbo.eventservice{suffix}"
 
+            # Reference dictionary tables from the main DB (the one in the URL).
+            # We keep them fully-qualified to support cross-database joins.
+            code_table = f"{info.database}.dbo.Code_T"
+            states_table = f"{info.database}.dbo.States"
+
             remaining = limit - len(out)
 
             sql = f"""
@@ -287,12 +292,19 @@ def fetch_archive_events_since(
               SELECT TOP (1)
                 s.NameState,
                 s.PersonName,
+                            st.StateName AS StateName,
+                            st.isOverProcess AS StateIsOverProcess,
+                            COALESCE(ct.CodeMes_RU, ct.Message) AS CodeText,
                 s.GrResponseName,
                 s.OperationTime
               FROM {service_table} s
               WHERE s.Event_id = a.Event_id AND s.Date_Key = a.Date_Key
               ORDER BY s.OperationTime DESC
             ) es
+                        LEFT JOIN {states_table} st
+                            ON st.State_id = a.StateEvent
+                        LEFT JOIN {code_table} ct
+                            ON ct.Code = a.Code AND ct.CodeGroup = a.CodeGroup
             WHERE a.Date_Key BETWEEN ? AND ?
               AND (
                 a.Date_Key > ?

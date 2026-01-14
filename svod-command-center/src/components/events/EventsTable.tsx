@@ -87,6 +87,7 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
             return (
               <TableRow 
                 key={event.id} 
+                title={event.description || ''}
                 className={cn(
                   'table-row-hover border-border',
                   event.severity === 'critical' && 'bg-severity-critical/5'

@@ -396,31 +396,64 @@ async def sync_events_from_agency_mssql_archives(
         panel_id = _safe_str(r.get("Panel_id"))
 
         code = _safe_str(r.get("Code"))
+        code_text = _safe_str(r.get("CodeText"))
         zone = r.get("Zone")
         line = _safe_str(r.get("Line"))
         result_text = _safe_str(r.get("Result_Text"))
+
+        state_event = r.get("StateEvent")
+        state_name = _safe_str(r.get("StateName"))
+        state_is_over = r.get("StateIsOverProcess")
 
         name_state = _safe_str(r.get("NameState"))
         person = _safe_str(r.get("PersonName"))
         gbr = _safe_str(r.get("GrResponseName"))
 
         desc_parts: list[str] = []
+        # Preserve key archive identifiers for audit/debugging.
+        desc_parts.append(f"Event_id: {event_id}")
+        desc_parts.append(f"Date_Key: {date_key}")
+        if panel_id:
+            desc_parts.append(f"Panel_id: {panel_id}")
+
         if code:
-            desc_parts.append(f"Code: {code}")
+            if code_text:
+                desc_parts.append(f"Код: {code} — {code_text}")
+            else:
+                desc_parts.append(f"Код: {code}")
         if zone is not None:
-            desc_parts.append(f"Zone: {zone}")
+            desc_parts.append(f"Зона: {zone}")
         if line:
-            desc_parts.append(f"Line: {line}")
-        if name_state:
-            desc_parts.append(f"State: {name_state}")
+            desc_parts.append(f"Шлейф: {line}")
+
+        if state_event is not None or state_name:
+            st_id = str(state_event) if state_event is not None else ""
+            st_label = state_name or name_state or ""
+            if st_id and st_label:
+                desc_parts.append(f"Статус: {st_label} (StateEvent={st_id})")
+            elif st_label:
+                desc_parts.append(f"Статус: {st_label}")
+            elif st_id:
+                desc_parts.append(f"StateEvent: {st_id}")
+
         if person:
-            desc_parts.append(f"Person: {person}")
+            desc_parts.append(f"Оператор: {person}")
         if gbr:
-            desc_parts.append(f"GBR: {gbr}")
+            desc_parts.append(f"ГБР: {gbr}")
         if result_text:
             desc_parts.append(result_text)
 
-        status = "resolved" if name_state else "active"
+        # Map MSSQL StateEvent to UI-friendly statuses.
+        # - isOverProcess=1 => resolved
+        # - any explicit state => pending
+        # - otherwise => active
+        is_over = bool(state_is_over) if state_is_over is not None else False
+        if is_over:
+            status = "resolved"
+        elif state_event is not None or state_name or name_state:
+            status = "pending"
+        else:
+            status = "active"
 
         events_to_insert.append(
             {

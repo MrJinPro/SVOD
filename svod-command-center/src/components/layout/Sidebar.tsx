@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
+  Building2,
   AlertTriangle,
   Search,
   FileText,
@@ -19,6 +20,7 @@ import { Separator } from '@/components/ui/separator';
 
 const navigation = [
   { name: 'Панель управления', href: '/', icon: LayoutDashboard },
+  { name: 'Объекты', href: '/objects', icon: Building2 },
   { name: 'События', href: '/events', icon: AlertTriangle },
   { name: 'Поиск', href: '/search', icon: Search },
   { name: 'Отчёты', href: '/reports', icon: FileText },

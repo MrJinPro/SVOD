@@ -13,6 +13,7 @@ from app.services.sync_service import (
     sync_events_from_agency_mysql,
     sync_objects_from_agency_mssql,
 )
+from app.services.job_service import create_job, get_job, start_job
 from app.prototype_data import mock_events
 from app.models.event import Event
 from app.models.object import Object
@@ -75,6 +76,45 @@ async def sync_objects_once() -> dict[str, Any]:
             session = session  # type: ignore[no-redef]
             return await sync_objects_from_agency_mssql(session=session, agency_mssql_url=url)
     return {"status": "error", "reason": "No DB session"}
+
+
+@router.post("/sync/objects/start")
+async def sync_objects_start() -> dict[str, Any]:
+    """Запускает синхронизацию объектов в фоне (не блокирует HTTP-запрос).
+
+    Полезно, когда объектов десятки тысяч и синк может идти минуты.
+    """
+    if not settings.agency_database_url:
+        return {"status": "skipped", "reason": "AGENCY_DATABASE_URL not set"}
+
+    url = settings.agency_database_url
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not scheme.startswith("mssql"):
+        return {"status": "error", "reason": "AGENCY_DATABASE_URL must be MSSQL for /sync/objects"}
+
+    job = await create_job("sync_objects")
+
+    def _factory():
+        async def _run():
+            # Serialize writers for SQLite.
+            async with _SYNC_LOCK:
+                from app.db.session import SessionLocal
+
+                async with SessionLocal() as session:
+                    return await sync_objects_from_agency_mssql(session=session, agency_mssql_url=url)
+
+        return _run()
+
+    start_job(job, _factory)
+    return {"status": "accepted", "jobId": job["id"]}
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str) -> dict[str, Any]:
+    j = await get_job(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Job not found"})
+    return j
 
 
 @router.post("/seed/demo-events")

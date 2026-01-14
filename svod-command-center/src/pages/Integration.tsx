@@ -3,12 +3,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { apiPost } from '@/lib/api';
+import { apiGet, apiPost } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import { Database, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 
 type SyncResult = Record<string, any>;
+
+type JobInfo = {
+  id: string;
+  type: string;
+  status: 'queued' | 'running' | 'done' | 'error';
+  result?: any;
+  error?: string;
+};
 
 export default function Integration() {
   const [isSyncingObjects, setIsSyncingObjects] = useState(false);
@@ -16,15 +24,52 @@ export default function Integration() {
   const [eventsLimit, setEventsLimit] = useState('500');
   const [lastResult, setLastResult] = useState<SyncResult | null>(null);
 
+  const pollJobUntilDone = async (jobId: string, timeoutMs = 30 * 60 * 1000) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const job = await apiGet<JobInfo>(`/db/jobs/${encodeURIComponent(jobId)}`);
+      if (job.status === 'done') return job;
+      if (job.status === 'error') return job;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    throw new Error('Таймаут ожидания завершения синхронизации');
+  };
+
   const syncObjects = async () => {
     setIsSyncingObjects(true);
     try {
-      const res = await apiPost<SyncResult>('/db/sync/objects');
-      setLastResult(res);
-      toast({
-        title: 'Синхронизация объектов',
-        description: `Готово: ${res?.objects ?? 0} объектов`,
-      });
+      // Prefer background sync to avoid long-running HTTP request.
+      let accepted: any = null;
+      try {
+        accepted = await apiPost<{ status: string; jobId: string }>('/db/sync/objects/start');
+      } catch {
+        accepted = null;
+      }
+
+      if (accepted?.jobId) {
+        toast({
+          title: 'Синхронизация объектов',
+          description: 'Запущено в фоне — можно продолжать работу.',
+        });
+        const job = await pollJobUntilDone(accepted.jobId);
+        const res = job.result as SyncResult | undefined;
+        if (job.status === 'error') {
+          throw new Error(job.error || 'Ошибка синхронизации');
+        }
+        setLastResult(res ?? job);
+        toast({
+          title: 'Синхронизация объектов',
+          description: `Готово: ${res?.objects ?? 0} объектов`,
+        });
+      } else {
+        // Fallback to old endpoint.
+        const res = await apiPost<SyncResult>('/db/sync/objects');
+        setLastResult(res);
+        toast({
+          title: 'Синхронизация объектов',
+          description: `Готово: ${res?.objects ?? 0} объектов`,
+        });
+      }
     } catch (e: any) {
       toast({
         title: 'Ошибка синхронизации объектов',

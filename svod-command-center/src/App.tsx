@@ -11,6 +11,8 @@ import Notifications from "./pages/Notifications";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
 import Integration from "./pages/Integration";
+import Objects from "./pages/Objects";
+import ObjectDetails from "./pages/objects/ObjectDetails";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -23,6 +25,8 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
+          <Route path="/objects" element={<Objects />} />
+          <Route path="/objects/:objectId" element={<ObjectDetails />} />
           <Route path="/events" element={<Events />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/reports" element={<Reports />} />
