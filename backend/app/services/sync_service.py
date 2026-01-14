@@ -114,6 +114,7 @@ async def sync_events_from_agency_mysql(
                 "id": str(alarm_id_int),
                 "timestamp": ts,
                 "type": "alarm",
+                "object_id": None,
                 "object_name": _object_name(r),
                 "client_name": (r.get("OBJ_FIO") or "").strip() or "Не указан",
                 "severity": _derive_severity(r),
@@ -141,11 +142,28 @@ async def sync_events_from_agency_mysql(
         stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
         result = await session.execute(stmt)
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
+        from sqlalchemy import bindparam
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
         # For SQLite, avoid generating a single massive VALUES (...) statement
         # which can exceed SQLite's variable limit (~999) for large batches.
-        stmt = sqlite_insert(Event).on_conflict_do_nothing(index_elements=[Event.id])
+        stmt = (
+            sqlite_insert(Event)
+            .values(
+                id=bindparam("id"),
+                timestamp=bindparam("timestamp"),
+                type=bindparam("type"),
+                object_id=bindparam("object_id"),
+                object_name=bindparam("object_name"),
+                client_name=bindparam("client_name"),
+                severity=bindparam("severity"),
+                status=bindparam("status"),
+                description=bindparam("description"),
+                location=bindparam("location"),
+                operator_id=bindparam("operator_id"),
+            )
+            .on_conflict_do_nothing(index_elements=[Event.id])
+        )
         result = await session.execute(stmt, events_to_insert)
     else:
         # Fallback: insert one by one, ignoring duplicates
@@ -411,7 +429,7 @@ async def sync_events_from_agency_mssql_archives(
                 "type": "alarm",
                 "object_id": panel_id,
                 "object_name": panel_id or "Объект",
-                "client_name": None,
+                "client_name": panel_id or "Не указан",
                 "severity": "info",
                 "status": status,
                 "description": "\n".join(desc_parts) if desc_parts else "",
@@ -437,11 +455,28 @@ async def sync_events_from_agency_mssql_archives(
         stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
         result = await session.execute(stmt)
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
+        from sqlalchemy import bindparam
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
         # For SQLite, avoid generating a single massive VALUES (...) statement
         # which can exceed SQLite's variable limit (~999) for large batches.
-        stmt = sqlite_insert(Event).on_conflict_do_nothing(index_elements=[Event.id])
+        stmt = (
+            sqlite_insert(Event)
+            .values(
+                id=bindparam("id"),
+                timestamp=bindparam("timestamp"),
+                type=bindparam("type"),
+                object_id=bindparam("object_id"),
+                object_name=bindparam("object_name"),
+                client_name=bindparam("client_name"),
+                severity=bindparam("severity"),
+                status=bindparam("status"),
+                description=bindparam("description"),
+                location=bindparam("location"),
+                operator_id=bindparam("operator_id"),
+            )
+            .on_conflict_do_nothing(index_elements=[Event.id])
+        )
         result = await session.execute(stmt, events_to_insert)
     else:
         existing_ids = set(
