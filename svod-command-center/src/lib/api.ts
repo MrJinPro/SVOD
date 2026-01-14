@@ -75,3 +75,65 @@ export async function apiPost<T>(path: string, body?: unknown, init?: RequestIni
 
   return (await res.json()) as T;
 }
+
+export async function apiPatch<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
+  const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  const token = getAuthToken();
+  const res = await fetch(url, {
+    method: 'PATCH',
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers || {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      // ignore
+    }
+    const message = body?.message || body?.detail?.message || res.statusText;
+    throw new Error(message);
+  }
+
+  return (await res.json()) as T;
+}
+
+export async function apiDelete<T>(path: string, init?: RequestInit): Promise<T> {
+  const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  const token = getAuthToken();
+  const res = await fetch(url, {
+    method: 'DELETE',
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers || {}),
+    },
+  });
+
+  if (!res.ok) {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      // ignore
+    }
+    const message = body?.message || body?.detail?.message || res.statusText;
+    throw new Error(message);
+  }
+
+  // Some DELETE endpoints may return empty body
+  const text = await res.text();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return {} as T;
+  }
+}

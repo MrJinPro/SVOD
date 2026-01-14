@@ -6,8 +6,11 @@ import { Event } from '@/types';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
+import { useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 export default function SearchPage() {
+  const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
 
@@ -15,8 +18,8 @@ export default function SearchPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSearch = async () => {
-    const q = query.trim();
+  const handleSearch = async (overrideQuery?: string) => {
+    const q = (overrideQuery ?? query).trim();
     if (!q) return;
 
     setHasSearched(true);
@@ -32,6 +35,15 @@ export default function SearchPage() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (q) {
+      setQuery(q);
+      handleSearch(q);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleClear = () => {
     setQuery('');

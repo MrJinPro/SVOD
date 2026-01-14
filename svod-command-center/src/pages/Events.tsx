@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Download, RefreshCw } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { useMemo, useState } from 'react';
+import { API_BASE_URL } from '@/lib/api';
 
 const defaultFilters: EventFiltersValue = {
   search: '',
@@ -69,12 +70,16 @@ export default function Events() {
               variant="outline"
               size="sm"
               className="gap-2"
-              onClick={() =>
-                toast({
-                  title: 'Экспорт',
-                  description: 'Экспорт журнала событий будет добавлен в следующей версии прототипа.',
-                })
-              }
+              onClick={() => {
+                const url = `${API_BASE_URL}/events/export?${path.split('?')[1] || ''}`
+                  // list endpoint has paging; export endpoint ignores page params safely
+                  .replace(/(^|&)page=\d+/g, '$1')
+                  .replace(/(^|&)pageSize=\d+/g, '$1')
+                  .replace(/[?&]$/g, '');
+
+                toast({ title: 'Экспорт', description: 'Скачивание CSV…' });
+                window.location.href = url;
+              }}
             >
               <Download className="h-4 w-4" />
               Экспорт

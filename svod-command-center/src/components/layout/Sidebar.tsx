@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
@@ -17,6 +16,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { useApiGet } from '@/hooks/useApiGet';
+import { clearStoredToken } from '@/lib/auth';
 
 const navigation = [
   { name: 'Панель управления', href: '/', icon: LayoutDashboard },
@@ -24,7 +25,7 @@ const navigation = [
   { name: 'События', href: '/events', icon: AlertTriangle },
   { name: 'Поиск', href: '/search', icon: Search },
   { name: 'Отчёты', href: '/reports', icon: FileText },
-  { name: 'Уведомления', href: '/notifications', icon: Bell, badge: 2 },
+  { name: 'Уведомления', href: '/notifications', icon: Bell },
   { name: 'Пользователи', href: '/users', icon: Users },
 ];
 
@@ -32,10 +33,30 @@ const bottomNavigation = [
   { name: 'Интеграция', href: '/integration', icon: Database },
   { name: 'Настройки', href: '/settings', icon: Settings },
 ];
-
-export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+export function Sidebar({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { data: me } = useApiGet('/auth/me', { username: '', role: 'operator', email: null } as any);
+  const { data: notifications } = useApiGet('/notifications', [] as Array<{ id: string; read: boolean }>);
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const roleLabel = (role: string) => {
+    if (role === 'admin') return 'Администратор';
+    if (role === 'analyst') return 'Аналитик';
+    return 'Оператор';
+  };
+
+  const initials = (() => {
+    const u = String((me as any)?.username || '').trim();
+    if (!u) return '??';
+    return u.slice(0, 2).toUpperCase();
+  })();
 
   return (
     <aside
@@ -64,6 +85,7 @@ export function Sidebar() {
         <nav className="flex-1 space-y-1 px-2 py-4">
           {navigation.map((item) => {
             const isActive = location.pathname === item.href;
+            const badge = item.href === '/notifications' ? unreadCount : undefined;
             return (
               <NavLink
                 key={item.name}
@@ -79,16 +101,16 @@ export function Sidebar() {
                 {!collapsed && (
                   <>
                     <span className="flex-1">{item.name}</span>
-                    {item.badge && (
+                    {badge ? (
                       <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-severity-critical px-1.5 text-xs font-semibold text-white">
-                        {item.badge}
+                        {badge}
                       </span>
-                    )}
+                    ) : null}
                   </>
                 )}
-                {collapsed && item.badge && (
+                {collapsed && !!badge && (
                   <span className="absolute left-10 top-0 flex h-4 w-4 items-center justify-center rounded-full bg-severity-critical text-[10px] font-semibold text-white">
-                    {item.badge}
+                    {badge}
                   </span>
                 )}
               </NavLink>
@@ -122,16 +144,24 @@ export function Sidebar() {
           {/* User section */}
           <div className={cn('flex items-center gap-3 rounded-lg px-3 py-2', collapsed && 'justify-center')}>
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/20 text-primary text-sm font-semibold">
-              ИА
+              {initials}
             </div>
             {!collapsed && (
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground truncate">Иванов А.С.</p>
-                <p className="text-xs text-muted-foreground">Администратор</p>
+                <p className="text-sm font-medium text-foreground truncate">{(me as any)?.username || ''}</p>
+                <p className="text-xs text-muted-foreground">{roleLabel((me as any)?.role || 'operator')}</p>
               </div>
             )}
             {!collapsed && (
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  clearStoredToken();
+                  navigate('/login');
+                }}
+              >
                 <LogOut className="h-4 w-4" />
               </Button>
             )}
@@ -143,7 +173,7 @@ export function Sidebar() {
           variant="ghost"
           size="icon"
           className="absolute -right-3 top-20 h-6 w-6 rounded-full border border-border bg-background shadow-md hover:bg-accent"
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={onToggleCollapsed}
         >
           {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
         </Button>

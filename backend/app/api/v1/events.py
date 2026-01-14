@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import csv
+import io
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +106,97 @@ async def list_events(
         "pageSize": pageSize,
         "totalPages": total_pages,
     }
+
+
+@router.get("/export")
+async def export_events_csv(
+    dateFrom: str | None = None,
+    dateTo: str | None = None,
+    type: str | None = None,  # noqa: A002
+    objectId: str | None = None,
+    severity: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    limit: int = Query(50000, ge=1, le=200000),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    filters: list[Any] = []
+
+    if type:
+        filters.append(Event.type == type)
+    if objectId:
+        filters.append(Event.object_id == objectId)
+    if severity:
+        filters.append(Event.severity == severity)
+    if status:
+        filters.append(Event.status == status)
+
+    if dateFrom:
+        dt_from = _parse_dt(dateFrom)
+        if dt_from:
+            filters.append(Event.timestamp >= dt_from)
+    if dateTo:
+        dt_to = _parse_dt(dateTo)
+        if dt_to:
+            filters.append(Event.timestamp <= dt_to)
+
+    if search and search.strip():
+        needle = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                Event.description.ilike(needle),
+                Event.object_name.ilike(needle),
+                Event.client_name.ilike(needle),
+                Event.location.ilike(needle),
+            )
+        )
+
+    where = and_(*filters) if filters else None
+
+    stmt: Select[tuple[Event]] = select(Event).order_by(Event.timestamp.desc()).limit(limit)
+    if where is not None:
+        stmt = stmt.where(where)
+    rows = (await session.execute(stmt)).scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow(
+        [
+            "id",
+            "timestamp",
+            "type",
+            "object_id",
+            "object_name",
+            "client_name",
+            "severity",
+            "status",
+            "location",
+            "description",
+        ]
+    )
+    for e in rows:
+        writer.writerow(
+            [
+                e.id,
+                e.timestamp.isoformat(),
+                e.type,
+                e.object_id or "",
+                e.object_name,
+                e.client_name,
+                e.severity,
+                e.status,
+                e.location or "",
+                (e.description or "").replace("\r\n", "\n"),
+            ]
+        )
+
+    content = buf.getvalue()
+    filename = f"events-export-{datetime.utcnow().date().isoformat()}.csv"
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.get("/{event_id}")

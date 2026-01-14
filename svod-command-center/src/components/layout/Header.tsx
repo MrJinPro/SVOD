@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useApiGet } from '@/hooks/useApiGet';
 
 interface HeaderProps {
@@ -13,6 +13,8 @@ interface HeaderProps {
 
 export function Header({ title, subtitle }: HeaderProps) {
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [quickQuery, setQuickQuery] = useState('');
+  const navigate = useNavigate();
   const { data: notifications } = useApiGet('/notifications', [] as Array<{ id: string; read: boolean }>);
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -53,6 +55,14 @@ export function Header({ title, subtitle }: HeaderProps) {
             type="search"
             placeholder="Быстрый поиск..."
             className="w-64 pl-9 bg-muted/50 border-muted focus:bg-background"
+            value={quickQuery}
+            onChange={(e) => setQuickQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const q = quickQuery.trim();
+                if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
+              }
+            }}
           />
         </div>
 

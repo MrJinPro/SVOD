@@ -130,6 +130,17 @@ async def init_db(engine: AsyncEngine) -> None:
     from app.core.security import hash_password
 
     async with SessionLocal() as session:
+        # Cleanup legacy prototype seed users (from older versions) to avoid confusion in real deployments.
+        # These users were created with fixed ids "1".."4" and should not exist in real data.
+        from sqlalchemy import delete
+
+        keep_seed = (settings.__dict__.get("keep_prototype_users") or "").strip().lower() in {"1", "true", "yes"}
+        if not keep_seed:
+            await session.execute(
+                delete(User).where(User.id.in_(["1", "2", "3", "4"]))
+            )
+            await session.commit()
+
         # Optional bootstrap superadmin
         if settings.superadmin_username.strip() and settings.superadmin_password:
             admin_username = settings.superadmin_username.strip()

@@ -4,6 +4,7 @@ import { NotificationItem } from '@/components/notifications/NotificationItem';
 import { Button } from '@/components/ui/button';
 import { Check, Trash2 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+import { apiDelete, apiPost } from '@/lib/api';
 
 export default function Notifications() {
   const { data: notifications, refetch } = useApiGet('/notifications', []);
@@ -25,12 +26,14 @@ export default function Notifications() {
               variant="outline"
               size="sm"
               className="gap-2"
-              onClick={() => {
-                toast({
-                  title: 'Уведомления',
-                  description: 'В прототипе отмечать прочитанными пока нельзя.',
-                });
-                refetch();
+              onClick={async () => {
+                try {
+                  await apiPost('/notifications/mark-all-read');
+                  toast({ title: 'Уведомления', description: 'Отмечено как прочитанное.' });
+                  refetch();
+                } catch (e: any) {
+                  toast({ title: 'Ошибка', description: e?.message || 'Ошибка запроса', variant: 'destructive' });
+                }
               }}
             >
               <Check className="h-4 w-4" />
@@ -40,12 +43,15 @@ export default function Notifications() {
               variant="outline"
               size="sm"
               className="gap-2 text-destructive hover:text-destructive"
-              onClick={() =>
-                toast({
-                  title: 'Очистка',
-                  description: 'Очистка уведомлений будет добавлена в следующей версии прототипа.',
-                })
-              }
+              onClick={async () => {
+                try {
+                  await apiDelete('/notifications/clear');
+                  toast({ title: 'Очистка', description: 'Уведомления очищены.' });
+                  refetch();
+                } catch (e: any) {
+                  toast({ title: 'Ошибка', description: e?.message || 'Ошибка запроса', variant: 'destructive' });
+                }
+              }}
             >
               <Trash2 className="h-4 w-4" />
               Очистить

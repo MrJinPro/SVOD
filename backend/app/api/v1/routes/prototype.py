@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.models.event import Event
-from app.models.user import User
+
 
 router = APIRouter()
 
@@ -148,47 +148,4 @@ async def dashboard_by_type(session: AsyncSession = Depends(get_session)) -> lis
     ]
 
 
-@router.get("/notifications")
-async def list_notifications(session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
 
-    stmt = (
-        select(Event)
-        .where(Event.severity.in_(["critical", "warning"]))
-        .order_by(Event.timestamp.desc())
-        .limit(20)
-    )
-    events = (await session.execute(stmt)).scalars().all()
-
-    out: list[dict[str, Any]] = []
-    for e in events:
-        title = "Критическое событие" if e.severity == "critical" else "Предупреждение"
-        msg = e.description.splitlines()[0] if e.description else e.object_name
-        out.append(
-            {
-                "id": e.id,
-                "title": title,
-                "message": msg,
-                "severity": e.severity,
-                "timestamp": e.timestamp.isoformat(),
-                "read": False,
-                "eventId": e.id,
-            }
-        )
-    return out
-
-
-@router.get("/users")
-async def list_users(session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
-
-    rows = (await session.execute(select(User).order_by(User.username.asc()))).scalars().all()
-    return [
-        {
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "role": u.role,
-            "isActive": bool(u.is_active),
-            "lastLogin": u.last_login,
-        }
-        for u in rows
-    ]
