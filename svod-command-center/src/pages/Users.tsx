@@ -106,7 +106,7 @@ export default function Users() {
                       <span className="font-medium text-foreground">{user.username}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{user.email}</TableCell>
+                  <TableCell className="text-muted-foreground">{user.email || 'нету'}</TableCell>
                   <TableCell>
                     <Badge className={cn('font-medium border', roleStyles[user.role])}>
                       {roleLabels[user.role]}

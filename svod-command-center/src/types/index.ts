@@ -85,7 +85,7 @@ export type UserRole = 'operator' | 'admin' | 'analyst';
 export interface User {
   id: string;
   username: string;
-  email: string;
+  email?: string | null;
   role: UserRole;
   isActive: boolean;
   lastLogin?: string;

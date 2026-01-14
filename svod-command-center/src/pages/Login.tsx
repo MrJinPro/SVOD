@@ -13,7 +13,7 @@ type TokenResponse = {
   user: {
     id: string;
     username: string;
-    email: string;
+    email: string | null;
     role: string;
     isActive: boolean;
     lastLogin?: string | null;

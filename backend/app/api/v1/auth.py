@@ -77,12 +77,13 @@ async def register(payload: RegisterIn, session: AsyncSession = Depends(get_sess
     if existing is not None:
         raise HTTPException(status_code=409, detail={"code": "CONFLICT", "message": "Username already exists"})
 
-    email = (payload.email or "").strip() or f"{username}@svod.local"
-    existing_email = (
-        await session.execute(select(User).where(User.email == email).limit(1))
-    ).scalars().first()
-    if existing_email is not None:
-        raise HTTPException(status_code=409, detail={"code": "CONFLICT", "message": "Email already exists"})
+    email = (payload.email or "").strip() or None
+    if email is not None:
+        existing_email = (
+            await session.execute(select(User).where(User.email == email).limit(1))
+        ).scalars().first()
+        if existing_email is not None:
+            raise HTTPException(status_code=409, detail={"code": "CONFLICT", "message": "Email already exists"})
 
     import uuid
 

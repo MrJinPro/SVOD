@@ -6,7 +6,7 @@ from pydantic import BaseModel
 class UserOut(BaseModel):
     id: str
     username: str
-    email: str
+    email: str | None = None
     role: str
     isActive: bool
     lastLogin: str | None = None
