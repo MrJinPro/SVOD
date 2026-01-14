@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
@@ -57,6 +57,10 @@ async def list_objects(
     pageSize: int = Query(50, ge=1, le=500),
     search: str | None = None,
     includeDisabled: bool = Query(False, description="Включать расторгнутые/отключенные объекты"),
+    includeIdPrefix: bool = Query(
+        False,
+        description="Включать объекты, чей ID начинается с 'ID' (в агентской БД это часто расторгнутые)",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
@@ -64,6 +68,10 @@ async def list_objects(
     # By default, hide terminated/disabled objects.
     if not includeDisabled:
         filters.append(Object.disabled.is_(False))
+
+    # In some deployments, terminated objects are stored with Panel_id like 'IDxxxxx'.
+    if not includeIdPrefix:
+        filters.append(not_(Object.id.ilike("ID%")))
     if search and search.strip():
         needle = f"%{search.strip()}%"
         filters.append(
