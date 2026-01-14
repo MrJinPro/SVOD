@@ -56,9 +56,14 @@ async def list_objects(
     page: int = Query(1, ge=1),
     pageSize: int = Query(50, ge=1, le=500),
     search: str | None = None,
+    includeDisabled: bool = Query(False, description="Включать расторгнутые/отключенные объекты"),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
+
+    # By default, hide terminated/disabled objects.
+    if not includeDisabled:
+        filters.append(Object.disabled.is_(False))
     if search and search.strip():
         needle = f"%{search.strip()}%"
         filters.append(
