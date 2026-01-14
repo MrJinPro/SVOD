@@ -11,13 +11,25 @@ function getDefaultApiBaseUrl(): string {
 export const API_BASE_URL: string = (import.meta as any).env?.VITE_API_BASE_URL || getDefaultApiBaseUrl();
 const API_TOKEN: string | undefined = (import.meta as any).env?.VITE_API_TOKEN;
 
+function getAuthToken(): string | undefined {
+  // Prefer runtime token from login; fallback to build-time token.
+  try {
+    const stored = localStorage.getItem('svod_access_token');
+    if (stored && stored.trim()) return stored;
+  } catch {
+    // ignore
+  }
+  return API_TOKEN;
+}
+
 export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  const token = getAuthToken();
   const res = await fetch(url, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers || {}),
     },
   });
@@ -38,12 +50,13 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function apiPost<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  const token = getAuthToken();
   const res = await fetch(url, {
     method: 'POST',
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers || {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),

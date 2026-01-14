@@ -41,6 +41,11 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "dev-secret-change-me"
 
+    # Bootstrap superadmin (optional). Do NOT hardcode passwords in repo.
+    superadmin_username: str = ""
+    superadmin_password: str = ""
+    superadmin_email: str = ""
+
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str | None = None

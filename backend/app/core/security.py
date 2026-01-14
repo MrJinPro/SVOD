@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 import time
+import os
+from secrets import compare_digest
 from typing import Any
 
 from app.core.config import settings
@@ -62,3 +64,31 @@ def decode_token(token: str) -> dict[str, Any]:
         raise ValueError("Token expired")
 
     return payload
+
+
+def hash_password(password: str, *, iterations: int = 210_000) -> str:
+    """Хэширует пароль через PBKDF2-SHA256.
+
+    Формат хранения: pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>
+    """
+    if password is None:
+        raise ValueError("Password is required")
+    salt = hashlib.sha256(str(time.time()).encode("utf-8") + os.urandom(16)).digest()[:16]
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    salt_b64 = _b64url_encode(salt)
+    dk_b64 = _b64url_encode(dk)
+    return f"pbkdf2_sha256${iterations}${salt_b64}${dk_b64}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algo, iters_s, salt_b64, dk_b64 = stored_hash.split("$", 3)
+        if algo != "pbkdf2_sha256":
+            return False
+        iterations = int(iters_s)
+        salt = _b64url_decode(salt_b64)
+        expected = _b64url_decode(dk_b64)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return compare_digest(actual, expected)
+    except Exception:
+        return False
