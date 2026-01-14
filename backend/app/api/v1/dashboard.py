@@ -29,6 +29,13 @@ def _trend_percent(today: int, yesterday: int) -> float:
     return 0.0
 
 
+async def _get_reference_day_and_ts(session: AsyncSession) -> tuple[date_type, datetime | None]:
+    max_ts = (await session.execute(select(func.max(Event.timestamp)).select_from(Event))).scalar_one_or_none()
+    if isinstance(max_ts, datetime):
+        return max_ts.date(), max_ts
+    return date_type.today(), None
+
+
 @router.get("/stats")
 async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Stats for dashboard cards.
@@ -40,10 +47,11 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
     - reportsGenerated: number of days with events for last 7 days (incl. today)
     """
 
-    today = date_type.today()
-    yesterday = today - timedelta(days=1)
-    dt_from, dt_to = _day_bounds(today)
-    y_from, y_to = _day_bounds(yesterday)
+    # Use the most recent day present in events as reference.
+    ref_day, max_ts = await _get_reference_day_and_ts(session)
+    prev_day = ref_day - timedelta(days=1)
+    dt_from, dt_to = _day_bounds(ref_day)
+    y_from, y_to = _day_bounds(prev_day)
 
     total_today = (
         await session.execute(
@@ -57,12 +65,13 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
         )
     ).scalar_one()
 
-    # Critical that require attention (not resolved)
-    critical_open = (
+    # Critical events for the reference day.
+    critical_day = (
         await session.execute(
             select(func.count()).select_from(Event).where(
                 Event.severity == "critical",
-                Event.status.in_(["active", "pending"]),
+                Event.timestamp >= dt_from,
+                Event.timestamp <= dt_to,
             )
         )
     ).scalar_one()
@@ -77,10 +86,14 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
         )
     ).scalar_one()
 
-    week_from = datetime.combine(today - timedelta(days=6), datetime.min.time())
+    week_from = datetime.combine(ref_day - timedelta(days=6), datetime.min.time())
+    week_to = dt_to
     reports_generated = (
         await session.execute(
-            select(func.count(func.distinct(func.date(Event.timestamp)))).where(Event.timestamp >= week_from)
+            select(func.count(func.distinct(func.date(Event.timestamp)))).where(
+                Event.timestamp >= week_from,
+                Event.timestamp <= week_to,
+            )
         )
     ).scalar_one()
 
@@ -88,7 +101,7 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
 
     return {
         "totalEvents": int(total_today),
-        "criticalEvents": int(critical_open),
+        "criticalEvents": int(critical_day),
         "activeObjects": int(active_objects),
         "reportsGenerated": int(reports_generated),
         "eventsTrend": round(float(trend), 1),
@@ -99,8 +112,8 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
 async def dashboard_timeline(session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
     """Timeline of today's events grouped into 2-hour buckets (00:00..22:00)."""
 
-    today = date_type.today()
-    dt_from, dt_to = _day_bounds(today)
+    ref_day, _max_ts = await _get_reference_day_and_ts(session)
+    dt_from, dt_to = _day_bounds(ref_day)
 
     # Pre-fill buckets
     buckets: dict[int, dict[str, Any]] = {
@@ -130,12 +143,14 @@ async def dashboard_timeline(session: AsyncSession = Depends(get_session)) -> li
 async def dashboard_by_type(session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
     """Distribution by Event.type for last 24 hours (rolling window)."""
 
-    dt_from = datetime.now() - timedelta(hours=24)
+    _ref_day, max_ts = await _get_reference_day_and_ts(session)
+    window_end = max_ts or datetime.now()
+    dt_from = window_end - timedelta(hours=24)
 
     rows = (
         await session.execute(
             select(Event.type, func.count().label("cnt"))
-            .where(Event.timestamp >= dt_from)
+            .where(Event.timestamp >= dt_from, Event.timestamp <= window_end)
             .group_by(Event.type)
             .order_by(func.count().desc())
         )
