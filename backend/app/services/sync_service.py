@@ -248,6 +248,11 @@ async def sync_objects_from_agency_mssql(
         if not panel_id:
             continue
 
+        # Delete children first to avoid SQLAlchemy autoflush inserting/updating
+        # the parent object before the cleanup statements run.
+        await session.execute(delete(ObjectGroup).where(ObjectGroup.object_id == panel_id))
+        await session.execute(delete(Responsible).where(Responsible.object_id == panel_id))
+
         # Upsert основной карточки
         obj = await session.get(Object, panel_id)
         if obj is None:
@@ -268,10 +273,6 @@ async def sync_objects_from_agency_mssql(
         obj.longitude = _safe_str(o.get("Longtitude"))
         obj.created_at = o.get("CreateDate") if isinstance(o.get("CreateDate"), datetime) else obj.created_at
         obj.updated_at = datetime.utcnow()
-
-        # Полная пересборка дочерних данных для объекта
-        await session.execute(delete(ObjectGroup).where(ObjectGroup.object_id == panel_id))
-        await session.execute(delete(Responsible).where(Responsible.object_id == panel_id))
 
         for g in groups_by_panel.get(panel_id, []):
             try:

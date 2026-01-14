@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -20,6 +21,10 @@ from app.db.session import get_session
 
 router = APIRouter()
 
+# SQLite allows only one writer at a time. If users click buttons quickly or
+# multiple clients run sync concurrently, the DB can get locked.
+_SYNC_LOCK = asyncio.Lock()
+
 
 @router.post("/sync/events")
 async def sync_events_once(limit: int = Query(500, ge=1, le=5000)) -> dict[str, Any]:
@@ -33,22 +38,23 @@ async def sync_events_once(limit: int = Query(500, ge=1, le=5000)) -> dict[str, 
     url = settings.agency_database_url
     scheme = (url.split(":", 1)[0] or "").lower()
 
-    async for session in get_session():
-        session = session  # type: ignore[no-redef]
-        if scheme.startswith("mysql"):
-            return await sync_events_from_agency_mysql(
-                session=session,
-                agency_mysql_url=url,
-                batch_limit=limit,
-            )
-        if scheme.startswith("mssql"):
-            return await sync_events_from_agency_mssql_archives(
-                session=session,
-                agency_mssql_url=url,
-                archives_db_name=settings.agency_archives_db_name,
-                batch_limit=limit,
-            )
-        return {"status": "error", "reason": f"Unsupported AGENCY_DATABASE_URL scheme: {scheme}"}
+    async with _SYNC_LOCK:
+        async for session in get_session():
+            session = session  # type: ignore[no-redef]
+            if scheme.startswith("mysql"):
+                return await sync_events_from_agency_mysql(
+                    session=session,
+                    agency_mysql_url=url,
+                    batch_limit=limit,
+                )
+            if scheme.startswith("mssql"):
+                return await sync_events_from_agency_mssql_archives(
+                    session=session,
+                    agency_mssql_url=url,
+                    archives_db_name=settings.agency_archives_db_name,
+                    batch_limit=limit,
+                )
+            return {"status": "error", "reason": f"Unsupported AGENCY_DATABASE_URL scheme: {scheme}"}
     return {"status": "error", "reason": "No DB session"}
 
 
@@ -64,9 +70,10 @@ async def sync_objects_once() -> dict[str, Any]:
     if not scheme.startswith("mssql"):
         return {"status": "error", "reason": "AGENCY_DATABASE_URL must be MSSQL for /sync/objects"}
 
-    async for session in get_session():
-        session = session  # type: ignore[no-redef]
-        return await sync_objects_from_agency_mssql(session=session, agency_mssql_url=url)
+    async with _SYNC_LOCK:
+        async for session in get_session():
+            session = session  # type: ignore[no-redef]
+            return await sync_objects_from_agency_mssql(session=session, agency_mssql_url=url)
     return {"status": "error", "reason": "No DB session"}
 
 

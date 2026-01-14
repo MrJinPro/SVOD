@@ -18,7 +18,7 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             # Improve SQLite concurrency: allow reads during writes and wait for locks.
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.execute(text("PRAGMA synchronous=NORMAL"))
-            await conn.execute(text("PRAGMA busy_timeout=60000"))
+            await conn.execute(text("PRAGMA busy_timeout=180000"))
 
             cols = (await conn.execute(text("PRAGMA table_info(events)"))).all()
             col_names = {c[1] for c in cols}
