@@ -61,6 +61,10 @@ async def list_objects(
         False,
         description="Включать объекты, чей ID начинается с 'ID' (в агентской БД это часто расторгнутые)",
     ),
+    includeStarPrefix: bool = Query(
+        False,
+        description="Включать объекты, чей ID начинается с '*' (в агентской БД это часто расторгнутые)",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
@@ -72,6 +76,10 @@ async def list_objects(
     # In some deployments, terminated objects are stored with Panel_id like 'IDxxxxx'.
     if not includeIdPrefix:
         filters.append(not_(Object.id.ilike("ID%")))
+
+    # In some deployments, terminated objects are stored with leading '*'.
+    if not includeStarPrefix:
+        filters.append(not_(Object.id.like("*%")))
     if search and search.strip():
         needle = f"%{search.strip()}%"
         filters.append(
