@@ -100,9 +100,16 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" className="font-medium">
-                    {typeLabels[event.type]}
-                  </Badge>
+                  <div className="space-y-1">
+                    <Badge variant="outline" className="font-medium">
+                      {typeLabels[event.type]}
+                    </Badge>
+                    {event.type === 'alarm' && event.codeText && (
+                      <div className="text-xs text-muted-foreground" title={event.codeText}>
+                        {event.codeText}
+                      </div>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <div className="space-y-0.5">

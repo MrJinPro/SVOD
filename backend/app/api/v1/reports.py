@@ -129,8 +129,8 @@ async def export_phrase_counts(
     obj_name = func.coalesce(Object.name, Event.object_name)
     obj_addr = func.coalesce(Object.address, Event.location)
 
-    a_count = func.sum(case((Event.description.ilike(p_a), 1), else_=0))
-    b_count = func.sum(case((Event.description.ilike(p_b), 1), else_=0))
+    a_count = func.sum(case((or_(Event.description.ilike(p_a), Event.code_text.ilike(p_a)), 1), else_=0))
+    b_count = func.sum(case((or_(Event.description.ilike(p_b), Event.code_text.ilike(p_b)), 1), else_=0))
 
     stmt = (
         select(

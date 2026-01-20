@@ -25,6 +25,18 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             if "object_id" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN object_id VARCHAR(64)"))
 
+            # Enrich events with agency code/state info (optional)
+            if "code" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN code VARCHAR(16)"))
+            if "code_group" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN code_group INTEGER"))
+            if "code_text" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN code_text VARCHAR(500)"))
+            if "state_name" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN state_name VARCHAR(60)"))
+            if "state_is_over_process" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN state_is_over_process BOOLEAN"))
+
             user_cols = (await conn.execute(text("PRAGMA table_info(users)"))).all()
             user_col_names = {c[1] for c in user_cols}
             if "password_hash" not in user_col_names:
@@ -84,6 +96,28 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             ).first()
             if not exists:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN object_id VARCHAR(64)"))
+
+            for col_name, col_type in (
+                ("code", "VARCHAR(16)"),
+                ("code_group", "INTEGER"),
+                ("code_text", "VARCHAR(500)"),
+                ("state_name", "VARCHAR(60)"),
+                ("state_is_over_process", "BOOLEAN"),
+            ):
+                col_exists = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name='events' AND column_name=:col
+                            """
+                        ),
+                        {"col": col_name},
+                    )
+                ).first()
+                if not col_exists:
+                    await conn.execute(text(f"ALTER TABLE events ADD COLUMN {col_name} {col_type}"))
 
             user_hash_exists = (
                 await conn.execute(

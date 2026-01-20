@@ -7,10 +7,14 @@ export interface Event {
   id: string;
   timestamp: string;
   type: EventType;
+  objectId?: string | null;
   objectName: string;
   clientName: string;
   severity: EventSeverity;
   status: EventStatus;
+  code?: string | null;
+  codeText?: string | null;
+  stateName?: string | null;
   description: string;
   location?: string;
   operatorId?: string;

@@ -22,6 +22,13 @@ class Event(Base):
     severity: Mapped[str] = mapped_column(String(16), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
 
+    # Agency/MSSQL fields (optional, used for richer UI/reporting)
+    code: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
+    code_group: Mapped[int | None] = mapped_column(nullable=True)
+    code_text: Mapped[str | None] = mapped_column(String(500), index=True, nullable=True)
+    state_name: Mapped[str | None] = mapped_column(String(60), index=True, nullable=True)
+    state_is_over_process: Mapped[bool | None] = mapped_column(nullable=True)
+
     description: Mapped[str] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
