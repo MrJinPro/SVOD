@@ -74,10 +74,13 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
             <TableHead className="text-muted-foreground font-medium">Тип</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Код / сообщение</TableHead>
             <TableHead className="text-muted-foreground font-medium">Объект</TableHead>
             <TableHead className="text-muted-foreground font-medium">Клиент</TableHead>
             <TableHead className="text-muted-foreground font-medium">Серьёзность</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Статус агентства</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Оператор</TableHead>
             <TableHead className="w-[80px]"></TableHead>
           </TableRow>
         </TableHeader>
@@ -104,11 +107,20 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                     <Badge variant="outline" className="font-medium">
                       {typeLabels[event.type]}
                     </Badge>
-                    {event.type === 'alarm' && event.codeText && (
-                      <div className="text-xs text-muted-foreground" title={event.codeText}>
-                        {event.codeText}
-                      </div>
-                    )}
+                  </div>
+                </TableCell>
+
+                <TableCell className="max-w-[420px]">
+                  <div className="space-y-0.5">
+                    <div className="font-mono text-xs text-muted-foreground">
+                      {event.code ? event.code : '—'}
+                    </div>
+                    <div
+                      className="text-sm text-foreground truncate"
+                      title={event.codeText || event.description || ''}
+                    >
+                      {event.codeText || '—'}
+                    </div>
                   </div>
                 </TableCell>
                 <TableCell>
@@ -129,6 +141,14 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                   <Badge className={cn('font-medium border', statusStyles[event.status])}>
                     {statusLabels[event.status]}
                   </Badge>
+                </TableCell>
+
+                <TableCell className="text-muted-foreground">
+                  {event.stateName || '—'}
+                </TableCell>
+
+                <TableCell className="text-muted-foreground">
+                  {event.operatorId || '—'}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-1">

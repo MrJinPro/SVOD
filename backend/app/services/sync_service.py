@@ -376,6 +376,20 @@ async def sync_events_from_agency_mssql_archives(
     if not rows:
         return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
 
+    # Try to enrich events with local object snapshot (names/addresses/clients).
+    panel_ids: set[str] = set()
+    for r in rows:
+        pid = _safe_str(r.get("Panel_id"))
+        if pid:
+            panel_ids.add(pid)
+
+    objects_by_id: dict[str, Object] = {}
+    if panel_ids:
+        objs = (
+            await session.execute(select(Object).where(Object.id.in_(list(panel_ids))))
+        ).scalars().all()
+        objects_by_id = {o.id: o for o in objs}
+
     events_to_insert: list[dict[str, Any]] = []
     max_date_key = cur_date_key
     max_event_id = cur_event_id
@@ -394,6 +408,7 @@ async def sync_events_from_agency_mssql_archives(
             continue
 
         panel_id = _safe_str(r.get("Panel_id"))
+        obj = objects_by_id.get(panel_id) if panel_id else None
 
         code = _safe_str(r.get("Code"))
         code_text = _safe_str(r.get("CodeText"))
@@ -461,8 +476,8 @@ async def sync_events_from_agency_mssql_archives(
                 "timestamp": ts,
                 "type": "alarm",
                 "object_id": panel_id,
-                "object_name": panel_id or "Объект",
-                "client_name": panel_id or "Не указан",
+                "object_name": (obj.name if obj and obj.name else None) or panel_id or "Объект",
+                "client_name": (obj.client_name if obj and obj.client_name else None) or panel_id or "Не указан",
                 "severity": "info",
                 "status": status,
                 "code": code,
@@ -471,7 +486,7 @@ async def sync_events_from_agency_mssql_archives(
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
-                "location": None,
+                "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }
         )
