@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.sync_service import (
+    set_mssql_event_cursor,
     sync_events_from_agency_mssql_archives,
     sync_events_from_agency_mysql,
     sync_objects_from_agency_mssql,
@@ -56,6 +57,33 @@ async def sync_events_once(limit: int = Query(500, ge=1, le=5000)) -> dict[str, 
                     batch_limit=limit,
                 )
             return {"status": "error", "reason": f"Unsupported AGENCY_DATABASE_URL scheme: {scheme}"}
+    return {"status": "error", "reason": "No DB session"}
+
+
+@router.post("/sync/events/reset-cursor")
+async def reset_mssql_events_cursor(
+    date_key: int = Query(..., ge=20000101, le=21000101),
+    event_id: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """Сбрасывает курсор синхронизации MSSQL-архивов.
+
+    Нужен для backfill: после добавления новых полей (code_text/state_name и т.п.)
+    можно сбросить курсор на нужную дату и повторно прогнать /sync/events.
+    """
+    if not settings.agency_database_url:
+        return {"status": "skipped", "reason": "AGENCY_DATABASE_URL not set"}
+
+    url = settings.agency_database_url
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not scheme.startswith("mssql"):
+        return {"status": "error", "reason": "AGENCY_DATABASE_URL must be MSSQL for reset-cursor"}
+
+    async with _SYNC_LOCK:
+        async for session in get_session():
+            session = session  # type: ignore[no-redef]
+            await set_mssql_event_cursor(session, date_key, event_id)
+            await session.commit()
+            return {"status": "ok", "cursor": f"{date_key}:{event_id}"}
     return {"status": "error", "reason": "No DB session"}
 
 

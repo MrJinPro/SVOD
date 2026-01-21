@@ -139,7 +139,27 @@ async def sync_events_from_agency_mysql(
     if dialect is not None and getattr(dialect, "name", None) == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
+        insert_stmt = pg_insert(Event).values(events_to_insert)
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[Event.id],
+            set_={
+                "timestamp": insert_stmt.excluded.timestamp,
+                "type": insert_stmt.excluded.type,
+                "object_id": insert_stmt.excluded.object_id,
+                "object_name": insert_stmt.excluded.object_name,
+                "client_name": insert_stmt.excluded.client_name,
+                "severity": insert_stmt.excluded.severity,
+                "status": insert_stmt.excluded.status,
+                "description": insert_stmt.excluded.description,
+                "location": insert_stmt.excluded.location,
+                "operator_id": insert_stmt.excluded.operator_id,
+                "code": insert_stmt.excluded.code,
+                "code_group": insert_stmt.excluded.code_group,
+                "code_text": insert_stmt.excluded.code_text,
+                "state_name": insert_stmt.excluded.state_name,
+                "state_is_over_process": insert_stmt.excluded.state_is_over_process,
+            },
+        )
         result = await session.execute(stmt)
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
         from sqlalchemy import bindparam
@@ -524,11 +544,35 @@ async def sync_events_from_agency_mssql_archives(
                 client_name=bindparam("client_name"),
                 severity=bindparam("severity"),
                 status=bindparam("status"),
+                code=bindparam("code"),
+                code_group=bindparam("code_group"),
+                code_text=bindparam("code_text"),
+                state_name=bindparam("state_name"),
+                state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
-            .on_conflict_do_nothing(index_elements=[Event.id])
+            .on_conflict_do_update(
+                index_elements=[Event.id],
+                set_={
+                    "timestamp": sqlite_insert(Event).excluded.timestamp,
+                    "type": sqlite_insert(Event).excluded.type,
+                    "object_id": sqlite_insert(Event).excluded.object_id,
+                    "object_name": sqlite_insert(Event).excluded.object_name,
+                    "client_name": sqlite_insert(Event).excluded.client_name,
+                    "severity": sqlite_insert(Event).excluded.severity,
+                    "status": sqlite_insert(Event).excluded.status,
+                    "description": sqlite_insert(Event).excluded.description,
+                    "location": sqlite_insert(Event).excluded.location,
+                    "operator_id": sqlite_insert(Event).excluded.operator_id,
+                    "code": sqlite_insert(Event).excluded.code,
+                    "code_group": sqlite_insert(Event).excluded.code_group,
+                    "code_text": sqlite_insert(Event).excluded.code_text,
+                    "state_name": sqlite_insert(Event).excluded.state_name,
+                    "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
+                },
+            )
         )
         result = await session.execute(stmt, events_to_insert)
     else:
