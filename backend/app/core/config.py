@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     celery_broker_url: str | None = None
     celery_result_backend: str | None = None
 
+    # Auto sync (in-app background loop)
+    auto_sync_enabled: bool = True
+    auto_sync_interval_seconds: int = 15
+    auto_sync_events_limit: int = 500
+    auto_sync_objects_interval_seconds: int = 600
+
     def cors_origins_list(self) -> list[str]:
         if not self.cors_origins.strip():
             return []

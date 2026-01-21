@@ -10,6 +10,7 @@ from app.api.v1.api import api_router
 from app.core.config import settings
 from app.db.init_db import init_db
 from app.db.session import engine
+from app.services.auto_sync import start_auto_sync, stop_auto_sync
 
 
 def create_app() -> FastAPI:
@@ -32,6 +33,11 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def _startup() -> None:
         await init_db(engine)
+        start_auto_sync(app)
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        await stop_auto_sync(app)
 
     origins = settings.cors_origins_list()
     origin_regex = settings.cors_origin_regex.strip()
