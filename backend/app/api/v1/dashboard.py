@@ -29,10 +29,30 @@ def _trend_percent(today: int, yesterday: int) -> float:
     return 0.0
 
 
+def _coerce_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+    return None
+
+
 async def _get_reference_day_and_ts(session: AsyncSession) -> tuple[date_type, datetime | None]:
-    max_ts = (await session.execute(select(func.max(Event.timestamp)).select_from(Event))).scalar_one_or_none()
-    if isinstance(max_ts, datetime):
-        return max_ts.date(), max_ts
+    # Avoid func.max() here: some DBs/dialects can return non-datetime values.
+    latest_ts = (
+        await session.execute(select(Event.timestamp).order_by(Event.timestamp.desc()).limit(1))
+    ).scalar_one_or_none()
+    dt = _coerce_dt(latest_ts)
+    if dt is not None:
+        return dt.date(), dt
     return date_type.today(), None
 
 

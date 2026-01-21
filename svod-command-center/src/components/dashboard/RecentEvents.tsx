@@ -67,7 +67,9 @@ export function RecentEvents() {
                     {statusLabels[event.status]}
                   </span>
                 </div>
-                <p className="text-sm font-medium text-foreground truncate">{event.description}</p>
+                <p className="text-sm font-medium text-foreground truncate">
+                  {(event.codeText || event.description) || '—'}
+                </p>
                 <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1">
                     <Clock className="h-3 w-3" />
