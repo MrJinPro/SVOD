@@ -4,16 +4,18 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.sync_service import (
+    get_mssql_event_cursor,
     set_mssql_event_cursor,
     sync_events_from_agency_mssql_archives,
     sync_events_from_agency_mysql,
     sync_objects_from_agency_mssql,
 )
+from app.services.auto_sync import auto_sync_status
 from app.services.job_service import create_job, get_job, start_job
 from app.prototype_data import mock_events
 from app.models.event import Event
@@ -269,6 +271,45 @@ async def seed_demo_events(count: int = Query(300, ge=1, le=5000)) -> dict[str, 
         return {"status": "ok", "objects": int(len(object_rows)), "events": int(len(rows))}
 
     return {"status": "error", "reason": "No DB session"}
+
+
+@router.get("/sync/status")
+async def get_sync_status() -> dict[str, Any]:
+    """Диагностика синхронизации и данных.
+
+    Нужен для быстрой проверки на ВМ: действительно ли запущен новый backend,
+    включён ли авто-синк, есть ли подключение к агентской БД и растут ли данные.
+    """
+    status = await auto_sync_status()
+
+    async for session in get_session():
+        # Counts
+        events_count = int((await session.execute(select(func.count()).select_from(Event))).scalar() or 0)
+        objects_count = int((await session.execute(select(func.count()).select_from(Object))).scalar() or 0)
+
+        # Latest event timestamp
+        latest_ts = (
+            await session.execute(select(Event.timestamp).order_by(Event.timestamp.desc()).limit(1))
+        ).scalar_one_or_none()
+
+        # MSSQL cursor (if any)
+        try:
+            cur_date_key, cur_event_id = await get_mssql_event_cursor(session)
+            cursor = f"{cur_date_key}:{cur_event_id}"
+        except Exception:
+            cursor = None
+
+        return {
+            "autoSync": status,
+            "db": {
+                "events": events_count,
+                "objects": objects_count,
+                "latestEventTimestamp": latest_ts,
+            },
+            "mssql": {"cursor": cursor},
+        }
+
+    return {"autoSync": status, "db": None, "mssql": {"cursor": None}}
 
 
 @router.get("/tables")
