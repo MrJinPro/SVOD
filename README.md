@@ -219,6 +219,90 @@ Backend читает `DATABASE_URL` (PostgreSQL или SQLite).
 - **Подробное тестирование** каждого компонента
 - **Полная документация** для поддержки системы
 
+
+
+
+
+---
+
+## Рабочий процесс: локальная разработка и запуск на рабочей машине
+
+Ниже зафиксированы нюансы нашего процесса: локально разрабатываем (без доступа к БД агентства), код пушим в Git, а запуск/интеграция с агентской БД происходят на рабочей машине (сервере).
+
+### 1) Локальная разработка (без БД агентства)
+- Бэкенд: используем SQLite и демо-данные.
+  - Установить `DATABASE_URL=sqlite+aiosqlite:///.../backend/svod.db`.
+  - Включить демо-сид (по желанию): `ENABLE_DEMO_SEED=1` и дернуть `SEED_DEMO.cmd` или `POST /api/v1/db/seed/demo-events`.
+  - `AGENCY_DATABASE_URL` локально НЕ указывать (или оставить пустым), авто-синк тогда бездействует.
+- Фронтенд: `npm run dev` (или build+preview) и работаем с локальным API (`http://localhost:8000/api/v1`).
+
+Минимальный сценарий локально:
+```powershell
+# Окно 1 — backend (SQLite)
+RUN_BACKEND.cmd
+
+# Окно 2 — frontend (build+preview)
+RUN_FRONTEND_PREVIEW.cmd
+
+# Окно 3 — заполнить демо-данные
+SEED_DEMO.cmd
+```
+
+### 2) Git‑цикл
+- На рабочей машине разработчика: коммитим изменения и пушим в удалённый репозиторий (Git).
+- На сервере (рабочая машина): забираем свежий код через `git pull` и запускаем.
+
+Пример (Linux/Windows PowerShell):
+```powershell
+cd /opt/svod   # или d:\alarm\SVOD_SOFT
+git pull
+# Docker-режим (рекомендуется, если нет ограничений по драйверам MSSQL):
+docker compose up -d --build
+# Проверить логи:
+docker compose logs -f backend
+```
+
+### 3) Запуск на рабочей машине (с доступом к БД агентства)
+- Важно: на сервере указываем реальную `AGENCY_DATABASE_URL` (MySQL или MSSQL) и настраиваем синхронизацию.
+- В Docker‑режиме переменные уже задаются в `docker-compose.yml`. Можно переопределить их через `.env` или переменные окружения.
+
+Ключевые переменные окружения для сервера:
+- `APP_ENV=prod`
+- `DATABASE_URL=postgresql+psycopg://svod:svod@postgres:5432/svod` (если запускаем из docker‑compose)
+- `AGENCY_DATABASE_URL=`
+  - MySQL: `mysql+pymysql://user:pass@HOST:3306/dbalarm20?charset=cp1251`
+  - MSSQL: `mssql+pyodbc://user:pass@HOST:1433/Pult4DB?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=no&TrustServerCertificate=yes`
+- `AUTO_SYNC_ENABLED=true` (по умолчанию включено) и интервалы `AUTO_SYNC_INTERVAL_SECONDS`, `AUTO_SYNC_EVENTS_LIMIT`
+- CORS для фронтенда (если он на другом хосте/порте): `CORS_ORIGINS=http://<FRONT_HOST>:<PORT>`
+- Безопасность: `JWT_SECRET=<случайная_строка>`, `INSECURE_AUTH=false`
+
+Первичная синхронизация (по запросу):
+```powershell
+# MSSQL: подтянуть справочник объектов
+POST http://<BACKEND>/api/v1/db/sync/objects
+
+# События (MySQL или MSSQL archives — определяется схемой в AGENCY_DATABASE_URL):
+POST http://<BACKEND>/api/v1/db/sync/events?limit=1000
+
+# Диагностика:
+GET  http://<BACKEND>/api/v1/db/sync/status
+```
+
+Примечания по MSSQL в Docker:
+- Для работы `pyodbc` в контейнере Linux нужен установленный драйвер Microsoft ODBC (17/18). В текущем `backend/Dockerfile` он не устанавливается.
+- Варианты:
+  1) Запускать backend нативно на Windows‑сервере, где установлен ODBC Driver for SQL Server (см. раздел «Запуск прототипа (Windows, без Docker)»).
+  2) Либо собрать кастомный backend‑образ с установкой `msodbcsql` (рекомендовано для прод).
+
+### 4) Обновление версии на сервере
+- `git pull`
+- `docker compose up -d --build` (или перезапуск нативного backend, если без Docker)
+- Проверить `/api/v1/health` и `/api/v1/db/sync/status`
+
+### 5) Нюансы фронтенда на сервере
+- По умолчанию фронт обращается к `http(s)://<тот_же_host>:8000/api/v1`.
+- Если frontend и backend на разных хостах/портах — при сборке фронта задайте `VITE_API_BASE_URL`, а в backend — корректный `CORS_ORIGINS`.
+
 ---
 
 *Дата создания документации: 8 октября 2025*  

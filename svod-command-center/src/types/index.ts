@@ -141,3 +141,54 @@ export interface ApiError {
   message: string;
   details?: Record<string, string>;
 }
+
+// Analytics Types
+export interface AnalyticsFiltersResponse {
+  operators: string[];
+  actionNames: string[];
+  gbrNames: string[];
+  dateMin: string | null;
+  dateMax: string | null;
+}
+
+export interface OperatorHandlingRow {
+  operator: string;
+  events: number;
+  avgSeconds: number;
+  minSeconds: number;
+  maxSeconds: number;
+}
+
+export interface OperatorActivityRow {
+  bucket: string;
+  operator: string;
+  actions: number;
+}
+
+export interface GbrTripRow {
+  eventId: string;
+  gbrName: string;
+  calledAt: string | null;
+  arrivedAt: string | null;
+  cancelledAt: string | null;
+  lastActionAt: string | null;
+  objectId: string | null;
+  objectName: string | null;
+  clientName: string | null;
+  travelSeconds: number | null;
+}
+
+export interface GbrTripsResponse {
+  data: GbrTripRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ObjectEventsSummaryResponse {
+  objectId: string;
+  total: number;
+  bySeverity: Record<string, number>;
+  byStatus: Record<string, number>;
+  byCode: Array<{ codeGroup: number | null; code: string | null; codeText: string | null; count: number }>;
+}

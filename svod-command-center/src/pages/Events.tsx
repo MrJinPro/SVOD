@@ -7,6 +7,7 @@ import { Download, RefreshCw } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { useMemo, useState } from 'react';
 import { API_BASE_URL } from '@/lib/api';
+import { useEventStream } from '@/hooks/useEventStream';
 
 const defaultFilters: EventFiltersValue = {
   search: '',
@@ -20,6 +21,8 @@ export default function Events() {
   const [draftFilters, setDraftFilters] = useState<EventFiltersValue>(defaultFilters);
   const [appliedFilters, setAppliedFilters] = useState<EventFiltersValue>(defaultFilters);
   const [pageNumber, setPageNumber] = useState(1);
+  const [live, setLive] = useState(false);
+  const [pendingNew, setPendingNew] = useState(0);
 
   const path = useMemo(() => {
     const params = new URLSearchParams();
@@ -50,6 +53,27 @@ export default function Events() {
     totalPages: 1,
   });
 
+  const newestTimestamp = useMemo(() => {
+    const first = (page as any)?.data?.[0]?.timestamp;
+    return typeof first === 'string' && first ? first : null;
+  }, [page]);
+
+  const streamPath = useMemo(() => {
+    const params = new URLSearchParams();
+    if (newestTimestamp) params.set('since', newestTimestamp);
+    params.set('pollSeconds', '1.0');
+    return `/events/stream?${params.toString()}`;
+  }, [newestTimestamp]);
+
+  useEventStream({
+    enabled: live,
+    path: streamPath,
+    onEvent: (evt) => {
+      if (evt.event !== 'event') return;
+      setPendingNew((n) => n + 1);
+    },
+  });
+
   return (
     <MainLayout 
       title="События" 
@@ -62,6 +86,17 @@ export default function Events() {
             <span>Найдено: <strong className="text-foreground">{page.total}</strong> событий</span>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant={live ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={() => {
+                setLive((v) => !v);
+                setPendingNew(0);
+              }}
+              title="Поток новых событий (near real-time)"
+            >
+              {live ? 'Live: ON' : 'Live: OFF'}
+            </Button>
             <Button variant="outline" size="sm" className="gap-2" onClick={refetch}>
               <RefreshCw className="h-4 w-4" />
               Обновить
@@ -101,6 +136,25 @@ export default function Events() {
             setPageNumber(1);
           }}
         />
+
+        {pendingNew > 0 && (
+          <div className="rounded-xl border border-border bg-card p-3 flex items-center justify-between">
+            <div className="text-sm text-foreground">
+              Появились новые события: <strong>{pendingNew}</strong>
+            </div>
+            <Button
+              size="sm"
+              className="gap-2"
+              onClick={() => {
+                refetch();
+                setPendingNew(0);
+                toast({ title: 'События', description: 'Обновлено.' });
+              }}
+            >
+              Показать
+            </Button>
+          </div>
+        )}
 
         {error && (
           <div className="text-sm text-destructive">

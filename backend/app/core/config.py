@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     cors_origin_regex: str = ""
 
     jwt_secret: str = "dev-secret-change-me"
+    jwt_issuer: str = "svod-api"
+    access_token_ttl_seconds: int = 60 * 60 * 8
+    refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
+    # Для закрытой внутренней сети можно отключить подпись/шифрование токенов
+    # (небезопасно, но удобно для упрощённой интеграции). По умолчанию выключено.
+    insecure_auth: bool = False
 
     # Bootstrap superadmin (optional). Do NOT hardcode passwords in repo.
     superadmin_username: str = ""

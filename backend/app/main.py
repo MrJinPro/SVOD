@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -32,6 +35,13 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        if sys.platform == "win32":
+            try:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            except Exception:
+                pass
+        if settings.app_env.lower() != "dev" and settings.insecure_auth:
+            raise RuntimeError("INSECURE_AUTH=true is not allowed outside dev")
         await init_db(engine)
         start_auto_sync(app)
 

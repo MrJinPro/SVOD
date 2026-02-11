@@ -24,11 +24,19 @@ try {
 }
 
 $env:DATABASE_URL = 'sqlite+aiosqlite:///d:/alarm/SVOD_SOFT/backend/svod.db'
-$env:CORS_ORIGINS = 'http://localhost:4173,http://127.0.0.1:4173,http://localhost'
+$env:CORS_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost'
 
 Write-Host "Backend: http://127.0.0.1:8000 (docs: /docs)" -ForegroundColor Green
 Write-Host "DB: SQLite -> backend/svod.db" -ForegroundColor Gray
-Write-Host "Логи: backend/uvicorn.out.log и backend/uvicorn.err.log" -ForegroundColor Gray
+Write-Host "Логи: backend/uvicorn.log" -ForegroundColor Gray
+
+$logFile = Join-Path $backendDir 'uvicorn.log'
+try { Remove-Item $logFile -Force -ErrorAction SilentlyContinue } catch { }
 
 Set-Location $backendDir
-& $python -m uvicorn app.main:app --app-dir $backendDir --host 127.0.0.1 --port 8000
+
+# Uvicorn может писать часть логов в stderr, а Windows PowerShell 5.1
+# превращает stderr от native-команд в ErrorRecord (NativeCommandError).
+# VS Code task из-за этого может завершаться с ошибкой. Запускаем через cmd.exe.
+$cmd = '"{0}" -m uvicorn app.main:app --app-dir "{1}" --host 127.0.0.1 --port 8000' -f $python, $backendDir
+cmd /c $cmd 2>&1 | Tee-Object -FilePath $logFile

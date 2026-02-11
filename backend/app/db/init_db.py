@@ -148,6 +148,144 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE users ALTER COLUMN email DROP NOT NULL"))
 
 
+async def _seed_rbac(session) -> None:
+    from uuid import uuid4
+
+    from sqlalchemy import insert, select
+
+    from app.models.role import Permission, Role, role_permissions
+
+    default_permissions = [
+        ("rbac:manage", "Управление ролями и правами"),
+        ("users:read", "Просмотр пользователей"),
+        ("users:write", "Управление пользователями"),
+        ("analytics:read", "Просмотр аналитики"),
+    ]
+    default_roles = [
+        ("admin", "Администратор", True),
+        ("operator", "Оператор", True),
+        ("analyst", "Аналитик", True),
+    ]
+
+    perms_by_code: dict[str, Permission] = {}
+    for code, name in default_permissions:
+        perm = (
+            await session.execute(select(Permission).where(Permission.code == code).limit(1))
+        ).scalars().first()
+        if perm is None:
+            perm = Permission(
+                id=str(uuid4()),
+                code=code,
+                name=name,
+                description=None,
+                is_system=True,
+            )
+            session.add(perm)
+        perms_by_code[code] = perm
+
+    roles_by_code: dict[str, Role] = {}
+    for code, name, is_system in default_roles:
+        role = (
+            await session.execute(select(Role).where(Role.code == code).limit(1))
+        ).scalars().first()
+        if role is None:
+            role = Role(
+                id=str(uuid4()),
+                code=code,
+                name=name,
+                description=None,
+                is_system=bool(is_system),
+            )
+            session.add(role)
+        roles_by_code[code] = role
+
+    await session.flush()
+
+    desired: dict[str, set[str]] = {
+        "admin": {"rbac:manage", "users:read", "users:write", "analytics:read"},
+        "operator": {"users:read"},
+        "analyst": {"users:read", "analytics:read"},
+    }
+
+    for role_code, perm_codes in desired.items():
+        role = roles_by_code[role_code]
+        desired_perm_ids = {perms_by_code[c].id for c in perm_codes}
+        existing_perm_ids = {
+            r[0]
+            for r in (
+                await session.execute(
+                    select(role_permissions.c.permission_id).where(role_permissions.c.role_id == role.id)
+                )
+            ).all()
+        }
+        missing = desired_perm_ids - existing_perm_ids
+        if missing:
+            await session.execute(
+                insert(role_permissions),
+                [{"role_id": role.id, "permission_id": pid} for pid in sorted(missing)],
+            )
+
+
+async def _migrate_legacy_user_role_to_rbac(session) -> None:
+    from uuid import uuid4
+
+    from sqlalchemy import insert, select
+
+    from app.models.role import Role, user_roles
+    from app.models.user import User
+
+    rows = (await session.execute(select(User.id, User.role))).all()
+    if not rows:
+        return
+
+    seen_codes = {str(r[1] or "").strip() for r in rows if str(r[1] or "").strip()}
+    if not seen_codes:
+        return
+
+    existing_roles = (
+        await session.execute(select(Role).where(Role.code.in_(sorted(seen_codes))))
+    ).scalars().all()
+    role_by_code = {r.code: r for r in existing_roles}
+
+    for code in sorted(seen_codes):
+        if code not in role_by_code:
+            r = Role(
+                id=str(uuid4()),
+                code=code,
+                name=code,
+                description="Imported from legacy users.role",
+                is_system=False,
+            )
+            session.add(r)
+            role_by_code[code] = r
+
+    await session.flush()
+
+    existing_links = {
+        (r[0], r[1])
+        for r in (
+            await session.execute(
+                select(user_roles.c.user_id, user_roles.c.role_id).where(user_roles.c.role_id.in_([ro.id for ro in role_by_code.values()]))
+            )
+        ).all()
+    }
+
+    to_insert: list[dict[str, str]] = []
+    for user_id, legacy_role in rows:
+        code = str(legacy_role or "").strip()
+        if not code:
+            continue
+        role = role_by_code.get(code)
+        if role is None:
+            continue
+        key = (str(user_id), str(role.id))
+        if key not in existing_links:
+            to_insert.append({"user_id": str(user_id), "role_id": str(role.id)})
+
+    if to_insert:
+        await session.execute(insert(user_roles), to_insert)
+
+
 async def init_db(engine: AsyncEngine) -> None:
     # Ensure models are imported so SQLAlchemy registers tables
     from app import models  # noqa: F401
@@ -164,6 +302,10 @@ async def init_db(engine: AsyncEngine) -> None:
     from app.core.security import hash_password
 
     async with SessionLocal() as session:
+        await _seed_rbac(session)
+        await _migrate_legacy_user_role_to_rbac(session)
+        await session.commit()
+
         # Cleanup legacy prototype seed users (from older versions) to avoid confusion in real deployments.
         # These users were created with fixed ids "1".."4" and should not exist in real data.
         from sqlalchemy import delete
@@ -183,6 +325,9 @@ async def init_db(engine: AsyncEngine) -> None:
             ).scalars().first()
             if admin is None:
                 import uuid
+                from app.models.role import Role
+                from app.models.role import user_roles
+                from sqlalchemy import insert
 
                 admin_email = settings.superadmin_email.strip() or None
                 admin = User(
@@ -194,10 +339,23 @@ async def init_db(engine: AsyncEngine) -> None:
                     password_hash=hash_password(settings.superadmin_password),
                     last_login=None,
                 )
+                admin_role = (
+                    await session.execute(select(Role).where(Role.code == "admin").limit(1))
+                ).scalars().first()
                 session.add(admin)
                 await session.commit()
+
+                if admin_role is not None:
+                    await session.execute(
+                        insert(user_roles),
+                        [{"user_id": str(admin.id), "role_id": str(admin_role.id)}],
+                    )
+                    await session.commit()
             else:
                 changed = False
+                from app.models.role import Role
+                from app.models.role import user_roles
+                from sqlalchemy import insert
                 if not admin.password_hash:
                     admin.password_hash = hash_password(settings.superadmin_password)
                     changed = True
@@ -212,3 +370,23 @@ async def init_db(engine: AsyncEngine) -> None:
                     changed = True
                 if changed:
                     await session.commit()
+
+                # Ensure RBAC admin role link exists
+                admin_role = (
+                    await session.execute(select(Role).where(Role.code == "admin").limit(1))
+                ).scalars().first()
+                if admin_role is not None:
+                    existing = (
+                        await session.execute(
+                            select(user_roles.c.user_id)
+                            .where(user_roles.c.user_id == str(admin.id))
+                            .where(user_roles.c.role_id == str(admin_role.id))
+                            .limit(1)
+                        )
+                    ).first()
+                    if existing is None:
+                        await session.execute(
+                            insert(user_roles),
+                            [{"user_id": str(admin.id), "role_id": str(admin_role.id)}],
+                        )
+                        await session.commit()

@@ -11,7 +11,7 @@ function getDefaultApiBaseUrl(): string {
 export const API_BASE_URL: string = (import.meta as any).env?.VITE_API_BASE_URL || getDefaultApiBaseUrl();
 const API_TOKEN: string | undefined = (import.meta as any).env?.VITE_API_TOKEN;
 
-function getAuthToken(): string | undefined {
+export function getAuthToken(): string | undefined {
   // Prefer runtime token from login; fallback to build-time token.
   try {
     const stored = localStorage.getItem('svod_access_token');
@@ -20,6 +20,31 @@ function getAuthToken(): string | undefined {
     // ignore
   }
   return API_TOKEN;
+}
+
+export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
+  const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  const token = getAuthToken();
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers || {}),
+    },
+  });
+
+  if (!res.ok) {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      // ignore
+    }
+    const message = body?.message || body?.detail?.message || res.statusText;
+    throw new Error(message);
+  }
+
+  return res;
 }
 
 export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {

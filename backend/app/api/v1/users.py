@@ -8,18 +8,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import get_current_user
+from app.api.v1.deps import require_permissions
 from app.core.security import hash_password
 from app.db.session import get_session
+from app.models.role import Role
 from app.models.user import User
 
 router = APIRouter(prefix="/users")
-
-
-def _require_admin(current: dict) -> None:
-    role = str(current.get("role") or "")
-    if role != "admin":
-        raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Admin required"})
 
 
 def _user_out(u: User) -> dict[str, Any]:
@@ -54,10 +49,9 @@ class SetPasswordIn(BaseModel):
 
 @router.get("")
 async def list_users(
-    current: dict = Depends(get_current_user),
+    current: dict = Depends(require_permissions("users:read")),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
-    _require_admin(current)
     rows = (await session.execute(select(User).order_by(User.username.asc()))).scalars().all()
     return [_user_out(u) for u in rows]
 
@@ -65,10 +59,9 @@ async def list_users(
 @router.post("")
 async def create_user(
     payload: CreateUserIn,
-    current: dict = Depends(get_current_user),
+    current: dict = Depends(require_permissions("users:write")),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    _require_admin(current)
 
     username = payload.username.strip()
     if not username:
@@ -91,8 +84,7 @@ async def create_user(
             raise HTTPException(status_code=409, detail={"code": "CONFLICT", "message": "Email already exists"})
 
     role = payload.role or "operator"
-    if role not in {"admin", "operator", "analyst"}:
-        raise HTTPException(status_code=400, detail={"code": "VALIDATION", "message": "Invalid role"})
+    role = role.strip() or "operator"
 
     import uuid
 
@@ -105,6 +97,12 @@ async def create_user(
         password_hash=hash_password(payload.password),
         last_login=None,
     )
+
+    r = (await session.execute(select(Role).where(Role.code == role).limit(1))).scalars().first()
+    if r is None:
+        raise HTTPException(status_code=400, detail={"code": "VALIDATION", "message": "Unknown role code"})
+    user.roles.append(r)
+
     session.add(user)
     await session.commit()
     return _user_out(user)
@@ -114,10 +112,9 @@ async def create_user(
 async def update_user(
     user_id: str,
     payload: UpdateUserIn,
-    current: dict = Depends(get_current_user),
+    current: dict = Depends(require_permissions("users:write")),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    _require_admin(current)
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "User not found"})
@@ -146,10 +143,13 @@ async def update_user(
             user.email = email
 
     if payload.role is not None:
-        role = payload.role.strip()
-        if role not in {"admin", "operator", "analyst"}:
+        role_code = payload.role.strip()
+        if not role_code:
             raise HTTPException(status_code=400, detail={"code": "VALIDATION", "message": "Invalid role"})
-        user.role = role
+        user.role = role_code
+        r = (await session.execute(select(Role).where(Role.code == role_code).limit(1))).scalars().first()
+        if r is not None and r not in user.roles:
+            user.roles.append(r)
 
     if payload.isActive is not None:
         user.is_active = bool(payload.isActive)
@@ -162,10 +162,9 @@ async def update_user(
 async def set_password(
     user_id: str,
     payload: SetPasswordIn,
-    current: dict = Depends(get_current_user),
+    current: dict = Depends(require_permissions("users:write")),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    _require_admin(current)
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "User not found"})

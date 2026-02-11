@@ -13,6 +13,17 @@ __pycache__/
 *.sqlite3
 backend/svod.db
 
+# SQLite WAL/SHM files
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Agency dump exports (big / sensitive)
+damp_db_agency/
+
 # Env / secrets
 .env
 backend/.env

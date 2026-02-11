@@ -115,11 +115,14 @@ async def _auto_sync_loop(stop_event: asyncio.Event) -> None:
 async def auto_sync_status() -> dict[str, Any]:
     url = settings.agency_database_url
     scheme = (url.split(":", 1)[0] or "").lower() if url else None
+
+    logger.info("Fetching auto-sync status")
+
     return {
-        "enabled": bool(settings.auto_sync_enabled),
-        "agencyUrlConfigured": bool(url),
+        "enabled": settings.auto_sync_enabled,
+        "database_url": url,
         "scheme": scheme,
-        "intervalSeconds": int(settings.auto_sync_interval_seconds),
-        "eventsLimit": int(settings.auto_sync_events_limit),
-        "objectsIntervalSeconds": int(settings.auto_sync_objects_interval_seconds),
+        "interval_seconds": settings.auto_sync_interval_seconds,
+        "events_limit": settings.auto_sync_events_limit,
+        "objects_interval_seconds": settings.auto_sync_objects_interval_seconds,
     }

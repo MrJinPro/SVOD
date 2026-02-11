@@ -8,6 +8,7 @@ import {
   FileText,
   Bell,
   Users,
+  BarChart3,
   Settings,
   Database,
   ChevronLeft,
@@ -26,6 +27,8 @@ const navigation = [
   { name: 'Поиск', href: '/search', icon: Search },
   { name: 'Отчёты', href: '/reports', icon: FileText },
   { name: 'Уведомления', href: '/notifications', icon: Bell },
+  { name: 'Аналитика', href: '/analytics', icon: BarChart3 },
+  { name: 'Отчёт ГБР', href: '/gbr-reports', icon: BarChart3 },
   { name: 'Пользователи', href: '/users', icon: Users },
 ];
 
@@ -45,6 +48,13 @@ export function Sidebar({
   const { data: me } = useApiGet('/auth/me', { username: '', role: 'operator', email: null } as any);
   const { data: notifications } = useApiGet('/notifications', [] as Array<{ id: string; read: boolean }>);
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const canSeeAnalytics = (() => {
+    const role = String((me as any)?.role || '').trim();
+    if (role === 'admin' || role === 'analyst') return true;
+    const perms = ((me as any)?.permissions || []) as string[];
+    return Array.isArray(perms) && perms.includes('analytics:read');
+  })();
 
   const roleLabel = (role: string) => {
     if (role === 'admin') return 'Администратор';
@@ -83,7 +93,9 @@ export function Sidebar({
 
         {/* Navigation */}
         <nav className="flex-1 space-y-1 px-2 py-4">
-          {navigation.map((item) => {
+          {navigation
+            .filter((item) => ((item.href === '/analytics' || item.href === '/gbr-reports') ? canSeeAnalytics : true))
+            .map((item) => {
             const isActive = location.pathname === item.href;
             const badge = item.href === '/notifications' ? unreadCount : undefined;
             return (

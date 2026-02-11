@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Any
 
@@ -7,9 +9,11 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from starlette.responses import StreamingResponse
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.deps import get_current_user
 from app.db.session import get_session
 from app.models.event import Event
 
@@ -205,6 +209,63 @@ async def export_events_csv(
         content=content,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/stream")
+async def stream_events(
+    since: str | None = Query(None, description="ISO timestamp; stream events newer than this"),
+    pollSeconds: float = Query(1.0, ge=0.2, le=10.0),
+    session: AsyncSession = Depends(get_session),
+    _current: dict = Depends(get_current_user),
+):
+    """Server-Sent Events stream for new events.
+
+    This is intentionally simple: it polls SQLite/Postgres for new rows.
+    Works well for local/SQLite and small-to-medium throughput.
+    """
+
+    last_ts = _parse_dt(since) if since else datetime.utcnow()
+    keepalive_every = 15.0
+
+    async def gen():
+        nonlocal last_ts
+        last_keepalive = asyncio.get_event_loop().time()
+
+        # Initial hello event helps clients validate connection quickly.
+        yield b"event: hello\n"
+        yield f"data: {json.dumps({'serverTime': datetime.utcnow().isoformat()})}\n\n".encode("utf-8")
+
+        while True:
+            # Query a small batch; client can keep connection open.
+            stmt: Select[tuple[Event]] = (
+                select(Event)
+                .where(Event.timestamp > last_ts)
+                .order_by(Event.timestamp.asc())
+                .limit(500)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            for e in rows:
+                payload = _event_to_out(e)
+                last_ts = max(last_ts, e.timestamp)
+                yield b"event: event\n"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+            now = asyncio.get_event_loop().time()
+            if now - last_keepalive >= keepalive_every:
+                last_keepalive = now
+                yield b": keep-alive\n\n"
+
+            await asyncio.sleep(pollSeconds)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
