@@ -16,6 +16,16 @@ from app.db.session import engine
 from app.services.auto_sync import start_auto_sync, stop_auto_sync
 
 
+# IMPORTANT (Windows): psycopg async mode is incompatible with ProactorEventLoop.
+# Uvicorn creates the event loop before FastAPI startup events are executed,
+# so the policy must be set at import time.
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="SVOD API", version="0.1.0")
 
@@ -35,11 +45,6 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
-        if sys.platform == "win32":
-            try:
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-            except Exception:
-                pass
         if settings.app_env.lower() != "dev" and settings.insecure_auth:
             raise RuntimeError("INSECURE_AUTH=true is not allowed outside dev")
         await init_db(engine)
