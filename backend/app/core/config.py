@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Дефолт позволяет стартовать сервис даже без .env (подключение к БД
     # фактически происходит только при обращении к эндпоинтам, использующим session).
-    database_url: str = "postgresql+psycopg://svod:svod@localhost:5432/svod"
+    database_url: str = "postgresql+asyncpg://svod:svod@localhost:5432/svod"
     agency_database_url: str | None = None
 
     # MSSQL: имя базы с архивными таблицами archiveYYYYMM01/eventserviceYYYYMM01
