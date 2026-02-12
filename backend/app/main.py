@@ -3,6 +3,16 @@ from __future__ import annotations
 import asyncio
 import sys
 
+
+# IMPORTANT (Windows): psycopg async mode is incompatible with ProactorEventLoop.
+# Uvicorn may create the event loop very early, so the policy must be set as
+# soon as possible (before importing other app modules).
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,16 +24,6 @@ from app.core.config import settings
 from app.db.init_db import init_db
 from app.db.session import engine
 from app.services.auto_sync import start_auto_sync, stop_auto_sync
-
-
-# IMPORTANT (Windows): psycopg async mode is incompatible with ProactorEventLoop.
-# Uvicorn creates the event loop before FastAPI startup events are executed,
-# so the policy must be set at import time.
-if sys.platform == "win32":
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except Exception:
-        pass
 
 
 def create_app() -> FastAPI:
