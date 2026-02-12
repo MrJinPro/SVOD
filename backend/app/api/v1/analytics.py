@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, case, func, select
+from sqlalchemy.sql import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
@@ -33,6 +34,204 @@ def _csv_response(content: str, filename: str) -> Response:
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.get("/operators/live")
+async def operators_live(
+    window_minutes: int = Query(60, ge=1, le=1440, alias="windowMinutes"),
+    online_minutes: int = Query(10, ge=1, le=240, alias="onlineMinutes"),
+    session: AsyncSession = Depends(get_session),
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> list[dict[str, Any]]:
+    """Операторы в реальном времени (эффективность/онлайн).
+
+    Источник: event_actions.
+
+    Важно: "онлайн" вычисляется по последнему действию (event_actions.action_time)
+    и порогу onlineMinutes.
+    """
+
+    now = datetime.utcnow()
+    dt_window = now - timedelta(minutes=int(window_minutes))
+    dt_15m = now - timedelta(minutes=15)
+    dt_5m = now - timedelta(minutes=5)
+    dt_base = now - timedelta(minutes=max(int(window_minutes), 15))
+
+    operator_col = EventAction.operator_name
+
+    # Last action per operator (time) -> join back to fetch name/computer.
+    last_ts_sq = (
+        select(
+            operator_col.label("operator"),
+            func.max(EventAction.action_time).label("lastActionAt"),
+        )
+        .where(operator_col.is_not(None))
+        .group_by(operator_col)
+        .subquery("last_ts")
+    )
+
+    last_rows_sq = (
+        select(
+            EventAction.operator_name.label("operator"),
+            last_ts_sq.c.lastActionAt.label("lastActionAt"),
+            EventAction.action_name.label("lastActionName"),
+            EventAction.computer.label("computer"),
+        )
+        .select_from(EventAction)
+        .join(
+            last_ts_sq,
+            and_(
+                EventAction.operator_name == last_ts_sq.c.operator,
+                EventAction.action_time == last_ts_sq.c.lastActionAt,
+            ),
+        )
+        .subquery("last_rows")
+    )
+
+    last_sq = (
+        select(
+            last_rows_sq.c.operator,
+            func.max(last_rows_sq.c.lastActionAt).label("lastActionAt"),
+            func.max(last_rows_sq.c.lastActionName).label("lastActionName"),
+            func.max(last_rows_sq.c.computer).label("computer"),
+        )
+        .group_by(last_rows_sq.c.operator)
+        .subquery("last")
+    )
+
+    # Activity counters for the requested window + fixed short windows.
+    actions_5m = func.sum(case((EventAction.action_time >= dt_5m, 1), else_=0)).label("actions5m")
+    actions_15m = func.sum(case((EventAction.action_time >= dt_15m, 1), else_=0)).label("actions15m")
+    actions_window = func.sum(case((EventAction.action_time >= dt_window, 1), else_=0)).label(
+        "actionsWindow"
+    )
+
+    event_id_in_window = case((EventAction.action_time >= dt_window, EventAction.event_id), else_=None)
+    events_window = func.count(func.distinct(event_id_in_window)).label("eventsWindow")
+
+    counts_sq = (
+        select(
+            operator_col.label("operator"),
+            actions_5m,
+            actions_15m,
+            actions_window,
+            events_window,
+        )
+        .where(operator_col.is_not(None))
+        .where(EventAction.action_time >= dt_base)
+        .group_by(operator_col)
+        .subquery("counts")
+    )
+
+    # Handling time: only events fully handled inside window.
+    accept_ts = func.min(
+        case(
+            (EventAction.action_name.like("Прием%"), EventAction.action_time),
+            else_=None,
+        )
+    ).label("accept_ts")
+    end_ts = func.max(
+        case(
+            (EventAction.action_name == "Окончание обработки", EventAction.action_time),
+            else_=None,
+        )
+    ).label("end_ts")
+
+    per_event = (
+        select(
+            EventAction.event_id.label("event_id"),
+            operator_col.label("operator"),
+            accept_ts,
+            end_ts,
+        )
+        .where(operator_col.is_not(None))
+        .where(EventAction.action_time >= dt_window)
+        .group_by(EventAction.event_id, operator_col)
+    ).subquery("per_event")
+
+    duration_seconds = (
+        (func.julianday(per_event.c.end_ts) - func.julianday(per_event.c.accept_ts)) * 86400.0
+    ).label("duration_seconds")
+
+    handling_sq = (
+        select(
+            per_event.c.operator.label("operator"),
+            func.avg(duration_seconds).label("avgHandlingSeconds"),
+            func.count().label("handledEvents"),
+        )
+        .where(per_event.c.accept_ts.is_not(None))
+        .where(per_event.c.end_ts.is_not(None))
+        .where(duration_seconds >= 0)
+        .group_by(per_event.c.operator)
+        .subquery("handling")
+    )
+
+    q = (
+        select(
+            last_sq.c.operator,
+            last_sq.c.lastActionAt,
+            last_sq.c.lastActionName,
+            last_sq.c.computer,
+            func.coalesce(counts_sq.c.actions5m, 0).label("actions5m"),
+            func.coalesce(counts_sq.c.actions15m, 0).label("actions15m"),
+            func.coalesce(counts_sq.c.actionsWindow, 0).label("actionsWindow"),
+            func.coalesce(counts_sq.c.eventsWindow, 0).label("eventsWindow"),
+            func.coalesce(handling_sq.c.avgHandlingSeconds, None).label("avgHandlingSeconds"),
+            func.coalesce(handling_sq.c.handledEvents, 0).label("handledEvents"),
+        )
+        .select_from(last_sq)
+        .outerjoin(counts_sq, counts_sq.c.operator == last_sq.c.operator)
+        .outerjoin(handling_sq, handling_sq.c.operator == last_sq.c.operator)
+        .order_by(desc(func.coalesce(counts_sq.c.actionsWindow, 0)))
+    )
+
+    rows = (await session.execute(q)).all()
+    online_cutoff = now - timedelta(minutes=int(online_minutes))
+
+    out: list[dict[str, Any]] = []
+    for (
+        operator,
+        last_action_at,
+        last_action_name,
+        computer,
+        actions5m,
+        actions15m,
+        actionsWindow,
+        eventsWindow,
+        avgHandlingSeconds,
+        handledEvents,
+    ) in rows:
+        if not operator:
+            continue
+
+        last_dt: datetime | None = last_action_at if isinstance(last_action_at, datetime) else None
+        seconds_since = None
+        if last_dt is not None:
+            seconds_since = int((now - last_dt).total_seconds())
+
+        online = bool(last_dt is not None and last_dt >= online_cutoff)
+
+        out.append(
+            {
+                "operator": operator,
+                "computer": computer,
+                "online": online,
+                "lastActionAt": last_dt.isoformat() if last_dt else None,
+                "lastActionName": last_action_name,
+                "secondsSinceLastAction": seconds_since,
+                "actions5m": int(actions5m or 0),
+                "actions15m": int(actions15m or 0),
+                "actionsWindow": int(actionsWindow or 0),
+                "eventsWindow": int(eventsWindow or 0),
+                "avgHandlingSeconds": float(avgHandlingSeconds) if avgHandlingSeconds is not None else None,
+                "handledEvents": int(handledEvents or 0),
+                "windowMinutes": int(window_minutes),
+                "onlineMinutes": int(online_minutes),
+            }
+        )
+
+    out.sort(key=lambda r: (1 if r.get("online") else 0, int(r.get("actionsWindow") or 0)), reverse=True)
+    return out
 
 
 @router.get("/operators/handling")

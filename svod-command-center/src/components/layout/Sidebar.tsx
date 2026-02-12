@@ -9,6 +9,7 @@ import {
   Bell,
   Users,
   BarChart3,
+  Activity,
   Settings,
   Database,
   ChevronLeft,
@@ -29,6 +30,7 @@ const navigation = [
   { name: 'Уведомления', href: '/notifications', icon: Bell },
   { name: 'Аналитика', href: '/analytics', icon: BarChart3 },
   { name: 'Отчёт ГБР', href: '/gbr-reports', icon: BarChart3 },
+  { name: 'Эффективность', href: '/staff', icon: Activity },
   { name: 'Пользователи', href: '/users', icon: Users },
 ];
 
@@ -54,6 +56,14 @@ export function Sidebar({
     if (role === 'admin' || role === 'analyst') return true;
     const perms = ((me as any)?.permissions || []) as string[];
     return Array.isArray(perms) && perms.includes('analytics:read');
+  })();
+
+  const canSeeUsers = (() => {
+    const role = String((me as any)?.role || '').trim();
+    if (role === 'admin') return true;
+    const perms = ((me as any)?.permissions || []) as string[];
+    if (!Array.isArray(perms)) return false;
+    return perms.includes('users:read') || perms.includes('users:write') || perms.includes('rbac:manage');
   })();
 
   const roleLabel = (role: string) => {
@@ -94,7 +104,11 @@ export function Sidebar({
         {/* Navigation */}
         <nav className="flex-1 space-y-1 px-2 py-4">
           {navigation
-            .filter((item) => ((item.href === '/analytics' || item.href === '/gbr-reports') ? canSeeAnalytics : true))
+            .filter((item) => {
+              if (item.href === '/analytics' || item.href === '/gbr-reports' || item.href === '/staff') return canSeeAnalytics;
+              if (item.href === '/users') return canSeeUsers;
+              return true;
+            })
             .map((item) => {
             const isActive = location.pathname === item.href;
             const badge = item.href === '/notifications' ? unreadCount : undefined;
@@ -164,19 +178,18 @@ export function Sidebar({
                 <p className="text-xs text-muted-foreground">{roleLabel((me as any)?.role || 'operator')}</p>
               </div>
             )}
-            {!collapsed && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                onClick={() => {
-                  clearStoredToken();
-                  navigate('/login');
-                }}
-              >
-                <LogOut className="h-4 w-4" />
-              </Button>
-            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn('h-8 w-8 text-muted-foreground hover:text-foreground', collapsed && 'ml-0')}
+              onClick={() => {
+                clearStoredToken();
+                navigate('/login');
+              }}
+              title="Выйти"
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
           </div>
         </div>
 

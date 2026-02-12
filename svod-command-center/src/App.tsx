@@ -18,6 +18,7 @@ const Objects = lazy(() => import("./pages/Objects"));
 const ObjectDetails = lazy(() => import("./pages/objects/ObjectDetails"));
 const Analytics = lazy(() => import("./pages/Analytics"));
 const GbrReports = lazy(() => import("./pages/GbrReports"));
+const StaffEfficiency = lazy(() => import("./pages/StaffEfficiency"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 import { getStoredToken } from "./lib/auth";
 
@@ -51,6 +52,7 @@ const App = () => (
             <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
             <Route path="/analytics" element={<RequireAuth><Analytics /></RequireAuth>} />
             <Route path="/gbr-reports" element={<RequireAuth><GbrReports /></RequireAuth>} />
+            <Route path="/staff" element={<RequireAuth><StaffEfficiency /></RequireAuth>} />
             <Route path="/integration" element={<RequireAuth><Integration /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

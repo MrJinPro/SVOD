@@ -1,0 +1,267 @@
+{
+  "input": "D:\\alarm\\SVOD_SOFT\\zeldor_agency",
+  "tables_defined": [
+    "Code_T",
+    "Company",
+    "EventsSendLog",
+    "Groups",
+    "Panel",
+    "ResponsibleTel",
+    "Responsibles",
+    "ResponsiblesList",
+    "Stands",
+    "States",
+    "Temp",
+    "archive20260101",
+    "eventservice20260101"
+  ],
+  "tables_defined_count": 13,
+  "tables_referenced_count": 16,
+  "missing_referenced_tables": [
+    "Areas",
+    "CompanyType",
+    "Customers",
+    "Installers",
+    "Masters",
+    "MoreAboutLun7",
+    "ResponsibleTypeTel",
+    "ServiceOrganization",
+    "TypeCode_T",
+    "engineers"
+  ],
+  "edges": [
+    {
+      "from_table": "archive20260101",
+      "from_cols": [
+        "Event_Parent_id"
+      ],
+      "to_table": "archive20260101",
+      "to_cols": [
+        "Event_id"
+      ],
+      "constraint": "fk_archive20260101",
+      "file": "archive20260101.sql"
+    },
+    {
+      "from_table": "Code_T",
+      "from_cols": [
+        "idTCode"
+      ],
+      "to_table": "TypeCode_T",
+      "to_cols": [
+        "idTCode"
+      ],
+      "constraint": "FK_Code_TypeCode",
+      "file": "Code_T.sql"
+    },
+    {
+      "from_table": "Company",
+      "from_cols": [
+        "ServiceID"
+      ],
+      "to_table": "ServiceOrganization",
+      "to_cols": [
+        "ID"
+      ],
+      "constraint": "FK_Company_ServiceOrganization",
+      "file": "Company.sql"
+    },
+    {
+      "from_table": "Company",
+      "from_cols": [
+        "CustomerID"
+      ],
+      "to_table": "Customers",
+      "to_cols": [
+        "ID"
+      ],
+      "constraint": "FK_Company_Customers",
+      "file": "Company.sql"
+    },
+    {
+      "from_table": "Company",
+      "from_cols": [
+        "TypeID"
+      ],
+      "to_table": "CompanyType",
+      "to_cols": [
+        "ID"
+      ],
+      "constraint": "FK_Company_CompanyType",
+      "file": "Company.sql"
+    },
+    {
+      "from_table": "eventservice20260101",
+      "from_cols": [
+        "Event_id"
+      ],
+      "to_table": "archive20260101",
+      "to_cols": [
+        "Event_id"
+      ],
+      "constraint": "fk_eventservice20260101_archive20260101",
+      "file": "eventservice20260101.sql"
+    },
+    {
+      "from_table": "Groups",
+      "from_cols": [
+        "info_id"
+      ],
+      "to_table": "MoreAboutLun7",
+      "to_cols": [
+        "info_id"
+      ],
+      "constraint": "fk_moreInfo",
+      "file": "Groups.sql"
+    },
+    {
+      "from_table": "Groups",
+      "from_cols": [
+        "Panel_id"
+      ],
+      "to_table": "Panel",
+      "to_cols": [
+        "Panel_id"
+      ],
+      "constraint": "fk_PanelG",
+      "file": "Groups.sql"
+    },
+    {
+      "from_table": "Groups",
+      "from_cols": [
+        "CompanyID"
+      ],
+      "to_table": "Company",
+      "to_cols": [
+        "ID"
+      ],
+      "constraint": "fk_Company",
+      "file": "Groups.sql"
+    },
+    {
+      "from_table": "Panel",
+      "from_cols": [
+        "Area_id"
+      ],
+      "to_table": "Areas",
+      "to_cols": [
+        "Area_id"
+      ],
+      "constraint": "FK_Panel_Areas",
+      "file": "Panel.sql"
+    },
+    {
+      "from_table": "Panel",
+      "from_cols": [
+        "installer_id"
+      ],
+      "to_table": "Installers",
+      "to_cols": [
+        "Installer_id"
+      ],
+      "constraint": "FK_Panel_Installers",
+      "file": "Panel.sql"
+    },
+    {
+      "from_table": "Panel",
+      "from_cols": [
+        "master_id"
+      ],
+      "to_table": "Masters",
+      "to_cols": [
+        "Master_id"
+      ],
+      "constraint": "FK_Panel_Masters",
+      "file": "Panel.sql"
+    },
+    {
+      "from_table": "Responsibles",
+      "from_cols": [
+        "ResponsiblesList_id"
+      ],
+      "to_table": "ResponsiblesList",
+      "to_cols": [
+        "ResponsiblesList_id"
+      ],
+      "constraint": "FK_Responsibles_ResponsiblesList",
+      "file": "Responsibles.sql"
+    },
+    {
+      "from_table": "Responsibles",
+      "from_cols": [
+        "panel_id",
+        "Group_"
+      ],
+      "to_table": "Groups",
+      "to_cols": [
+        "Panel_id",
+        "Group_"
+      ],
+      "constraint": "FK_Responsibles_Groups",
+      "file": "Responsibles.sql"
+    },
+    {
+      "from_table": "ResponsibleTel",
+      "from_cols": [
+        "ResponsiblesList_id"
+      ],
+      "to_table": "ResponsiblesList",
+      "to_cols": [
+        "ResponsiblesList_id"
+      ],
+      "constraint": "FK_ResponsibleTel_ResponsiblesList",
+      "file": "ResponsibleTel.sql"
+    },
+    {
+      "from_table": "ResponsibleTel",
+      "from_cols": [
+        "TypeTel_id"
+      ],
+      "to_table": "ResponsibleTypeTel",
+      "to_cols": [
+        "TypeTel_id"
+      ],
+      "constraint": "FK_ResponsibleTel_ResponsibleTypeTel",
+      "file": "ResponsibleTel.sql"
+    },
+    {
+      "from_table": "Stands",
+      "from_cols": [
+        "Engineer_id"
+      ],
+      "to_table": "engineers",
+      "to_cols": [
+        "engineer_id"
+      ],
+      "constraint": "FK_Stands_engineers",
+      "file": "Stands.sql"
+    },
+    {
+      "from_table": "Temp",
+      "from_cols": [
+        "Event_Parent_id"
+      ],
+      "to_table": "Temp",
+      "to_cols": [
+        "Event_id"
+      ],
+      "constraint": "fk_Temp",
+      "file": "Temp.sql"
+    }
+  ],
+  "defined_table_to_file": {
+    "archive20260101": "archive20260101.sql",
+    "Code_T": "Code_T.sql",
+    "Company": "Company.sql",
+    "eventservice20260101": "eventservice20260101.sql",
+    "EventsSendLog": "EventsSendLog.sql",
+    "Groups": "Groups.sql",
+    "Panel": "Panel.sql",
+    "Responsibles": "Responsibles.sql",
+    "ResponsiblesList": "ResponsiblesList.sql",
+    "ResponsibleTel": "ResponsibleTel.sql",
+    "Stands": "Stands.sql",
+    "States": "States.sql",
+    "Temp": "Temp.sql"
+  }
+}

@@ -165,6 +165,23 @@ export interface OperatorActivityRow {
   actions: number;
 }
 
+export interface OperatorLiveRow {
+  operator: string;
+  computer: string | null;
+  online: boolean;
+  lastActionAt: string | null;
+  lastActionName: string | null;
+  secondsSinceLastAction: number | null;
+  actions5m: number;
+  actions15m: number;
+  actionsWindow: number;
+  eventsWindow: number;
+  avgHandlingSeconds: number | null;
+  handledEvents: number;
+  windowMinutes: number;
+  onlineMinutes: number;
+}
+
 export interface GbrTripRow {
   eventId: string;
   gbrName: string;

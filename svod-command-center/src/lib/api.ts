@@ -11,6 +11,23 @@ function getDefaultApiBaseUrl(): string {
 export const API_BASE_URL: string = (import.meta as any).env?.VITE_API_BASE_URL || getDefaultApiBaseUrl();
 const API_TOKEN: string | undefined = (import.meta as any).env?.VITE_API_TOKEN;
 
+function handleUnauthorized() {
+  try {
+    localStorage.removeItem('svod_access_token');
+  } catch {
+    // ignore
+  }
+
+  // Force navigation even if the app is currently on a protected route.
+  if (typeof window !== 'undefined') {
+    try {
+      window.location.assign('/login');
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function getAuthToken(): string | undefined {
   // Prefer runtime token from login; fallback to build-time token.
   try {
@@ -32,6 +49,10 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
       ...(init?.headers || {}),
     },
   });
+
+  if (res.status === 401) {
+    handleUnauthorized();
+  }
 
   if (!res.ok) {
     let body: any = null;
@@ -58,6 +79,10 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers || {}),
     },
   });
+
+  if (res.status === 401) {
+    handleUnauthorized();
+  }
 
   if (!res.ok) {
     let body: any = null;
@@ -87,6 +112,10 @@ export async function apiPost<T>(path: string, body?: unknown, init?: RequestIni
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+  if (res.status === 401) {
+    handleUnauthorized();
+  }
+
   if (!res.ok) {
     let body: any = null;
     try {
@@ -115,6 +144,10 @@ export async function apiPatch<T>(path: string, body?: unknown, init?: RequestIn
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+  if (res.status === 401) {
+    handleUnauthorized();
+  }
+
   if (!res.ok) {
     let body: any = null;
     try {
@@ -141,6 +174,10 @@ export async function apiDelete<T>(path: string, init?: RequestInit): Promise<T>
       ...(init?.headers || {}),
     },
   });
+
+  if (res.status === 401) {
+    handleUnauthorized();
+  }
 
   if (!res.ok) {
     let body: any = null;
