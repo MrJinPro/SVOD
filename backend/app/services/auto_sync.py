@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.sync_service import (
+    sync_recent_events_from_agency_mssql_archives,
     sync_events_from_agency_mssql_archives,
     sync_events_from_agency_mysql,
     sync_events_from_agency_sqlite_archives,
@@ -99,12 +100,28 @@ async def _auto_sync_loop(stop_event: asyncio.Event) -> None:
                             batch_limit=settings.auto_sync_events_limit,
                         )
                     elif scheme.startswith("mssql"):
-                        await sync_events_from_agency_mssql_archives(
+                        await sync_recent_events_from_agency_mssql_archives(
                             session=session,
                             agency_mssql_url=url,
                             archives_db_name=settings.agency_archives_db_name,
-                            batch_limit=settings.auto_sync_events_limit,
+                            lookback_days=settings.auto_sync_recent_lookback_days,
+                            batch_limit=settings.auto_sync_recent_limit,
                         )
+
+                        burst = max(1, int(settings.auto_sync_burst_batches))
+                        for _ in range(burst):
+                            res = await sync_events_from_agency_mssql_archives(
+                                session=session,
+                                agency_mssql_url=url,
+                                archives_db_name=settings.agency_archives_db_name,
+                                batch_limit=settings.auto_sync_events_limit,
+                            )
+                            if (
+                                int(res.get("processed") or 0) == 0
+                                and int(res.get("actionsProcessed") or 0) == 0
+                                and int(res.get("actionsFetched") or 0) == 0
+                            ):
+                                break
                     else:
                         await sync_events_from_agency_sqlite_archives(
                             session=session,
@@ -149,4 +166,7 @@ async def auto_sync_status() -> dict[str, Any]:
         "interval_seconds": settings.auto_sync_interval_seconds,
         "events_limit": settings.auto_sync_events_limit,
         "objects_interval_seconds": settings.auto_sync_objects_interval_seconds,
+        "recent_lookback_days": settings.auto_sync_recent_lookback_days,
+        "recent_limit": settings.auto_sync_recent_limit,
+        "burst_batches": settings.auto_sync_burst_batches,
     }

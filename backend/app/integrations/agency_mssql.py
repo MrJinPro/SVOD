@@ -335,6 +335,113 @@ def fetch_archive_events_since(
     return out
 
 
+def fetch_archive_events_recent(
+    mssql_url: str,
+    *,
+    archives_db_name: str,
+    date_from_key: int,
+    date_to_key: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Читает самые свежие события из архивов MSSQL за диапазон дат.
+
+    Возвращает события в порядке убывания (Date_Key, Event_id).
+    """
+
+    if limit <= 0:
+        return []
+
+    pyodbc = _require_pyodbc()
+    info = parse_mssql_url(mssql_url)
+    conn_str = _build_odbc_conn_str(info)
+
+    start_date = datetime.strptime(str(int(date_from_key)), "%Y%m%d").date()
+    end_date = datetime.strptime(str(int(date_to_key)), "%Y%m%d").date()
+
+    months: list[date] = []
+    d = date(start_date.year, start_date.month, 1)
+    end_month = date(end_date.year, end_date.month, 1)
+    while d <= end_month:
+        months.append(d)
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+
+    out: list[dict[str, Any]] = []
+
+    with pyodbc.connect(conn_str, timeout=10) as conn:
+        conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+        conn.setencoding(encoding="utf-8")
+
+        for m in reversed(months):
+            if len(out) >= limit:
+                break
+
+            suffix = _month_table_suffix(m)
+            archive_table = f"{archives_db_name}.dbo.archive{suffix}"
+            service_table = f"{archives_db_name}.dbo.eventservice{suffix}"
+
+            code_table = f"{info.database}.dbo.Code_T"
+            states_table = f"{info.database}.dbo.States"
+
+            remaining = limit - len(out)
+
+            sql = f"""
+            SELECT TOP ({int(remaining)})
+                a.Event_id,
+                a.Date_Key,
+                a.Panel_id,
+                a.Group_ AS GroupNo,
+                a.Line,
+                a.Zone,
+                a.Code,
+                a.CodeGroup,
+                a.TimeEvent,
+                a.Result_Text,
+                a.StateEvent,
+                es.NameState,
+                es.PersonName,
+                st.StateName AS StateName,
+                st.isOverProcess AS StateIsOverProcess,
+                COALESCE(ct.CodeMes_RU, ct.Message) AS CodeText,
+                es.GrResponseName,
+                es.OperationTime
+            FROM {archive_table} a
+            OUTER APPLY (
+                SELECT TOP (1)
+                    s.NameState,
+                    s.PersonName,
+                    s.GrResponseName,
+                    s.OperationTime
+                FROM {service_table} s
+                WHERE s.Event_id = a.Event_id AND s.Date_Key = a.Date_Key
+                ORDER BY s.OperationTime DESC
+            ) es
+            LEFT JOIN {states_table} st
+                ON st.State_id = a.StateEvent
+            LEFT JOIN {code_table} ct
+                ON ct.Code = a.Code AND ct.CodeGroup = a.CodeGroup
+            WHERE a.Date_Key BETWEEN ? AND ?
+            ORDER BY a.Date_Key DESC, a.Event_id DESC
+            """
+
+            params = [int(date_from_key), int(date_to_key)]
+
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    out.extend(_rows_to_dicts(cur))
+            except Exception as e:
+                msg = str(e)
+                if "Invalid object name" in msg or "42S02" in msg:
+                    continue
+                raise
+
+    return out
+
+
 def _suffix_from_date_key(date_key: int) -> str:
     s = str(int(date_key))
     if len(s) != 8:

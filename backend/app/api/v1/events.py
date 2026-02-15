@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import csv
@@ -14,6 +14,7 @@ from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user
+from app.core.config import settings
 from app.db.session import get_session
 from app.models.event import Event
 
@@ -69,6 +70,21 @@ async def list_events(
         filters.append(Event.severity == severity)
     if status:
         filters.append(Event.status == status)
+
+    # Default UI behavior: if user didn't set any filters, show only recent events.
+    # This prevents slow queries when the DB contains millions of rows.
+    if (
+        not dateFrom
+        and not dateTo
+        and not type
+        and not objectId
+        and not severity
+        and not status
+        and not (search and search.strip())
+        and int(settings.ui_events_default_lookback_hours) > 0
+    ):
+        dt_from = datetime.utcnow() - timedelta(hours=int(settings.ui_events_default_lookback_hours))
+        filters.append(Event.timestamp >= dt_from)
 
     if dateFrom:
         dt_from = _parse_dt(dateFrom)

@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     auto_sync_events_limit: int = 500
     auto_sync_objects_interval_seconds: int = 600
 
+    # Auto-sync tuning: prioritize newest data while backfilling in background.
+    auto_sync_recent_lookback_days: int = 2
+    auto_sync_recent_limit: int = 500
+    auto_sync_burst_batches: int = 1
+
+    # UI defaults: keep events feed fast on huge datasets.
+    ui_events_default_lookback_hours: int = 24
+
     def cors_origins_list(self) -> list[str]:
         if not self.cors_origins.strip():
             return []
