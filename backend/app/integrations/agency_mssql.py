@@ -129,8 +129,10 @@ def fetch_objects_snapshot(mssql_url: str) -> dict[str, Any]:
     conn_str = _build_odbc_conn_str(info)
 
     with pyodbc.connect(conn_str, timeout=10) as conn:
+        # SQL Server returns NVARCHAR/NCHAR via SQL_WCHAR as UTF-16LE.
+        # Decoding it as UTF-8 can crash on Cyrillic data.
         conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
-        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-8")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
         conn.setencoding(encoding="utf-8")
 
         with conn.cursor() as cur:
@@ -251,8 +253,10 @@ def fetch_archive_events_since(
     out: list[dict[str, Any]] = []
 
     with pyodbc.connect(conn_str, timeout=10) as conn:
+        # SQL Server returns NVARCHAR/NCHAR via SQL_WCHAR as UTF-16LE.
+        # Decoding it as UTF-8 can crash on Cyrillic data.
         conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
-        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-8")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
         conn.setencoding(encoding="utf-8")
 
         for m in months:
