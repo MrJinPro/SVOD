@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import logging
 
 
 # IMPORTANT (Windows): psycopg async mode is incompatible with ProactorEventLoop.
@@ -24,6 +25,9 @@ from app.core.config import settings
 from app.db.init_db import init_db
 from app.db.session import engine
 from app.services.auto_sync import start_auto_sync, stop_auto_sync
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -70,6 +74,12 @@ def create_app() -> FastAPI:
     # If regex is provided, enable it even when allow_origins is also set.
     # This helps LAN/dev setups where multiple hosts access the UI.
     if origins or allow_origin_regex:
+        logger.info(
+            "CORS enabled: origins=%s origin_regex=%r allow_origin_regex=%r",
+            origins,
+            origin_regex,
+            allow_origin_regex,
+        )
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
@@ -77,6 +87,11 @@ def create_app() -> FastAPI:
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
+        )
+    else:
+        logger.warning(
+            "CORS disabled: CORS_ORIGINS empty and no allow_origin_regex (app_env=%s)",
+            settings.app_env,
         )
 
     app.include_router(api_router, prefix="/api/v1")
