@@ -14,7 +14,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     app = FastAPI(title="SVOD API", version="0.1.0")
+
+    @app.exception_handler(HTTPException)
+    async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        # Preserve correct HTTP status codes for auth/permission errors.
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
