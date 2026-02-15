@@ -17,6 +17,7 @@ from app.api.v1.deps import get_current_user
 from app.core.config import settings
 from app.db.session import get_session
 from app.models.event import Event
+from app.models.event_action import EventAction
 
 router = APIRouter(prefix="/events")
 
@@ -45,6 +46,43 @@ def _event_to_out(e: Event) -> dict[str, Any]:
         "location": e.location,
         "operatorId": e.operator_id,
     }
+
+
+def _action_to_out(a: EventAction) -> dict[str, Any]:
+    return {
+        "actionName": a.action_name,
+        "actionTime": a.action_time.isoformat(),
+        "operatorName": a.operator_name,
+        "computer": a.computer,
+        "gbrName": a.gbr_name,
+        "dateKey": a.date_key,
+        "rawEventId": a.raw_event_id,
+        "sourceTable": a.source_table,
+        "sourcePk": a.source_pk,
+    }
+
+
+@router.get("/{event_id}")
+async def get_event_details(
+    event_id: str,
+    actionsLimit: int = Query(500, ge=0, le=5000),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    e = await session.get(Event, event_id)
+    if not e:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Event not found"})
+
+    actions: list[EventAction] = []
+    if actionsLimit > 0:
+        stmt: Select[tuple[EventAction]] = (
+            select(EventAction)
+            .where(EventAction.event_id == event_id)
+            .order_by(EventAction.action_time.asc())
+            .limit(actionsLimit)
+        )
+        actions = (await session.execute(stmt)).scalars().all()
+
+    return {"event": _event_to_out(e), "actions": [_action_to_out(a) for a in actions]}
 
 
 @router.get("")

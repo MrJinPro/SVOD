@@ -8,6 +8,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Calendar, Filter, RotateCcw, Search } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar as CalendarPicker } from '@/components/ui/calendar';
+import { cn } from '@/lib/utils';
+import { useMemo } from 'react';
+import type { DateRange } from 'react-day-picker';
 
 export type EventFiltersValue = {
   search: string;
@@ -15,6 +20,7 @@ export type EventFiltersValue = {
   severity: string;
   status: string;
   todayOnly: boolean;
+  dateRange: { from: Date | null; to: Date | null };
 };
 
 interface EventFiltersProps {
@@ -25,6 +31,16 @@ interface EventFiltersProps {
 }
 
 export function EventFilters({ value, onChange, onApply, onReset }: EventFiltersProps) {
+  const label = useMemo(() => {
+    const from = value.dateRange.from;
+    const to = value.dateRange.to;
+    if (!from && !to) return 'Период';
+    const fmt = (d: Date) => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    if (from && !to) return fmt(from);
+    if (from && to) return `${fmt(from)} — ${fmt(to)}`;
+    return 'Период';
+  }, [value.dateRange.from, value.dateRange.to]);
+
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center gap-4">
@@ -50,6 +66,39 @@ export function EventFilters({ value, onChange, onApply, onReset }: EventFilters
             <Calendar className="h-4 w-4" />
             Сегодня
           </Button>
+
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn('gap-2', (value.dateRange.from || value.dateRange.to) && 'text-foreground')}
+              >
+                <Calendar className="h-4 w-4" />
+                {label}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="start">
+              <CalendarPicker
+                mode="range"
+                selected={{
+                  from: value.dateRange.from ?? undefined,
+                  to: value.dateRange.to ?? undefined,
+                } as DateRange}
+                onSelect={(range) => {
+                  const nextFrom = range?.from ?? null;
+                  const nextTo = range?.to ?? null;
+                  onChange({
+                    ...value,
+                    todayOnly: false,
+                    dateRange: { from: nextFrom, to: nextTo },
+                  });
+                }}
+                numberOfMonths={2}
+                initialFocus
+              />
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Type filter */}

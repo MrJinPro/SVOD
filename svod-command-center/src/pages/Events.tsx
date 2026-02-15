@@ -8,6 +8,8 @@ import { toast } from '@/hooks/use-toast';
 import { useMemo, useState } from 'react';
 import { API_BASE_URL } from '@/lib/api';
 import { useEventStream } from '@/hooks/useEventStream';
+import { EventDetailsSheet } from '@/components/events/EventDetailsSheet.tsx';
+import type { Event } from '@/types';
 
 const defaultFilters: EventFiltersValue = {
   search: '',
@@ -15,7 +17,13 @@ const defaultFilters: EventFiltersValue = {
   severity: 'all',
   status: 'all',
   todayOnly: false,
+  dateRange: { from: null, to: null },
 };
+
+function toLocalIso(dt: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+}
 
 export default function Events() {
   const [draftFilters, setDraftFilters] = useState<EventFiltersValue>(defaultFilters);
@@ -23,6 +31,8 @@ export default function Events() {
   const [pageNumber, setPageNumber] = useState(1);
   const [live, setLive] = useState(false);
   const [pendingNew, setPendingNew] = useState(0);
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const path = useMemo(() => {
     const params = new URLSearchParams();
@@ -38,8 +48,17 @@ export default function Events() {
       const now = new Date();
       const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
       const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-      params.set('dateFrom', start.toISOString());
-      params.set('dateTo', end.toISOString());
+      params.set('dateFrom', toLocalIso(start));
+      params.set('dateTo', toLocalIso(end));
+    } else if (appliedFilters.dateRange.from || appliedFilters.dateRange.to) {
+      const from = appliedFilters.dateRange.from ?? appliedFilters.dateRange.to;
+      const to = appliedFilters.dateRange.to ?? appliedFilters.dateRange.from;
+      if (from && to) {
+        const start = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 0, 0, 0, 0);
+        const end = new Date(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59, 999);
+        params.set('dateFrom', toLocalIso(start));
+        params.set('dateTo', toLocalIso(end));
+      }
     }
 
     return `/events?${params.toString()}`;
@@ -163,7 +182,19 @@ export default function Events() {
         )}
 
         {/* Table */}
-        <EventsTable events={page.data} />
+        <EventsTable
+          events={page.data}
+          onViewEvent={(evt) => {
+            setSelectedEvent(evt);
+            setDetailsOpen(true);
+          }}
+        />
+
+        <EventDetailsSheet
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          event={selectedEvent}
+        />
 
         {/* Pagination */}
         <div className="flex items-center justify-between text-sm text-muted-foreground">

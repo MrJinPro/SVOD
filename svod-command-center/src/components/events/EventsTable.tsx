@@ -167,7 +167,7 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem>Просмотреть детали</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onViewEvent?.(event)}>Просмотреть детали</DropdownMenuItem>
                         <DropdownMenuItem>Изменить статус</DropdownMenuItem>
                         <DropdownMenuItem>Назначить оператора</DropdownMenuItem>
                         <DropdownMenuItem>Экспортировать</DropdownMenuItem>

@@ -20,6 +20,23 @@ export interface Event {
   operatorId?: string;
 }
 
+export interface EventAction {
+  actionName: string;
+  actionTime: string;
+  operatorName?: string | null;
+  computer?: string | null;
+  gbrName?: string | null;
+  dateKey?: number;
+  rawEventId?: number;
+  sourceTable?: string;
+  sourcePk?: number;
+}
+
+export interface EventDetailsResponse {
+  event: Event;
+  actions: EventAction[];
+}
+
 // Object Types
 export interface ObjectListItem {
   id: string;
