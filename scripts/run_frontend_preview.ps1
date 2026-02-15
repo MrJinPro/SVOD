@@ -20,7 +20,7 @@ Set-Location $frontendDir
 Write-Host "Собираю фронтенд (npm run build)..." -ForegroundColor Cyan
 npm run build
 
-Write-Host "Frontend preview: http://127.0.0.1:4173" -ForegroundColor Green
-Write-Host "API по умолчанию: http://localhost:8000/api/v1" -ForegroundColor Gray
+Write-Host "Frontend preview: http://0.0.0.0:4173" -ForegroundColor Green
+Write-Host "API по умолчанию: http://<тот-же-хост>:8000/api/v1" -ForegroundColor Gray
 
-npm run preview -- --host 127.0.0.1 --port 4173
+npm run preview -- --host 0.0.0.0 --port 4173

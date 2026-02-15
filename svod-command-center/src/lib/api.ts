@@ -39,10 +39,20 @@ export function getAuthToken(): string | undefined {
   return API_TOKEN;
 }
 
+async function safeFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    // Browser throws TypeError("Failed to fetch") on network/CORS/mixed-content.
+    // Include URL to simplify debugging in the UI.
+    throw new Error(`Failed to fetch: ${url}`);
+  }
+}
+
 export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
   const token = getAuthToken();
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     ...init,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -71,10 +81,11 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
 export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
   const token = getAuthToken();
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      // Do NOT set Content-Type for GET. It triggers CORS preflight and is unnecessary.
+      'Accept': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers || {}),
     },
@@ -101,7 +112,7 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
 export async function apiPost<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
   const token = getAuthToken();
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method: 'POST',
     ...init,
     headers: {
@@ -133,7 +144,7 @@ export async function apiPost<T>(path: string, body?: unknown, init?: RequestIni
 export async function apiPatch<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
   const token = getAuthToken();
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method: 'PATCH',
     ...init,
     headers: {
@@ -165,11 +176,11 @@ export async function apiPatch<T>(path: string, body?: unknown, init?: RequestIn
 export async function apiDelete<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
   const token = getAuthToken();
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method: 'DELETE',
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      'Accept': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers || {}),
     },
