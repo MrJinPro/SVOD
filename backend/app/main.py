@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import logging
+import re
 
 
 # IMPORTANT (Windows): psycopg async mode is incompatible with ProactorEventLoop.
@@ -30,23 +31,60 @@ from app.services.auto_sync import start_auto_sync, stop_auto_sync
 logger = logging.getLogger(__name__)
 
 
+def _maybe_add_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
+    """Attach minimal CORS headers to error responses.
+
+    Starlette's ExceptionMiddleware is outer to user middleware, so responses generated
+    from exception handlers may bypass CORSMiddleware. This helper ensures browsers
+    can still read error bodies from the UI origin.
+    """
+
+    origin = request.headers.get("origin")
+    if not origin:
+        return response
+
+    origins = settings.cors_origins_list()
+    origin_regex = settings.cors_origin_regex.strip()
+
+    allowed = False
+    if origins and origin in origins:
+        allowed = True
+    elif origin_regex:
+        try:
+            allowed = re.match(origin_regex, origin) is not None
+        except re.error:
+            allowed = False
+
+    if not allowed:
+        return response
+
+    response.headers.setdefault("Access-Control-Allow-Origin", origin)
+    response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+    response.headers.setdefault("Vary", "Origin")
+    return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="SVOD API", version="0.1.0")
 
     @app.exception_handler(HTTPException)
     async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         # Preserve correct HTTP status codes for auth/permission errors.
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        res = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _maybe_add_cors_headers(request, res)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         # Make errors readable for the UI while keeping prod safer.
         if settings.app_env.lower() == "dev":
-            return JSONResponse(
+            res = JSONResponse(
                 status_code=500,
                 content={"status": "error", "message": str(exc), "type": exc.__class__.__name__},
             )
-        return JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
+            return _maybe_add_cors_headers(request, res)
+
+        res = JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
+        return _maybe_add_cors_headers(request, res)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:
