@@ -12,3 +12,8 @@ class ReportOut(BaseModel):
     status: str
     eventsCount: int
     criticalCount: int
+
+    # Optional: if report has a stored file
+    downloadUrl: str | None = None
+    fileName: str | None = None
+    mimeType: str | None = None

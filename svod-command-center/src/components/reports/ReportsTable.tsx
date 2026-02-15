@@ -1,6 +1,6 @@
 import { Report, ReportType, ReportStatus } from '@/types';
 import { cn } from '@/lib/utils';
-import { API_BASE_URL } from '@/lib/api';
+import { apiFetchRaw } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import {
   Table,
@@ -13,6 +13,10 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Download, FileText, Eye, MoreHorizontal } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { useState } from 'react';
+import type { GbrTripRow, GbrTripsResponse } from '@/types';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,6 +32,8 @@ const typeLabels: Record<ReportType, string> = {
   daily: 'Суточный',
   weekly: 'Недельный',
   monthly: 'Месячный',
+  objectsByCode: 'Объекты по коду',
+  gbrRaportXlsx: 'Рапорт (ГБР)',
 };
 
 const statusLabels: Record<ReportStatus, string> = {
@@ -45,6 +51,11 @@ const statusStyles: Record<ReportStatus, string> = {
 };
 
 export function ReportsTable({ reports }: ReportsTableProps) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewTitle, setPreviewTitle] = useState('');
+  const [previewRows, setPreviewRows] = useState<GbrTripRow[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
   const formatDate = (dateString: string) => {
     if (!dateString) return '—';
     return new Date(dateString).toLocaleDateString('ru-RU', {
@@ -65,19 +76,117 @@ export function ReportsTable({ reports }: ReportsTableProps) {
     });
   };
 
-  const downloadDailyCsv = (date: string) => {
-    const url = `${API_BASE_URL}/reports/export/daily?date=${encodeURIComponent(date)}`;
-    window.location.href = url;
+  const downloadBlob = async (path: string, filename: string) => {
+    const res = await apiFetchRaw(path, { method: 'GET' });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   };
 
-  const prototypeAction = (title: string) =>
-    toast({
-      title,
-      description: 'Действие будет расширено в следующей версии прототипа.',
-    });
+  const openPreview = async (report: Report) => {
+    if (report.type !== 'gbrRaportXlsx') {
+      toast({ title: 'Просмотр отчёта', description: 'Для этого типа пока нет предпросмотра.' });
+      return;
+    }
+    setPreviewTitle('Рапорт (ГБР)');
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    setPreviewRows([]);
+    try {
+      const res = await apiFetchRaw(`/reports/${encodeURIComponent(report.id)}/preview`);
+      const data = (await res.json()) as GbrTripsResponse;
+      setPreviewRows(data?.data || []);
+    } catch (e: any) {
+      toast({
+        title: 'Просмотр отчёта',
+        description: e?.message || 'Ошибка загрузки предпросмотра',
+        variant: 'destructive',
+      });
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const downloadReport = async (report: Report) => {
+    const url = report.downloadUrl || null;
+    if (!url) {
+      // fallback for derived daily
+      if (report.type === 'daily') {
+        const file = report.fileName || `daily-report-${report.periodStart}.csv`;
+        await downloadBlob(`/reports/export/daily?date=${encodeURIComponent(report.periodStart)}`, file);
+        return;
+      }
+      toast({ title: 'Скачать', description: 'Для этого отчёта нет файла.' });
+      return;
+    }
+    const file = report.fileName || 'report.bin';
+    await downloadBlob(url, file);
+  };
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="sm:max-w-[900px]">
+          <DialogHeader>
+            <DialogTitle>{previewTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="rounded-md border border-border">
+            <ScrollArea className="h-[420px]">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-muted-foreground sticky top-0">
+                  <tr>
+                    <th className="text-left font-medium px-3 py-2">№ объекта</th>
+                    <th className="text-left font-medium px-3 py-2">Адрес/объект</th>
+                    <th className="text-left font-medium px-3 py-2">ГБР</th>
+                    <th className="text-left font-medium px-3 py-2">Вызов</th>
+                    <th className="text-left font-medium px-3 py-2">Прибыл</th>
+                    <th className="text-right font-medium px-3 py-2">В пути (сек)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.map((r) => (
+                    <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt || ''}`} className="border-t border-border">
+                      <td className="px-3 py-2 font-mono">{r.objectId || '—'}</td>
+                      <td className="px-3 py-2">
+                        <div className="text-foreground">{r.objectName || '—'}</div>
+                        <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
+                      </td>
+                      <td className="px-3 py-2">{r.gbrName}</td>
+                      <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
+                      <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{r.travelSeconds == null ? '—' : Math.round(r.travelSeconds)}</td>
+                    </tr>
+                  ))}
+                  {!previewLoading && previewRows.length === 0 && (
+                    <tr>
+                      <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                        Нет данных
+                      </td>
+                    </tr>
+                  )}
+                  {previewLoading && (
+                    <tr>
+                      <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                        Загрузка…
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </ScrollArea>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
@@ -127,7 +236,7 @@ export function ReportsTable({ reports }: ReportsTableProps) {
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8"
-                    onClick={() => prototypeAction('Просмотр отчёта')}
+                    onClick={() => openPreview(report)}
                   >
                     <Eye className="h-4 w-4" />
                   </Button>
@@ -140,36 +249,10 @@ export function ReportsTable({ reports }: ReportsTableProps) {
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
                         onClick={() => {
-                          toast({
-                            title: 'Экспорт',
-                            description: 'В прототипе доступен экспорт в CSV.',
-                          });
-                          downloadDailyCsv(report.periodStart);
+                          downloadReport(report);
                         }}
                       >
-                        Скачать PDF
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => {
-                          toast({
-                            title: 'Экспорт',
-                            description: 'В прототипе доступен экспорт в CSV.',
-                          });
-                          downloadDailyCsv(report.periodStart);
-                        }}
-                      >
-                        Скачать Excel
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => {
-                          toast({
-                            title: 'Экспорт',
-                            description: 'В прототипе доступен экспорт в CSV.',
-                          });
-                          downloadDailyCsv(report.periodStart);
-                        }}
-                      >
-                        Скачать Word
+                        Скачать
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -180,13 +263,25 @@ export function ReportsTable({ reports }: ReportsTableProps) {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => prototypeAction('Параметры отчёта')}>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          toast({ title: 'Параметры отчёта', description: 'Скоро добавим.' });
+                        }}
+                      >
                         Просмотреть параметры
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => prototypeAction('Перегенерация отчёта')}>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          toast({ title: 'Перегенерация', description: 'Скоро добавим.' });
+                        }}
+                      >
                         Перегенерировать
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => prototypeAction('Повторная отправка')}>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          toast({ title: 'Отправка', description: 'Скоро добавим.' });
+                        }}
+                      >
                         Отправить повторно
                       </DropdownMenuItem>
                     </DropdownMenuContent>

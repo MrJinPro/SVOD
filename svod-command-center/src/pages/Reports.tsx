@@ -29,7 +29,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
-import { API_BASE_URL, apiFetchRaw, apiGet } from '@/lib/api';
+import { API_BASE_URL, apiFetchRaw, apiGet, apiPost } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { useEffect, useMemo, useState } from 'react';
@@ -307,6 +307,53 @@ export default function Reports() {
     window.location.href = url;
   };
 
+  const createReportInHistory = async () => {
+    try {
+      if (createKind === 'daily') {
+        await apiPost(`/reports/generate/daily?date=${encodeURIComponent(dailyDate)}`);
+      } else if (createKind === 'objectsByCode') {
+        if (!eventCode.trim()) {
+          toast({ title: 'Отчёт', description: 'Выберите код события.', variant: 'destructive' });
+          return;
+        }
+        if (!dateRange?.from || !dateRange?.to) {
+          toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+          return;
+        }
+        const params = new URLSearchParams();
+        params.set('eventCode', eventCode.trim());
+        params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
+        params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
+        if (clientName.trim()) params.set('clientName', clientName.trim());
+        if (objectQuery.trim()) params.set('objectQuery', objectQuery.trim());
+        await apiPost(`/reports/generate/objects-by-code?${params.toString()}`);
+      } else {
+        if (!dateRange?.from || !dateRange?.to) {
+          toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+          return;
+        }
+        const params = new URLSearchParams();
+        const df = new Date(`${formatLocalYYYYMMDD(dateRange.from)}T00:00:00`).toISOString();
+        const dt = new Date(`${formatLocalYYYYMMDD(dateRange.to)}T23:59:59.999`).toISOString();
+        params.set('dateFrom', df);
+        params.set('dateTo', dt);
+        if (gbrName !== 'all') params.set('gbrName', String(gbrName));
+        if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
+        await apiPost(`/reports/generate/gbr-raport-xlsx?${params.toString()}`);
+      }
+
+      toast({ title: 'Отчёт', description: 'Отчёт добавлен в историю.' });
+      setCreateOpen(false);
+      await refetch();
+    } catch (e: any) {
+      toast({
+        title: 'Отчёт',
+        description: e?.message || 'Ошибка формирования отчёта',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const filteredReports = useMemo(() => {
     return (reports || []).filter((r: any) => {
       if (typeFilter !== 'all' && r.type !== typeFilter) return false;
@@ -569,16 +616,8 @@ export default function Reports() {
               </Button>
               <Button
                 onClick={() => {
-                  toast({ title: 'Отчёт', description: 'Формирование выгрузки…' });
-                  if (createKind === 'daily') {
-                    downloadDailyCsv(dailyDate);
-                  } else {
-                    if (createKind === 'objectsByCode') {
-                      downloadObjectsByCodeCsv();
-                    } else {
-                      loadGbrPreview();
-                    }
-                  }
+                  toast({ title: 'Отчёт', description: 'Формирование…' });
+                  createReportInHistory();
                 }}
               >
                 Сформировать

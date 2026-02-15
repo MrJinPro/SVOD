@@ -86,7 +86,7 @@ export interface ObjectDetails {
 }
 
 // Report Types
-export type ReportType = 'daily' | 'weekly' | 'monthly';
+export type ReportType = 'daily' | 'weekly' | 'monthly' | 'objectsByCode' | 'gbrRaportXlsx';
 export type ReportStatus = 'generated' | 'sent' | 'pending' | 'failed';
 
 export interface Report {
@@ -98,6 +98,10 @@ export interface Report {
   status: ReportStatus;
   eventsCount: number;
   criticalCount: number;
+
+  downloadUrl?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
 }
 
 // User Types

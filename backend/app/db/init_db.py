@@ -101,6 +101,23 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             except Exception:
                 # If table doesn't exist yet, Base.metadata.create_all will create it.
                 pass
+
+            # reports: optional stored files/history
+            try:
+                rep_cols = (await conn.execute(text("PRAGMA table_info(reports)"))).all()
+                rep_names = {c[1] for c in rep_cols}
+                for col_name, col_type in (
+                    ("file_name", "VARCHAR(255)"),
+                    ("mime_type", "VARCHAR(120)"),
+                    ("storage_path", "VARCHAR(500)"),
+                    ("params_json", "TEXT"),
+                    ("error_message", "TEXT"),
+                ):
+                    if col_name not in rep_names:
+                        await conn.execute(text(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}"))
+            except Exception:
+                # If table doesn't exist yet, Base.metadata.create_all will create it.
+                pass
         elif dialect_name == "postgresql":
             exists = (
                 await conn.execute(
@@ -190,6 +207,29 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ).first()
                 if not col_exists:
                     await conn.execute(text(f"ALTER TABLE event_actions ADD COLUMN {col_name} {col_type}"))
+
+            # reports: optional stored files/history
+            for col_name, col_type in (
+                ("file_name", "VARCHAR(255)"),
+                ("mime_type", "VARCHAR(120)"),
+                ("storage_path", "VARCHAR(500)"),
+                ("params_json", "TEXT"),
+                ("error_message", "TEXT"),
+            ):
+                col_exists = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name='reports' AND column_name=:col
+                            """
+                        ),
+                        {"col": col_name},
+                    )
+                ).first()
+                if not col_exists:
+                    await conn.execute(text(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}"))
 
 
 async def _seed_rbac(session) -> None:
