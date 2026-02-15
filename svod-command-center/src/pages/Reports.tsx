@@ -29,14 +29,16 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
-import { API_BASE_URL, apiGet } from '@/lib/api';
+import { API_BASE_URL, apiFetchRaw, apiGet } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReportStatus, ReportType } from '@/types';
 import type { DateRange } from 'react-day-picker';
+import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
-type CreateReportKind = 'daily' | 'objectsByCode';
+type CreateReportKind = 'daily' | 'objectsByCode' | 'gbrRaportXlsx';
 
 function formatLocalYYYYMMDD(d: Date): string {
   const yyyy = d.getFullYear();
@@ -177,6 +179,14 @@ function EventCodeCombobox({
 export default function Reports() {
   const { data: reports, refetch } = useApiGet('/reports', []);
 
+  const { data: analyticsFilters } = useApiGet<AnalyticsFiltersResponse>('/analytics/filters', {
+    operators: [],
+    actionNames: [],
+    gbrNames: [],
+    dateMin: null,
+    dateMax: null,
+  });
+
   const [typeFilter, setTypeFilter] = useState<'all' | ReportType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | ReportStatus>('all');
 
@@ -194,6 +204,74 @@ export default function Reports() {
   const [clientName, setClientName] = useState('');
   const [objectQuery, setObjectQuery] = useState('');
   const [eventCode, setEventCode] = useState('');
+
+  const [gbrName, setGbrName] = useState<'all' | string>('all');
+  const [gbrObjectId, setGbrObjectId] = useState('');
+  const [gbrPreview, setGbrPreview] = useState<GbrTripRow[]>([]);
+  const [gbrPreviewLoading, setGbrPreviewLoading] = useState(false);
+
+  const downloadBlob = async (path: string, filename: string) => {
+    const res = await apiFetchRaw(path, { method: 'GET' });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const loadGbrPreview = async () => {
+    if (!dateRange?.from || !dateRange?.to) {
+      toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+      return;
+    }
+    setGbrPreviewLoading(true);
+    try {
+      const params = new URLSearchParams();
+      // Use UTC ISO like other pages (Analytics/GbrReports)
+      const df = new Date(`${formatLocalYYYYMMDD(dateRange.from)}T00:00:00`).toISOString();
+      const dt = new Date(`${formatLocalYYYYMMDD(dateRange.to)}T23:59:59.999`).toISOString();
+      params.set('dateFrom', df);
+      params.set('dateTo', dt);
+      if (gbrName !== 'all') params.set('gbrName', String(gbrName));
+      if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
+      params.set('limit', '2000');
+      params.set('offset', '0');
+      const res = await apiGet<GbrTripsResponse>(`/analytics/gbr/trips?${params.toString()}`);
+      setGbrPreview(res?.data || []);
+    } catch (e: any) {
+      toast({
+        title: 'Отчёт',
+        description: e?.message || 'Ошибка загрузки предпросмотра',
+        variant: 'destructive',
+      });
+      setGbrPreview([]);
+    } finally {
+      setGbrPreviewLoading(false);
+    }
+  };
+
+  const downloadGbrRaportXlsx = async () => {
+    if (!dateRange?.from || !dateRange?.to) {
+      toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+      return;
+    }
+    const params = new URLSearchParams();
+    const df = new Date(`${formatLocalYYYYMMDD(dateRange.from)}T00:00:00`).toISOString();
+    const dt = new Date(`${formatLocalYYYYMMDD(dateRange.to)}T23:59:59.999`).toISOString();
+    params.set('dateFrom', df);
+    params.set('dateTo', dt);
+    if (gbrName !== 'all') params.set('gbrName', String(gbrName));
+    if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
+    const name = `raport-gbr-${formatLocalYYYYMMDD(new Date())}.xlsx`;
+    await downloadBlob(`/analytics/gbr/trips/export/xlsx?${params.toString()}`, name);
+  };
 
   const downloadDailyCsv = (date: string) => {
     const url = `${API_BASE_URL}/reports/export/daily?date=${encodeURIComponent(date)}`;
@@ -306,6 +384,7 @@ export default function Reports() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="objectsByCode">Объекты по коду события (CSV)</SelectItem>
+                    <SelectItem value="gbrRaportXlsx">Рапорт (ГБР) по шаблону (XLSX)</SelectItem>
                     <SelectItem value="daily">Суточный журнал событий (CSV)</SelectItem>
                   </SelectContent>
                 </Select>
@@ -380,6 +459,108 @@ export default function Reports() {
                   </div>
                 </div>
               ) : null}
+
+              {createKind === 'gbrRaportXlsx' ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Период</div>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" className="w-[280px] justify-start font-normal">
+                            {dateRange?.from && dateRange?.to
+                              ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
+                              : 'Выберите период'}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="range"
+                            numberOfMonths={2}
+                            selected={dateRange}
+                            onSelect={setDateRange}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">ГБР</div>
+                      <Select value={String(gbrName)} onValueChange={(v) => setGbrName(v)}>
+                        <SelectTrigger className="w-[260px] bg-background">
+                          <SelectValue placeholder="ГБР" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все ГБР</SelectItem>
+                          {(analyticsFilters?.gbrNames || []).map((g) => (
+                            <SelectItem key={g} value={g}>
+                              {g}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">№ объекта (Panel_id)</div>
+                      <Input
+                        className="w-[220px] bg-background"
+                        placeholder="ObjectId"
+                        value={gbrObjectId}
+                        onChange={(e) => setGbrObjectId(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" size="sm" onClick={loadGbrPreview} disabled={gbrPreviewLoading}>
+                      {gbrPreviewLoading ? 'Загрузка…' : 'Предпросмотр'}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={downloadGbrRaportXlsx}>
+                      Скачать XLSX
+                    </Button>
+                  </div>
+
+                  <div className="rounded-md border border-border">
+                    <ScrollArea className="h-[280px]">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/50 text-muted-foreground sticky top-0">
+                          <tr>
+                            <th className="text-left font-medium px-3 py-2">№ объекта</th>
+                            <th className="text-left font-medium px-3 py-2">Адрес/объект</th>
+                            <th className="text-left font-medium px-3 py-2">ГБР</th>
+                            <th className="text-left font-medium px-3 py-2">Вызов</th>
+                            <th className="text-left font-medium px-3 py-2">Прибыл</th>
+                            <th className="text-right font-medium px-3 py-2">В пути</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(gbrPreview || []).map((r) => (
+                            <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt || ''}`} className="border-t border-border">
+                              <td className="px-3 py-2 font-mono">{r.objectId || '—'}</td>
+                              <td className="px-3 py-2">
+                                <div className="text-foreground">{r.objectName || '—'}</div>
+                                <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
+                              </td>
+                              <td className="px-3 py-2">{r.gbrName}</td>
+                              <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
+                              <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{r.travelSeconds == null ? '—' : Math.round(r.travelSeconds)}</td>
+                            </tr>
+                          ))}
+                          {!gbrPreviewLoading && (gbrPreview || []).length === 0 && (
+                            <tr>
+                              <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                                Нет данных по выбранным фильтрам
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </ScrollArea>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <DialogFooter>
@@ -392,7 +573,11 @@ export default function Reports() {
                   if (createKind === 'daily') {
                     downloadDailyCsv(dailyDate);
                   } else {
-                    downloadObjectsByCodeCsv();
+                    if (createKind === 'objectsByCode') {
+                      downloadObjectsByCodeCsv();
+                    } else {
+                      loadGbrPreview();
+                    }
                   }
                 }}
               >

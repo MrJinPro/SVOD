@@ -49,6 +49,29 @@ def _csv_response(content: str, filename: str) -> Response:
     )
 
 
+def _xlsx_response(data: bytes, filename: str) -> Response:
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+def _format_seconds_hhmmss(seconds: float | int | None) -> str:
+    if seconds is None:
+        return ""
+    try:
+        total = int(round(float(seconds)))
+    except Exception:
+        return ""
+    if total < 0:
+        return ""
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
+
+
 @router.get("/operators/live")
 async def operators_live(
     window_minutes: int = Query(60, ge=1, le=1440, alias="windowMinutes"),
@@ -612,6 +635,169 @@ async def gbr_trips_export_csv(
 
     name = f"gbr-trips-{datetime.utcnow().date().isoformat()}.csv"
     return _csv_response(buf.getvalue(), name)
+
+
+@router.get("/gbr/trips/export/xlsx")
+async def gbr_trips_export_xlsx(
+    date_from: str | None = Query(None, alias="dateFrom"),
+    date_to: str | None = Query(None, alias="dateTo"),
+    gbr_name: str | None = Query(None, alias="gbrName"),
+    object_id: str | None = Query(None, alias="objectId"),
+    session: AsyncSession = Depends(get_session),
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> Response:
+    """XLSX: «Рапорт» по выездам ГБР (шаблонный вид).
+
+    Важно: исходный шаблон у пользователя в .xls. Мы формируем .xlsx,
+    повторяя структуру (шапка + таблица) и заполняя доступные поля.
+    """
+
+    result = await gbr_trips(
+        date_from=date_from,
+        date_to=date_to,
+        gbr_name=gbr_name,
+        object_id=object_id,
+        limit=2000,
+        offset=0,
+        session=session,
+        _perm=_perm,
+    )
+
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Рапорт"
+
+    # Columns A..O (15 columns) to match the visual template width.
+    columns = [
+        "№ объекта",
+        "Адрес",
+        "Шлейф",
+        "Инженер",
+        "Результат",
+        "Дата",
+        "ГБР",
+        "Вызов",
+        "Прибыл",
+        "Время в пути",
+        "Результат осмотра",
+        "Оператор",
+        "Заявка",
+        "Штраф",
+        "Сработок за полгода",
+    ]
+
+    # Header area similar to the screenshot
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    ws.cell(row=1, column=1, value="Рапорт").font = Font(bold=True, size=14)
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+
+    # Period string
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    period_text = ""
+    if dt_from and dt_to:
+        period_text = f"За период: {dt_from.strftime('%d.%m.%Y %H:%M')} — {dt_to.strftime('%d.%m.%Y %H:%M')}"
+    elif dt_from:
+        period_text = f"С: {dt_from.strftime('%d.%m.%Y %H:%M')}"
+    elif dt_to:
+        period_text = f"До: {dt_to.strftime('%d.%m.%Y %H:%M')}"
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+    ws.cell(row=2, column=1, value=period_text).alignment = Alignment(horizontal="center")
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(columns))
+    ws.cell(row=3, column=1, value="оперативная обстановка следующая:").alignment = Alignment(
+        horizontal="center"
+    )
+
+    header_row = 5
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Set column widths (approximate)
+    widths = [
+        12,  # № объекта
+        28,  # Адрес
+        10,  # Шлейф
+        16,  # Инженер
+        16,  # Результат
+        12,  # Дата
+        14,  # ГБР
+        18,  # Вызов
+        18,  # Прибыл
+        12,  # Время в пути
+        18,  # Результат осмотра
+        16,  # Оператор
+        14,  # Заявка
+        10,  # Штраф
+        18,  # Сработок
+    ]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(ord('A') + i - 1)].width = w
+
+    for col_idx, title in enumerate(columns, start=1):
+        c = ws.cell(row=header_row, column=col_idx, value=title)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+
+    rows = result.get("data") or []
+    start_row = header_row + 1
+    for i, r in enumerate(rows, start=0):
+        row_idx = start_row + i
+
+        called_at = r.get("calledAt")
+        arrived_at = r.get("arrivedAt")
+        cancelled_at = r.get("cancelledAt")
+        gbr = r.get("gbrName") or ""
+        obj_id = r.get("objectId") or ""
+        obj_name = r.get("objectName") or ""
+        client = r.get("clientName") or ""
+
+        # Template columns: fill what we have, rest leave empty.
+        values = [
+            obj_id,
+            (obj_name or client),
+            "",  # шлейф
+            "",  # инженер
+            "",  # результат
+            (called_at or "")[:10].replace("-", ".") if called_at else "",  # дата
+            gbr,
+            (called_at or "")[:19].replace("T", " ") if called_at else "",
+            (
+                (arrived_at or "")[:19].replace("T", " ")
+                if arrived_at
+                else ("Отмена" if cancelled_at else "")
+            ),
+            _format_seconds_hhmmss(r.get("travelSeconds")),
+            "",  # результат осмотра
+            "",  # оператор
+            "",  # заявка
+            "",  # штраф
+            "",  # сработок
+        ]
+
+        for col_idx, v in enumerate(values, start=1):
+            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c.border = border
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    # Improve print layout
+    ws.freeze_panes = ws["A6"]
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+
+    out = BytesIO()
+    wb.save(out)
+
+    name = f"raport-gbr-{datetime.utcnow().date().isoformat()}.xlsx"
+    return _xlsx_response(out.getvalue(), name)
 
 
 @router.get("/objects/events/summary")
