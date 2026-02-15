@@ -295,21 +295,32 @@ def normalize_statement_for_sqlite(stmt: str) -> str | None:
         s = _MSSQL_CREATE_TABLE_ON_RE.sub(")", s)
 
     # Strip MSSQL collations that SQLite doesn't know.
-    s = _MSSQL_COLLATE_RE.sub("", s)
+    # Important for performance on huge INSERT-heavy dumps: avoid regex when not needed.
+    if "COLLATE" in upper:
+        s = _MSSQL_COLLATE_RE.sub("", s)
 
     # Remove schema qualifiers like [dbo].[Table] -> [Table]
-    s = s.replace("[dbo].[", "[")
-    s = s.replace("[dbo].", "")
+    if "[dbo]." in s or "[DBO]." in s:
+        s = s.replace("[dbo].[", "[")
+        s = s.replace("[dbo].", "")
+        s = s.replace("[DBO].[", "[")
+        s = s.replace("[DBO].", "")
+
     # Also handle other schema qualifiers generically: [schema].[name] -> [name]
-    s = _MSSQL_SCHEMA_QUAL_RE.sub(lambda m: f"[{m.group('name')}]", s)
+    if "].[" in s:
+        s = _MSSQL_SCHEMA_QUAL_RE.sub(lambda m: f"[{m.group('name')}]", s)
 
     # MSSQL Unicode literal prefix: N'...' -> '...'
-    s = re.sub(r"\bN'", "'", s)
+    if "N'" in s:
+        s = re.sub(r"\bN'", "'", s)
 
     # Remove a few dialect-specific tokens inside statements.
-    s = re.sub(r"\bUNSIGNED\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bAUTO_INCREMENT\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bIDENTITY\s*\(\s*\d+\s*,\s*\d+\s*\)", "", s, flags=re.IGNORECASE)
+    if "UNSIGNED" in upper:
+        s = re.sub(r"\bUNSIGNED\b", "", s, flags=re.IGNORECASE)
+    if "AUTO_INCREMENT" in upper:
+        s = re.sub(r"\bAUTO_INCREMENT\b", "", s, flags=re.IGNORECASE)
+    if "IDENTITY" in upper:
+        s = re.sub(r"\bIDENTITY\s*\(\s*\d+\s*,\s*\d+\s*\)", "", s, flags=re.IGNORECASE)
 
     # MySQL: `name` quoting is fine for SQLite; keep as-is.
 
