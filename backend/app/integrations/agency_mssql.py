@@ -272,47 +272,44 @@ def fetch_archive_events_since(
 
             sql = f"""
             SELECT TOP ({int(remaining)})
-              a.Event_id,
-              a.Date_Key,
-              a.Panel_id,
-              a.Group_ AS GroupNo,
-              a.Line,
-              a.Zone,
-              a.Code,
-              a.CodeGroup,
-              a.TimeEvent,
-              a.Result_Text,
-              a.StateEvent,
-              es.NameState,
-              es.PersonName,
-                            es.StateName,
-                            es.StateIsOverProcess,
-                            es.CodeText,
-              es.GrResponseName,
-              es.OperationTime
+                a.Event_id,
+                a.Date_Key,
+                a.Panel_id,
+                a.Group_ AS GroupNo,
+                a.Line,
+                a.Zone,
+                a.Code,
+                a.CodeGroup,
+                a.TimeEvent,
+                a.Result_Text,
+                a.StateEvent,
+                es.NameState,
+                es.PersonName,
+                st.StateName AS StateName,
+                st.isOverProcess AS StateIsOverProcess,
+                COALESCE(ct.CodeMes_RU, ct.Message) AS CodeText,
+                es.GrResponseName,
+                es.OperationTime
             FROM {archive_table} a
             OUTER APPLY (
-              SELECT TOP (1)
-                s.NameState,
-                s.PersonName,
-                            st.StateName AS StateName,
-                            st.isOverProcess AS StateIsOverProcess,
-                            COALESCE(ct.CodeMes_RU, ct.Message) AS CodeText,
-                s.GrResponseName,
-                s.OperationTime
-              FROM {service_table} s
-              WHERE s.Event_id = a.Event_id AND s.Date_Key = a.Date_Key
-              ORDER BY s.OperationTime DESC
+                SELECT TOP (1)
+                    s.NameState,
+                    s.PersonName,
+                    s.GrResponseName,
+                    s.OperationTime
+                FROM {service_table} s
+                WHERE s.Event_id = a.Event_id AND s.Date_Key = a.Date_Key
+                ORDER BY s.OperationTime DESC
             ) es
-                        LEFT JOIN {states_table} st
-                            ON st.State_id = a.StateEvent
-                        LEFT JOIN {code_table} ct
-                            ON ct.Code = a.Code AND ct.CodeGroup = a.CodeGroup
+            LEFT JOIN {states_table} st
+                ON st.State_id = a.StateEvent
+            LEFT JOIN {code_table} ct
+                ON ct.Code = a.Code AND ct.CodeGroup = a.CodeGroup
             WHERE a.Date_Key BETWEEN ? AND ?
-              AND (
-                a.Date_Key > ?
-                OR (a.Date_Key = ? AND a.Event_id > ?)
-              )
+                AND (
+                    a.Date_Key > ?
+                    OR (a.Date_Key = ? AND a.Event_id > ?)
+                )
             ORDER BY a.Date_Key ASC, a.Event_id ASC
             """
 
@@ -323,8 +320,12 @@ def fetch_archive_events_since(
                     cur.execute(sql, params)
                     rows = _rows_to_dicts(cur)
                     out.extend(rows)
-            except Exception:
-                # Если конкретной месячной таблицы нет — просто пропускаем
-                continue
+            except Exception as e:
+                # If a specific monthly table is missing, skip it.
+                # Otherwise, surface the error (so API can report it).
+                msg = str(e)
+                if "Invalid object name" in msg or "42S02" in msg:
+                    continue
+                raise
 
     return out
