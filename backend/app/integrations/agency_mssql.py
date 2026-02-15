@@ -386,9 +386,10 @@ def fetch_eventservice_actions_for_event_pairs(
                     params.append(int(dk))
                     params.append(int(eid))
 
+                # SQL Server requires the CTE body to be a SELECT; plain "VALUES (...)" is invalid there.
                 sql = f"""
                 WITH pairs(Date_Key, Event_id) AS (
-                    VALUES {values_sql}
+                    SELECT * FROM (VALUES {values_sql}) AS v(Date_Key, Event_id)
                 )
                 SELECT
                     s.Service_id,
