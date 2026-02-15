@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import uuid
 from typing import Any
 
@@ -24,6 +25,9 @@ from app.models.event import Event
 from app.models.event_action import EventAction
 from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
 from app.models.sync_state import SyncState
+
+
+logger = logging.getLogger(__name__)
 
 
 SYNC_KEY_LAST_ALARM_ID = "agency_mysql.last_alarm_id"
@@ -225,6 +229,23 @@ def _safe_str(v: Any) -> str | None:
         return None
     s = str(v).strip()
     return s or None
+
+
+def _coerce_dt(v: Any) -> datetime | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        # Typical SQL Server formats: "YYYY-MM-DD HH:MM:SS[.fff]" or ISO.
+        try:
+            return datetime.fromisoformat(s.replace(" ", "T", 1))
+        except Exception:
+            return None
+    return None
 
 
 def _eventservice_source_table(date_key: int) -> str:
@@ -656,13 +677,16 @@ async def sync_events_from_agency_sqlite_archives(
         return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
 
     actions_to_insert: list[dict[str, Any]] = []
+    actions_fetched = 0
     if event_pairs:
         try:
             action_rows = fetch_eventservice_actions_for_event_pairs_sqlite(
                 agency_sqlite_url,
                 event_pairs=list(event_pairs),
             )
+            actions_fetched = len(action_rows)
         except Exception:
+            logger.exception("Failed to fetch sqlite eventservice actions")
             action_rows = []
 
         for ar in action_rows:
@@ -677,7 +701,7 @@ async def sync_events_from_agency_sqlite_archives(
             if not action_name:
                 continue
 
-            action_time = ar.get("OperationTime")
+            action_time = _coerce_dt(ar.get("OperationTime"))
             if not isinstance(action_time, datetime):
                 continue
 
@@ -842,6 +866,7 @@ async def sync_events_from_agency_sqlite_archives(
         "status": "ok",
         "processed": int(inserted),
         "actionsProcessed": int(actions_inserted),
+        "actionsFetched": int(actions_fetched),
         "cursor": f"{max_date_key}:{max_event_id}",
     }
 
@@ -987,6 +1012,7 @@ async def sync_events_from_agency_mssql_archives(
         return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
 
     actions_to_insert: list[dict[str, Any]] = []
+    actions_fetched = 0
     if event_pairs:
         try:
             action_rows = fetch_eventservice_actions_for_event_pairs_mssql(
@@ -994,7 +1020,9 @@ async def sync_events_from_agency_mssql_archives(
                 archives_db_name=archives_db_name,
                 event_pairs=list(event_pairs),
             )
+            actions_fetched = len(action_rows)
         except Exception:
+            logger.exception("Failed to fetch mssql eventservice actions")
             action_rows = []
 
         for ar in action_rows:
@@ -1009,7 +1037,7 @@ async def sync_events_from_agency_mssql_archives(
             if not action_name:
                 continue
 
-            action_time = ar.get("OperationTime")
+            action_time = _coerce_dt(ar.get("OperationTime"))
             if not isinstance(action_time, datetime):
                 continue
 
@@ -1178,5 +1206,6 @@ async def sync_events_from_agency_mssql_archives(
         "status": "ok",
         "processed": int(inserted),
         "actionsProcessed": int(actions_inserted),
+        "actionsFetched": int(actions_fetched),
         "cursor": f"{max_date_key}:{max_event_id}",
     }
