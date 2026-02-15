@@ -6,7 +6,8 @@ param(
   [string]$NssmExe,
 
   [string]$ServiceName = 'SVOD-Backend',
-  [string]$Host = '0.0.0.0',
+  [Alias('Host')]
+  [string]$BindHost = '0.0.0.0',
   [int]$Port = 8000,
 
   # Create/update venv in backend\.venv (recommended)
@@ -86,7 +87,7 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
   Start-Sleep -Seconds 1
 }
 
-$parameters = "-m uvicorn app.main:app --app-dir . --host $Host --port $Port"
+$parameters = "-m uvicorn app.main:app --app-dir . --host $BindHost --port $Port"
 
 Write-Host "Installing service: $ServiceName" -ForegroundColor Cyan
 & $NssmExe install $ServiceName $pythonExe $parameters | Out-Null

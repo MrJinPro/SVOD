@@ -17,3 +17,7 @@
 - `uninstall_update_watcher_task.ps1` — удаление задачи.
 - `watch_repo_and_restart.ps1` — логика проверки `git HEAD` и рестарта.
 - `restart_backend_service.ps1` — ручной рестарт службы.
+
+Пример установки службы:
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File C:\svod\SVOD_SOFT\scripts\server\windows\setup_backend_service_nssm.ps1 -RepoRoot C:\svod\SVOD_SOFT -NssmExe C:\tools\nssm\nssm.exe -ServiceName SVOD-Backend -BindHost 0.0.0.0 -Port 8000`
