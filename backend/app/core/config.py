@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Also allow a project-root .env as a fallback for legacy setups.
     model_config = SettingsConfigDict(
         env_file=(str(_BACKEND_DIR / ".env"), str(_PROJECT_DIR / ".env")),
+        env_ignore_empty=True,
         extra="ignore",
     )
 
