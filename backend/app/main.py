@@ -100,11 +100,24 @@ def create_app() -> FastAPI:
     @app.exception_handler(HTTPException)
     async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         # Preserve correct HTTP status codes for auth/permission errors.
+        logger.warning(
+            "HTTPException %s %s -> %s (%s)",
+            request.method,
+            request.url,
+            exc.status_code,
+            exc.detail,
+        )
         res = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         return _maybe_add_cors_headers(request, res)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.error(
+            "Unhandled exception %s %s",
+            request.method,
+            request.url,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         # Make errors readable for the UI while keeping prod safer.
         if settings.app_env.lower() == "dev":
             res = JSONResponse(
