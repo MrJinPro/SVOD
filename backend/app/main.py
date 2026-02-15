@@ -4,6 +4,8 @@ import asyncio
 import sys
 import logging
 import re
+import ipaddress
+from urllib.parse import urlparse
 
 
 # IMPORTANT (Windows): psycopg async mode is incompatible with ProactorEventLoop.
@@ -31,6 +33,31 @@ from app.services.auto_sync import start_auto_sync, stop_auto_sync
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_INTERNAL_ORIGIN_REGEX = (
+    r"^https?://(localhost|127\\.0\\.0\\.1|"
+    r"10\\.(?:\\d{1,3}\\.){2}\\d{1,3}|"
+    r"192\\.168\\.(?:\\d{1,3}\\.)\\d{1,3}|"
+    r"172\\.(?:1[6-9]|2\\d|3[01])\\.(?:\\d{1,3}\\.)\\d{1,3})"
+    r"(?::\\d+)?$"
+)
+
+
+def _is_internal_origin(origin: str) -> bool:
+    try:
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        if host in {"localhost", "127.0.0.1"}:
+            return True
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback
+    except Exception:
+        return False
+
+
 def _maybe_add_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
     """Attach minimal CORS headers to error responses.
 
@@ -54,6 +81,9 @@ def _maybe_add_cors_headers(request: Request, response: JSONResponse) -> JSONRes
             allowed = re.match(origin_regex, origin) is not None
         except re.error:
             allowed = False
+    elif settings.app_env.lower() != "dev" and _is_internal_origin(origin):
+        # Intranet-safe fallback: allow private IP / localhost origins in prod.
+        allowed = True
 
     if not allowed:
         return response
@@ -111,6 +141,9 @@ def create_app() -> FastAPI:
         allow_origin_regex = origin_regex
     elif not origins and settings.app_env.lower() == "dev":
         allow_origin_regex = default_dev_origin_regex
+    elif settings.app_env.lower() != "dev":
+        # Intranet-safe default for prod/stage: allow UI served from private IPs.
+        allow_origin_regex = _DEFAULT_INTERNAL_ORIGIN_REGEX
     else:
         allow_origin_regex = None
 
