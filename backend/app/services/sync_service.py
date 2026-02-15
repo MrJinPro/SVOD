@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.agency_mysql import fetch_alarms_since
 from app.integrations.agency_mssql import fetch_archive_events_since, fetch_objects_snapshot
+from app.integrations.agency_sqlite import (
+    fetch_archive_events_since as fetch_archive_events_since_sqlite,
+)
+from app.integrations.agency_sqlite import fetch_objects_snapshot as fetch_objects_snapshot_sqlite
 from app.core.config import settings
 from app.models.event import Event
 from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
@@ -374,6 +378,343 @@ async def sync_objects_from_agency_mssql(
         "sourceResponsibles": int(len(responsibles)),
         "sourcePhones": int(len(phones)),
     }
+
+
+async def sync_objects_from_agency_sqlite(
+    session: AsyncSession,
+    agency_sqlite_url: str,
+) -> dict[str, Any]:
+    """Синхронизирует объекты/группы/ответственных из SQLite-слепка агентства."""
+
+    snap = fetch_objects_snapshot_sqlite(agency_sqlite_url)
+    objects = snap.get("objects") or []
+    groups = snap.get("groups") or []
+    responsibles = snap.get("responsibles") or []
+    phones = snap.get("phones") or []
+
+    # Индексы для быстрого связывания
+    groups_by_panel: dict[str, list[dict[str, Any]]] = {}
+    for g in groups:
+        pid = _safe_str(g.get("Panel_id"))
+        if not pid:
+            continue
+        groups_by_panel.setdefault(pid, []).append(g)
+
+    resp_by_panel: dict[str, list[dict[str, Any]]] = {}
+    for r in responsibles:
+        pid = _safe_str(r.get("Panel_id"))
+        if not pid:
+            continue
+        resp_by_panel.setdefault(pid, []).append(r)
+
+    phones_by_list: dict[int, list[dict[str, Any]]] = {}
+    for p in phones:
+        try:
+            lid = int(p.get("ListId"))
+        except Exception:
+            continue
+        phones_by_list.setdefault(lid, []).append(p)
+
+    from sqlalchemy import delete
+
+    upserted = 0
+    for o in objects:
+        panel_id = _safe_str(o.get("Panel_id"))
+        if not panel_id:
+            continue
+
+        await session.execute(delete(ObjectGroup).where(ObjectGroup.object_id == panel_id))
+        await session.execute(delete(Responsible).where(Responsible.object_id == panel_id))
+
+        obj = await session.get(Object, panel_id)
+        if obj is None:
+            obj = Object(id=panel_id)
+            session.add(obj)
+
+        company_name = _safe_str(o.get("CompanyName"))
+        company_address = _safe_str(o.get("CompanyAddress"))
+        company_memo = _safe_str(o.get("CompanyMemo"))
+
+        obj.name = company_name or panel_id
+        obj.address = company_address
+        obj.client_name = company_name
+        obj.disabled = bool(o.get("Disabled") or False)
+        obj.remarks = _safe_str(o.get("Remarks"))
+        obj.additional_info = _safe_str(o.get("AdditionalTechnicalInformation")) or company_memo
+        obj.latitude = _safe_str(o.get("Latitude"))
+        obj.longitude = _safe_str(o.get("Longtitude"))
+        obj.created_at = o.get("CreateDate") if isinstance(o.get("CreateDate"), datetime) else obj.created_at
+        obj.updated_at = datetime.utcnow()
+
+        for g in groups_by_panel.get(panel_id, []):
+            try:
+                group_no = int(g.get("GroupNo"))
+            except Exception:
+                continue
+            session.add(
+                ObjectGroup(
+                    object_id=panel_id,
+                    group_no=group_no,
+                    name=str(g.get("GroupName") or ""),
+                    is_open=g.get("IsOpen"),
+                    time_event=g.get("TimeEvent") if isinstance(g.get("TimeEvent"), datetime) else None,
+                )
+            )
+
+        for r in resp_by_panel.get(panel_id, []):
+            try:
+                group_no = int(r.get("GroupNo"))
+            except Exception:
+                group_no = None
+            try:
+                order_no = int(r.get("OrderNo"))
+            except Exception:
+                order_no = None
+
+            resp = Responsible(
+                object_id=panel_id,
+                group_no=group_no,
+                order_no=order_no,
+                name=str(r.get("ResponsibleName") or ""),
+                address=_safe_str(r.get("ResponsibleAddress")),
+            )
+            session.add(resp)
+            await session.flush()
+
+            try:
+                list_id = int(r.get("ListId"))
+            except Exception:
+                list_id = None
+
+            if list_id is not None:
+                for ph in phones_by_list.get(list_id, []):
+                    phone = _safe_str(ph.get("PhoneNo"))
+                    if not phone:
+                        continue
+                    type_id = ph.get("TypeId")
+                    type_name = f"type:{type_id}" if type_id is not None else None
+                    session.add(ResponsiblePhone(responsible_id=resp.id, phone=phone, type_name=type_name))
+
+        upserted += 1
+
+    await session.commit()
+    return {
+        "status": "ok",
+        "objects": int(upserted),
+        "sourceObjects": int(len(objects)),
+        "sourceGroups": int(len(groups)),
+        "sourceResponsibles": int(len(responsibles)),
+        "sourcePhones": int(len(phones)),
+    }
+
+
+async def sync_events_from_agency_sqlite_archives(
+    session: AsyncSession,
+    agency_sqlite_url: str,
+    *,
+    batch_limit: int = 500,
+) -> dict[str, Any]:
+    cur_date_key, cur_event_id = await get_mssql_event_cursor(session)
+    rows = fetch_archive_events_since_sqlite(
+        agency_sqlite_url,
+        cursor_date_key=cur_date_key,
+        cursor_event_id=cur_event_id,
+        limit=batch_limit,
+    )
+    if not rows:
+        return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
+
+    panel_ids: set[str] = set()
+    for r in rows:
+        pid = _safe_str(r.get("Panel_id"))
+        if pid:
+            panel_ids.add(pid)
+
+    objects_by_id: dict[str, Object] = {}
+    if panel_ids:
+        objs = (await session.execute(select(Object).where(Object.id.in_(list(panel_ids))))).scalars().all()
+        objects_by_id = {o.id: o for o in objs}
+
+    events_to_insert: list[dict[str, Any]] = []
+    max_date_key = cur_date_key
+    max_event_id = cur_event_id
+
+    for r in rows:
+        try:
+            date_key = int(r.get("Date_Key"))
+            event_id = int(r.get("Event_id"))
+        except Exception:
+            continue
+
+        max_date_key, max_event_id = (date_key, event_id)
+
+        ts = r.get("TimeEvent")
+        if not isinstance(ts, datetime):
+            continue
+
+        panel_id = _safe_str(r.get("Panel_id"))
+        obj = objects_by_id.get(panel_id) if panel_id else None
+
+        code = _safe_str(r.get("Code"))
+        code_text = _safe_str(r.get("CodeText"))
+        zone = r.get("Zone")
+        line = _safe_str(r.get("Line"))
+        result_text = _safe_str(r.get("Result_Text"))
+
+        state_event = r.get("StateEvent")
+        state_name = _safe_str(r.get("StateName"))
+        state_is_over = r.get("StateIsOverProcess")
+
+        name_state = _safe_str(r.get("NameState"))
+        person = _safe_str(r.get("PersonName"))
+        gbr = _safe_str(r.get("GrResponseName"))
+
+        desc_parts: list[str] = []
+        desc_parts.append(f"Event_id: {event_id}")
+        desc_parts.append(f"Date_Key: {date_key}")
+        if panel_id:
+            desc_parts.append(f"Panel_id: {panel_id}")
+
+        if code:
+            if code_text:
+                desc_parts.append(f"Код: {code} — {code_text}")
+            else:
+                desc_parts.append(f"Код: {code}")
+        if zone is not None:
+            desc_parts.append(f"Зона: {zone}")
+        if line:
+            desc_parts.append(f"Шлейф: {line}")
+
+        if state_event is not None or state_name:
+            st_id = str(state_event) if state_event is not None else ""
+            st_label = state_name or name_state or ""
+            if st_id and st_label:
+                desc_parts.append(f"Статус: {st_label} (StateEvent={st_id})")
+            elif st_label:
+                desc_parts.append(f"Статус: {st_label}")
+            elif st_id:
+                desc_parts.append(f"StateEvent: {st_id}")
+
+        if person:
+            desc_parts.append(f"Оператор: {person}")
+        if gbr:
+            desc_parts.append(f"ГБР: {gbr}")
+        if result_text:
+            desc_parts.append(result_text)
+
+        is_over = bool(state_is_over) if state_is_over is not None else False
+        if is_over:
+            status = "resolved"
+        elif state_event is not None or state_name or name_state:
+            status = "pending"
+        else:
+            status = "active"
+
+        events_to_insert.append(
+            {
+                "id": f"mssql:{date_key}:{event_id}",
+                "timestamp": ts,
+                "type": "alarm",
+                "object_id": panel_id,
+                "object_name": (obj.name if obj and obj.name else None) or panel_id or "Объект",
+                "client_name": (obj.client_name if obj and obj.client_name else None) or panel_id or "Не указан",
+                "severity": "info",
+                "status": status,
+                "code": code,
+                "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
+                "code_text": code_text,
+                "state_name": state_name,
+                "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
+                "description": "\n".join(desc_parts) if desc_parts else "",
+                "location": (obj.address if obj and obj.address else None),
+                "operator_id": person,
+            }
+        )
+
+    if not events_to_insert:
+        return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
+
+    dialect = None
+    try:
+        bind = session.get_bind()
+        dialect = getattr(bind, "dialect", None)
+    except Exception:
+        dialect = None
+
+    result = None
+    if dialect is not None and getattr(dialect, "name", None) == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
+        result = await session.execute(stmt)
+    elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
+        from sqlalchemy import bindparam
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        stmt = (
+            sqlite_insert(Event)
+            .values(
+                id=bindparam("id"),
+                timestamp=bindparam("timestamp"),
+                type=bindparam("type"),
+                object_id=bindparam("object_id"),
+                object_name=bindparam("object_name"),
+                client_name=bindparam("client_name"),
+                severity=bindparam("severity"),
+                status=bindparam("status"),
+                code=bindparam("code"),
+                code_group=bindparam("code_group"),
+                code_text=bindparam("code_text"),
+                state_name=bindparam("state_name"),
+                state_is_over_process=bindparam("state_is_over_process"),
+                description=bindparam("description"),
+                location=bindparam("location"),
+                operator_id=bindparam("operator_id"),
+            )
+            .on_conflict_do_update(
+                index_elements=[Event.id],
+                set_={
+                    "timestamp": sqlite_insert(Event).excluded.timestamp,
+                    "type": sqlite_insert(Event).excluded.type,
+                    "object_id": sqlite_insert(Event).excluded.object_id,
+                    "object_name": sqlite_insert(Event).excluded.object_name,
+                    "client_name": sqlite_insert(Event).excluded.client_name,
+                    "severity": sqlite_insert(Event).excluded.severity,
+                    "status": sqlite_insert(Event).excluded.status,
+                    "description": sqlite_insert(Event).excluded.description,
+                    "location": sqlite_insert(Event).excluded.location,
+                    "operator_id": sqlite_insert(Event).excluded.operator_id,
+                    "code": sqlite_insert(Event).excluded.code,
+                    "code_group": sqlite_insert(Event).excluded.code_group,
+                    "code_text": sqlite_insert(Event).excluded.code_text,
+                    "state_name": sqlite_insert(Event).excluded.state_name,
+                    "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
+                },
+            )
+        )
+        result = await session.execute(stmt, events_to_insert)
+    else:
+        existing_ids = set(
+            (await session.execute(select(Event.id).where(Event.id.in_([r["id"] for r in events_to_insert]))))
+            .scalars()
+            .all()
+        )
+        for rr in events_to_insert:
+            if rr["id"] in existing_ids:
+                continue
+            session.add(Event(**rr))
+
+    await set_mssql_event_cursor(session, max_date_key, max_event_id)
+    await session.commit()
+
+    inserted = 0
+    if result is not None:
+        rc = getattr(result, "rowcount", None)
+        inserted = len(events_to_insert) if (rc is None or rc < 0) else int(rc)
+    else:
+        inserted = len(events_to_insert)
+
+    return {"status": "ok", "processed": int(inserted), "cursor": f"{max_date_key}:{max_event_id}"}
 
 
 async def sync_events_from_agency_mssql_archives(

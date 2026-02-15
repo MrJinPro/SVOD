@@ -20,13 +20,13 @@ const Analytics = lazy(() => import("./pages/Analytics"));
 const GbrReports = lazy(() => import("./pages/GbrReports"));
 const StaffEfficiency = lazy(() => import("./pages/StaffEfficiency"));
 const NotFound = lazy(() => import("./pages/NotFound"));
-import { getStoredToken } from "./lib/auth";
+import { getAuthToken } from "./lib/api";
 
 const queryClient = new QueryClient();
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const location = useLocation();
-  const token = getStoredToken();
+  const token = getAuthToken();
   if (!token) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }

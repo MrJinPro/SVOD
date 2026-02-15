@@ -285,6 +285,9 @@ def fetch_archive_events_since(
               a.StateEvent,
               es.NameState,
               es.PersonName,
+                            es.StateName,
+                            es.StateIsOverProcess,
+                            es.CodeText,
               es.GrResponseName,
               es.OperationTime
             FROM {archive_table} a

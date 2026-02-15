@@ -12,8 +12,10 @@ from app.services.sync_service import (
     get_mssql_event_cursor,
     set_mssql_event_cursor,
     sync_events_from_agency_mssql_archives,
+    sync_events_from_agency_sqlite_archives,
     sync_events_from_agency_mysql,
     sync_objects_from_agency_mssql,
+    sync_objects_from_agency_sqlite,
 )
 from app.services.auto_sync import auto_sync_status
 from app.services.job_service import create_job, get_job, start_job
@@ -58,6 +60,12 @@ async def sync_events_once(limit: int = Query(500, ge=1, le=5000)) -> dict[str, 
                     archives_db_name=settings.agency_archives_db_name,
                     batch_limit=limit,
                 )
+            if scheme.startswith("sqlite"):
+                return await sync_events_from_agency_sqlite_archives(
+                    session=session,
+                    agency_sqlite_url=url,
+                    batch_limit=limit,
+                )
             return {"status": "error", "reason": f"Unsupported AGENCY_DATABASE_URL scheme: {scheme}"}
     return {"status": "error", "reason": "No DB session"}
 
@@ -98,8 +106,15 @@ async def sync_objects_once() -> dict[str, Any]:
 
     url = settings.agency_database_url
     scheme = (url.split(":", 1)[0] or "").lower()
+    if scheme.startswith("sqlite"):
+        async with _SYNC_LOCK:
+            async for session in get_session():
+                session = session  # type: ignore[no-redef]
+                return await sync_objects_from_agency_sqlite(session=session, agency_sqlite_url=url)
+        return {"status": "error", "reason": "No DB session"}
+
     if not scheme.startswith("mssql"):
-        return {"status": "error", "reason": "AGENCY_DATABASE_URL must be MSSQL for /sync/objects"}
+        return {"status": "error", "reason": "AGENCY_DATABASE_URL must be MSSQL/SQLite for /sync/objects"}
 
     async with _SYNC_LOCK:
         async for session in get_session():
