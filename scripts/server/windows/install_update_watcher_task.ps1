@@ -13,25 +13,13 @@ if (-not (Test-Path $scriptPath)) {
   throw "Watcher script not found: $scriptPath"
 }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (
-  '-NoProfile -ExecutionPolicy Bypass -File "{0}" -RepoRoot "{1}" -ServiceName "{2}"' -f $scriptPath, $RepoRoot, $ServiceName
-)
+# Use schtasks.exe for maximum compatibility across Windows versions/PowerShell.
+$taskCmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -RepoRoot "{1}" -ServiceName "{2}"' -f $scriptPath, $RepoRoot, $ServiceName
 
-# Every 1 minute, forever
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
-$trigger.RepetitionInterval = (New-TimeSpan -Minutes 1)
-$trigger.RepetitionDuration = [TimeSpan]::MaxValue
+$schtasks = Get-Command schtasks.exe -ErrorAction SilentlyContinue
+if (-not $schtasks) { throw 'schtasks.exe not found.' }
 
-$principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-
-$task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
-
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-}
-
-Register-ScheduledTask -TaskName $TaskName -InputObject $task | Out-Null
-Start-ScheduledTask -TaskName $TaskName
+& $schtasks.Path /Create /F /TN $TaskName /SC MINUTE /MO 1 /RU SYSTEM /RL HIGHEST /TR $taskCmd | Out-Null
 
 Write-Host "Installed scheduled task: $TaskName" -ForegroundColor Green
+Write-Host "Runs every 1 minute as SYSTEM." -ForegroundColor Gray

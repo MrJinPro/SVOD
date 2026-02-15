@@ -4,9 +4,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+$schtasks = Get-Command schtasks.exe -ErrorAction SilentlyContinue
+if (-not $schtasks) { throw 'schtasks.exe not found.' }
+
+try {
+  & $schtasks.Path /Delete /F /TN $TaskName | Out-Null
   Write-Host "Removed scheduled task: $TaskName" -ForegroundColor Green
-} else {
-  Write-Host "Task not found: $TaskName" -ForegroundColor Yellow
+} catch {
+  Write-Host "Task not found (or cannot delete): $TaskName" -ForegroundColor Yellow
 }
