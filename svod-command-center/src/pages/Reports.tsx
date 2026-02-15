@@ -3,6 +3,24 @@ import { ReportsTable } from '@/components/reports/ReportsTable';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import {
   Select,
   SelectContent,
@@ -10,11 +28,151 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, RefreshCw } from 'lucide-react';
-import { API_BASE_URL } from '@/lib/api';
+import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
+import { API_BASE_URL, apiGet } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
-import { useMemo, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReportStatus, ReportType } from '@/types';
+import type { DateRange } from 'react-day-picker';
+
+type CreateReportKind = 'daily' | 'objectsByCode';
+
+function formatLocalYYYYMMDD(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+type EventCodeItem = {
+  code: string;
+  codeText?: string | null;
+  count?: number;
+};
+
+function EventCodeCombobox({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [items, setItems] = useState<EventCodeItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const q = query.trim();
+    const t = window.setTimeout(async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (q) params.set('query', q);
+        params.set('limit', '100');
+        const res = await apiGet<EventCodeItem[]>(`/reports/event-codes?${params.toString()}`);
+        if (!cancelled) setItems(res || []);
+      } catch (e: any) {
+        if (!cancelled) {
+          setItems([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [query]);
+
+  const selected = useMemo(() => items.find((i) => i.code === value), [items, value]);
+  const buttonLabel = value
+    ? `${value}${selected?.codeText ? ` — ${selected.codeText}` : ''}`
+    : 'Выберите код события…';
+
+  const canUseTyped = useMemo(() => {
+    const q = query.trim();
+    if (!q) return false;
+    if (q.length > 16) return false;
+    // Allow typical formats: E1001, 1001, A12, etc.
+    return /^[A-Za-z0-9._-]+$/.test(q);
+  }, [query]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-[520px] justify-between"
+        >
+          <span className="truncate text-left">{buttonLabel}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[520px] p-0" align="start">
+        <Command>
+          <CommandInput
+            placeholder="Поиск по коду или расшифровке…"
+            value={query}
+            onValueChange={setQuery}
+          />
+          <CommandList>
+            <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
+            <CommandGroup>
+              {canUseTyped ? (
+                <CommandItem
+                  key={`typed:${query.trim()}`}
+                  value={query.trim()}
+                  onSelect={() => {
+                    onChange(query.trim());
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
+                  <div className="min-w-0">
+                    <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
+                    <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
+                  </div>
+                </CommandItem>
+              ) : null}
+              {(items || []).map((it) => (
+                <CommandItem
+                  key={it.code}
+                  value={`${it.code} ${it.codeText || ''}`}
+                  onSelect={() => {
+                    onChange(it.code);
+                    setOpen(false);
+                  }}
+                >
+                  <Check
+                    className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
+                  />
+                  <div className="flex w-full items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-mono text-sm text-foreground">{it.code}</div>
+                      {it.codeText ? (
+                        <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
+                      ) : null}
+                    </div>
+                    {typeof it.count === 'number' ? (
+                      <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
+                    ) : null}
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export default function Reports() {
   const { data: reports, refetch } = useApiGet('/reports', []);
@@ -22,26 +180,52 @@ export default function Reports() {
   const [typeFilter, setTypeFilter] = useState<'all' | ReportType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | ReportStatus>('all');
 
-  const defaultYear = new Date().getFullYear() - 1;
-  const [phraseClient, setPhraseClient] = useState('');
-  const [phraseYear, setPhraseYear] = useState(String(defaultYear));
-  const [phraseA, setPhraseA] = useState('Снятие не по расписанию');
-  const [phraseB, setPhraseB] = useState('Объект не поставлен под охрану по расписанию');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createKind, setCreateKind] = useState<CreateReportKind>('objectsByCode');
+
+  const [dailyDate, setDailyDate] = useState(() => formatLocalYYYYMMDD(new Date()));
+
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
+    const now = new Date();
+    const from = new Date(now);
+    from.setDate(from.getDate() - 7);
+    return { from, to: now };
+  });
+  const [clientName, setClientName] = useState('');
+  const [objectQuery, setObjectQuery] = useState('');
+  const [eventCode, setEventCode] = useState('');
 
   const downloadDailyCsv = (date: string) => {
     const url = `${API_BASE_URL}/reports/export/daily?date=${encodeURIComponent(date)}`;
     window.location.href = url;
   };
 
-  const downloadPhraseCountsCsv = () => {
-    const params = new URLSearchParams();
-    const yearInt = Number.parseInt(phraseYear, 10);
-    if (!Number.isNaN(yearInt)) params.set('year', String(yearInt));
-    if (phraseClient.trim()) params.set('clientName', phraseClient.trim());
-    if (phraseA.trim()) params.set('phraseA', phraseA.trim());
-    if (phraseB.trim()) params.set('phraseB', phraseB.trim());
+  const downloadObjectsByCodeCsv = () => {
+    if (!eventCode.trim()) {
+      toast({
+        title: 'Отчёт',
+        description: 'Выберите код события.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!dateRange?.from || !dateRange?.to) {
+      toast({
+        title: 'Отчёт',
+        description: 'Выберите период (от и до).',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-    const url = `${API_BASE_URL}/reports/export/phrase-counts?${params.toString()}`;
+    const params = new URLSearchParams();
+    params.set('eventCode', eventCode.trim());
+    params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
+    params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
+    if (clientName.trim()) params.set('clientName', clientName.trim());
+    if (objectQuery.trim()) params.set('objectQuery', objectQuery.trim());
+
+    const url = `${API_BASE_URL}/reports/export/objects-by-code?${params.toString()}`;
     window.location.href = url;
   };
 
@@ -52,11 +236,6 @@ export default function Reports() {
       return true;
     });
   }, [reports, statusFilter, typeFilter]);
-
-  const years = useMemo(() => {
-    const now = new Date().getFullYear();
-    return [now, now - 1, now - 2, now - 3, now - 4].map(String);
-  }, []);
 
   return (
     <MainLayout 
@@ -100,12 +279,7 @@ export default function Reports() {
               size="sm"
               className="gap-2"
               onClick={() => {
-                const today = new Date().toISOString().slice(0, 10);
-                toast({
-                  title: 'Отчёт',
-                  description: 'Скачивание суточного отчёта (CSV).',
-                });
-                downloadDailyCsv(today);
+                setCreateOpen(true);
               }}
             >
               <Plus className="h-4 w-4" />
@@ -114,58 +288,119 @@ export default function Reports() {
           </div>
         </div>
 
-        {/* Phrase report filters */}
-        <div className="rounded-xl border border-border bg-card p-4">
-          <div className="flex flex-wrap items-center gap-4">
-            <Input
-              className="w-[320px] bg-background"
-              placeholder='Контрагент (например: ООО "Альбион 2002")'
-              value={phraseClient}
-              onChange={(e) => setPhraseClient(e.target.value)}
-            />
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogContent className="sm:max-w-[760px]">
+            <DialogHeader>
+              <DialogTitle>Создать отчёт</DialogTitle>
+              <DialogDescription>
+                Выберите тип отчёта и параметры. В выгрузке используется код события (например E1001),
+                но отображается его расшифровка.
+              </DialogDescription>
+            </DialogHeader>
 
-            <Select value={phraseYear} onValueChange={setPhraseYear}>
-              <SelectTrigger className="w-[140px] bg-background">
-                <SelectValue placeholder="Год" />
-              </SelectTrigger>
-              <SelectContent>
-                {years.map((y) => (
-                  <SelectItem key={y} value={y}>
-                    {y}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <Select value={createKind} onValueChange={(v) => setCreateKind(v as CreateReportKind)}>
+                  <SelectTrigger className="w-[360px]">
+                    <SelectValue placeholder="Тип отчёта" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="objectsByCode">Объекты по коду события (CSV)</SelectItem>
+                    <SelectItem value="daily">Суточный журнал событий (CSV)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <Input
-              className="w-[320px] bg-background"
-              placeholder="Фраза 1"
-              value={phraseA}
-              onChange={(e) => setPhraseA(e.target.value)}
-            />
-            <Input
-              className="w-[360px] bg-background"
-              placeholder="Фраза 2"
-              value={phraseB}
-              onChange={(e) => setPhraseB(e.target.value)}
-            />
+              {createKind === 'daily' ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="space-y-1">
+                    <div className="text-sm text-muted-foreground">Дата</div>
+                    <Input
+                      type="date"
+                      className="w-[200px] bg-background"
+                      value={dailyDate}
+                      onChange={(e) => setDailyDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+              ) : null}
 
-            <Button
-              variant="secondary"
-              size="sm"
-              className="gap-2"
-              onClick={() => {
-                toast({
-                  title: 'Отчёт',
-                  description: 'Скачивание выборки (CSV)…',
-                });
-                downloadPhraseCountsCsv();
-              }}
-            >
-              Сформировать выборку
-            </Button>
-          </div>
-        </div>
+              {createKind === 'objectsByCode' ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Период</div>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" className="w-[280px] justify-start font-normal">
+                            {dateRange?.from && dateRange?.to
+                              ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
+                              : 'Выберите период'}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="range"
+                            numberOfMonths={2}
+                            selected={dateRange}
+                            onSelect={setDateRange}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Контрагент (опционально)</div>
+                      <Input
+                        className="w-[320px] bg-background"
+                        placeholder='Например: ООО "Альбион 2002"'
+                        value={clientName}
+                        onChange={(e) => setClientName(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Код события</div>
+                      <EventCodeCombobox value={eventCode} onChange={setEventCode} />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Поиск по объекту (опционально)</div>
+                      <Input
+                        className="w-[520px] bg-background"
+                        placeholder="Название / адрес / ID"
+                        value={objectQuery}
+                        onChange={(e) => setObjectQuery(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCreateOpen(false)}>
+                Отмена
+              </Button>
+              <Button
+                onClick={() => {
+                  toast({ title: 'Отчёт', description: 'Формирование выгрузки…' });
+                  if (createKind === 'daily') {
+                    downloadDailyCsv(dailyDate);
+                  } else {
+                    downloadObjectsByCodeCsv();
+                  }
+                }}
+              >
+                Сформировать
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Table */}
         <ReportsTable reports={filteredReports} />
