@@ -380,16 +380,22 @@ def fetch_eventservice_actions_for_event_pairs(
 
             for i in range(0, len(p_list), chunk_size):
                 chunk = p_list[i : i + chunk_size]
-                values_sql = ", ".join(["(?, ?)"] * len(chunk))
                 params: list[Any] = []
                 for dk, eid in chunk:
                     params.append(int(dk))
                     params.append(int(eid))
 
-                # SQL Server requires the CTE body to be a SELECT; plain "VALUES (...)" is invalid there.
+                # Compatibility note:
+                # - The table value constructor (FROM (VALUES ...)) works only on SQL Server 2008+.
+                # - Some legacy deployments error near keyword VALUES.
+                # Use a UNION ALL list of parameterized SELECTs instead.
+                pairs_select_sql = "SELECT CAST(? AS INT) AS Date_Key, CAST(? AS INT) AS Event_id"
+                if len(chunk) > 1:
+                    pairs_select_sql += " UNION ALL SELECT CAST(? AS INT), CAST(? AS INT)" * (len(chunk) - 1)
+
                 sql = f"""
-                WITH pairs(Date_Key, Event_id) AS (
-                    SELECT * FROM (VALUES {values_sql}) AS v(Date_Key, Event_id)
+                WITH pairs AS (
+                    {pairs_select_sql}
                 )
                 SELECT
                     s.Service_id,
