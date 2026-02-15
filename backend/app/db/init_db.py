@@ -82,6 +82,25 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_email ON users (email)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_role ON users (role)"))
                 await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+            # event_actions: ensure backward-compatible columns exist
+            try:
+                ea_cols = (await conn.execute(text("PRAGMA table_info(event_actions)"))).all()
+                ea_col_names = {c[1] for c in ea_cols}
+                for col_name, col_type in (
+                    ("operator_name", "VARCHAR(200)"),
+                    ("computer", "VARCHAR(70)"),
+                    ("gbr_name", "VARCHAR(100)"),
+                    ("date_key", "INTEGER"),
+                    ("raw_event_id", "INTEGER"),
+                    ("source_table", "VARCHAR(64)"),
+                    ("source_pk", "INTEGER"),
+                ):
+                    if col_name not in ea_col_names:
+                        await conn.execute(text(f"ALTER TABLE event_actions ADD COLUMN {col_name} {col_type}"))
+            except Exception:
+                # If table doesn't exist yet, Base.metadata.create_all will create it.
+                pass
         elif dialect_name == "postgresql":
             exists = (
                 await conn.execute(
@@ -146,6 +165,31 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             ).first()
             if email_nullable and str(email_nullable[0]).upper() == "NO":
                 await conn.execute(text("ALTER TABLE users ALTER COLUMN email DROP NOT NULL"))
+
+            # event_actions: ensure backward-compatible columns exist
+            for col_name, col_type in (
+                ("operator_name", "VARCHAR(200)"),
+                ("computer", "VARCHAR(70)"),
+                ("gbr_name", "VARCHAR(100)"),
+                ("date_key", "INTEGER"),
+                ("raw_event_id", "INTEGER"),
+                ("source_table", "VARCHAR(64)"),
+                ("source_pk", "INTEGER"),
+            ):
+                col_exists = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name='event_actions' AND column_name=:col
+                            """
+                        ),
+                        {"col": col_name},
+                    )
+                ).first()
+                if not col_exists:
+                    await conn.execute(text(f"ALTER TABLE event_actions ADD COLUMN {col_name} {col_type}"))
 
 
 async def _seed_rbac(session) -> None:
