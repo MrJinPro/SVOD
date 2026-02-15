@@ -4,17 +4,30 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, extract, func, select
 from sqlalchemy.sql import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app.api.v1.deps import require_permissions
+from app.core.config import settings
 from app.db.session import get_session
 from app.models.event import Event
 from app.models.event_action import EventAction
 
 router = APIRouter(prefix="/analytics")
+
+
+def _seconds_between(end_ts, start_ts):
+    """Return duration in seconds between two timestamps.
+
+    - SQLite: julianday() diff * 86400
+    - Postgres: EXTRACT(EPOCH FROM (end - start))
+    """
+
+    if settings.database_url.lower().startswith("postgresql"):
+        return extract("epoch", end_ts - start_ts)
+    return (func.julianday(end_ts) - func.julianday(start_ts)) * 86400.0
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -149,9 +162,9 @@ async def operators_live(
         .group_by(EventAction.event_id, operator_col)
     ).subquery("per_event")
 
-    duration_seconds = (
-        (func.julianday(per_event.c.end_ts) - func.julianday(per_event.c.accept_ts)) * 86400.0
-    ).label("duration_seconds")
+    duration_seconds = _seconds_between(per_event.c.end_ts, per_event.c.accept_ts).label(
+        "duration_seconds"
+    )
 
     handling_sq = (
         select(
@@ -291,9 +304,9 @@ async def operators_handling_time(
 
     per_event_sq = per_event.subquery("per_event")
 
-    duration_seconds = (
-        (func.julianday(per_event_sq.c.end_ts) - func.julianday(per_event_sq.c.accept_ts)) * 86400.0
-    ).label("duration_seconds")
+    duration_seconds = _seconds_between(per_event_sq.c.end_ts, per_event_sq.c.accept_ts).label(
+        "duration_seconds"
+    )
 
     agg = (
         select(
@@ -477,9 +490,7 @@ async def gbr_trips(
 
     sq = base.subquery("gbr_trips")
 
-    travel_seconds = (
-        (func.julianday(sq.c.arrived_ts) - func.julianday(sq.c.called_ts)) * 86400.0
-    ).label("travel_seconds")
+    travel_seconds = _seconds_between(sq.c.arrived_ts, sq.c.called_ts).label("travel_seconds")
 
     q = (
         select(
