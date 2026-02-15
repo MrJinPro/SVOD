@@ -370,6 +370,10 @@ def fetch_eventservice_actions_for_event_pairs(
     out: list[dict[str, Any]] = []
     chunk_size = 200
 
+    def _chunks(items: list[int], size: int) -> Iterable[list[int]]:
+        for j in range(0, len(items), size):
+            yield items[j : j + size]
+
     with pyodbc.connect(conn_str, timeout=10) as conn:
         conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
         conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
@@ -378,48 +382,43 @@ def fetch_eventservice_actions_for_event_pairs(
         for suffix, p_list in pairs_by_suffix.items():
             service_table = f"{archives_db_name}.dbo.eventservice{suffix}"
 
-            for i in range(0, len(p_list), chunk_size):
-                chunk = p_list[i : i + chunk_size]
-                params: list[Any] = []
-                for dk, eid in chunk:
-                    params.append(int(dk))
-                    params.append(int(eid))
+            # Most compatible approach across SQL Server versions: query by (Date_Key, Event_id IN (...)).
+            by_date_key: dict[int, list[int]] = {}
+            for dk, eid in p_list:
+                by_date_key.setdefault(int(dk), []).append(int(eid))
 
-                # Compatibility note:
-                # - The table value constructor (FROM (VALUES ...)) works only on SQL Server 2008+.
-                # - Some legacy deployments error near keyword VALUES.
-                # Use a UNION ALL list of parameterized SELECTs instead.
-                pairs_select_sql = "SELECT CAST(? AS INT) AS Date_Key, CAST(? AS INT) AS Event_id"
-                if len(chunk) > 1:
-                    pairs_select_sql += " UNION ALL SELECT CAST(? AS INT), CAST(? AS INT)" * (len(chunk) - 1)
+            for dk, event_ids in by_date_key.items():
+                # Deduplicate to avoid bloating parameter lists.
+                uniq_event_ids = sorted(set(event_ids))
+                for ids_chunk in _chunks(uniq_event_ids, chunk_size):
+                    placeholders = ", ".join(["?"] * len(ids_chunk))
+                    sql = f"""
+                    SELECT
+                        s.Service_id,
+                        s.NameState,
+                        s.Event_id,
+                        s.Computer,
+                        s.OperationTime,
+                        s.Date_Key,
+                        s.PersonName,
+                        s.GrResponseName
+                    FROM {service_table} s
+                    WHERE s.Date_Key = ?
+                      AND s.Event_id IN ({placeholders})
+                    ORDER BY s.Date_Key ASC, s.Event_id ASC, s.OperationTime ASC, s.Service_id ASC
+                    """
 
-                sql = f"""
-                WITH pairs AS (
-                    {pairs_select_sql}
-                )
-                SELECT
-                    s.Service_id,
-                    s.NameState,
-                    s.Event_id,
-                    s.Computer,
-                    s.OperationTime,
-                    s.Date_Key,
-                    s.PersonName,
-                    s.GrResponseName
-                FROM {service_table} s
-                INNER JOIN pairs p
-                    ON p.Date_Key = s.Date_Key AND p.Event_id = s.Event_id
-                ORDER BY s.Date_Key ASC, s.Event_id ASC, s.OperationTime ASC, s.Service_id ASC
-                """
+                    params: list[Any] = [int(dk)] + [int(x) for x in ids_chunk]
 
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(sql, params)
-                        out.extend(_rows_to_dicts(cur))
-                except Exception as e:
-                    msg = str(e)
-                    if "Invalid object name" in msg or "42S02" in msg:
-                        break
-                    raise
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, params)
+                            out.extend(_rows_to_dicts(cur))
+                    except Exception as e:
+                        msg = str(e)
+                        if "Invalid object name" in msg or "42S02" in msg:
+                            # Missing monthly table.
+                            break
+                        raise
 
     return out
