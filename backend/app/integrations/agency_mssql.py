@@ -333,3 +333,86 @@ def fetch_archive_events_since(
                 raise
 
     return out
+
+
+def _suffix_from_date_key(date_key: int) -> str:
+    s = str(int(date_key))
+    if len(s) != 8:
+        # Fallback: best-effort
+        return s[:6] + "01"
+    return s[:6] + "01"
+
+
+def fetch_eventservice_actions_for_event_pairs(
+    mssql_url: str,
+    *,
+    archives_db_name: str,
+    event_pairs: Iterable[tuple[int, int]],
+) -> list[dict[str, Any]]:
+    """Читает строки из eventserviceYYYYMM01 для набора (Date_Key, Event_id).
+
+    Возвращает все matching действия, отсортированные по (Date_Key, Event_id, OperationTime, Service_id).
+    """
+
+    pairs = list(event_pairs)
+    if not pairs:
+        return []
+
+    pyodbc = _require_pyodbc()
+    info = parse_mssql_url(mssql_url)
+    conn_str = _build_odbc_conn_str(info)
+
+    pairs_by_suffix: dict[str, list[tuple[int, int]]] = {}
+    for dk, eid in pairs:
+        suffix = _suffix_from_date_key(dk)
+        pairs_by_suffix.setdefault(suffix, []).append((int(dk), int(eid)))
+
+    out: list[dict[str, Any]] = []
+    chunk_size = 200
+
+    with pyodbc.connect(conn_str, timeout=10) as conn:
+        conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+        conn.setencoding(encoding="utf-8")
+
+        for suffix, p_list in pairs_by_suffix.items():
+            service_table = f"{archives_db_name}.dbo.eventservice{suffix}"
+
+            for i in range(0, len(p_list), chunk_size):
+                chunk = p_list[i : i + chunk_size]
+                values_sql = ", ".join(["(?, ?)"] * len(chunk))
+                params: list[Any] = []
+                for dk, eid in chunk:
+                    params.append(int(dk))
+                    params.append(int(eid))
+
+                sql = f"""
+                WITH pairs(Date_Key, Event_id) AS (
+                    VALUES {values_sql}
+                )
+                SELECT
+                    s.Service_id,
+                    s.NameState,
+                    s.Event_id,
+                    s.Computer,
+                    s.OperationTime,
+                    s.Date_Key,
+                    s.PersonName,
+                    s.GrResponseName
+                FROM {service_table} s
+                INNER JOIN pairs p
+                    ON p.Date_Key = s.Date_Key AND p.Event_id = s.Event_id
+                ORDER BY s.Date_Key ASC, s.Event_id ASC, s.OperationTime ASC, s.Service_id ASC
+                """
+
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, params)
+                        out.extend(_rows_to_dicts(cur))
+                except Exception as e:
+                    msg = str(e)
+                    if "Invalid object name" in msg or "42S02" in msg:
+                        break
+                    raise
+
+    return out

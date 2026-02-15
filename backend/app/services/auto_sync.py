@@ -12,7 +12,9 @@ from app.db.session import SessionLocal
 from app.services.sync_service import (
     sync_events_from_agency_mssql_archives,
     sync_events_from_agency_mysql,
+    sync_events_from_agency_sqlite_archives,
     sync_objects_from_agency_mssql,
+    sync_objects_from_agency_sqlite,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,21 +62,34 @@ async def stop_auto_sync(app: FastAPI) -> None:
 
 
 async def _auto_sync_loop(stop_event: asyncio.Event) -> None:
-    url = settings.agency_database_url
-    if not url:
-        logger.info("Auto-sync idle: AGENCY_DATABASE_URL not set")
-        return
-
-    scheme = (url.split(":", 1)[0] or "").lower()
-    if not (scheme.startswith("mysql") or scheme.startswith("mssql")):
-        logger.warning("Auto-sync unsupported scheme: %s", scheme)
-        return
-
     last_objects_sync_ts = 0.0
+    last_logged_state: tuple[str | None, str | None] = (None, None)
+    last_warned_unsupported_scheme: str | None = None
 
     while not stop_event.is_set():
         started_at = time.monotonic()
         try:
+            url = settings.agency_database_url
+            scheme = (url.split(":", 1)[0] or "").lower() if url else None
+
+            # Log state changes (helps diagnose why data isn't flowing).
+            if (url, scheme) != last_logged_state:
+                last_logged_state = (url, scheme)
+                if not url:
+                    logger.info("Auto-sync idle: AGENCY_DATABASE_URL not set")
+                else:
+                    logger.info("Auto-sync source: scheme=%s url=%s", scheme, url)
+
+            if not url or not scheme:
+                # Nothing to do yet.
+                continue
+
+            if not (scheme.startswith("mysql") or scheme.startswith("mssql") or scheme.startswith("sqlite")):
+                if scheme != last_warned_unsupported_scheme:
+                    logger.warning("Auto-sync unsupported scheme: %s", scheme)
+                    last_warned_unsupported_scheme = scheme
+                continue
+
             async with _SYNC_LOCK:
                 async with SessionLocal() as session:
                     if scheme.startswith("mysql"):
@@ -83,24 +98,33 @@ async def _auto_sync_loop(stop_event: asyncio.Event) -> None:
                             agency_mysql_url=url,
                             batch_limit=settings.auto_sync_events_limit,
                         )
-                    else:
+                    elif scheme.startswith("mssql"):
                         await sync_events_from_agency_mssql_archives(
                             session=session,
                             agency_mssql_url=url,
                             archives_db_name=settings.agency_archives_db_name,
                             batch_limit=settings.auto_sync_events_limit,
                         )
+                    else:
+                        await sync_events_from_agency_sqlite_archives(
+                            session=session,
+                            agency_sqlite_url=url,
+                            batch_limit=settings.auto_sync_events_limit,
+                        )
 
                     now = time.monotonic()
-                    if scheme.startswith("mssql") and (
-                        now - last_objects_sync_ts
-                    ) >= settings.auto_sync_objects_interval_seconds:
-                        await sync_objects_from_agency_mssql(session=session, agency_mssql_url=url)
-                        last_objects_sync_ts = now
+                    if (now - last_objects_sync_ts) >= settings.auto_sync_objects_interval_seconds:
+                        if scheme.startswith("mssql"):
+                            await sync_objects_from_agency_mssql(session=session, agency_mssql_url=url)
+                            last_objects_sync_ts = now
+                        elif scheme.startswith("sqlite"):
+                            await sync_objects_from_agency_sqlite(session=session, agency_sqlite_url=url)
+                            last_objects_sync_ts = now
 
         except asyncio.CancelledError:
             raise
         except Exception:
+            # Don't stop the loop: keep trying.
             logger.exception("Auto-sync iteration failed")
 
         elapsed = time.monotonic() - started_at

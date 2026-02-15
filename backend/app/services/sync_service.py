@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -8,12 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.agency_mysql import fetch_alarms_since
 from app.integrations.agency_mssql import fetch_archive_events_since, fetch_objects_snapshot
+from app.integrations.agency_mssql import (
+    fetch_eventservice_actions_for_event_pairs as fetch_eventservice_actions_for_event_pairs_mssql,
+)
 from app.integrations.agency_sqlite import (
     fetch_archive_events_since as fetch_archive_events_since_sqlite,
 )
 from app.integrations.agency_sqlite import fetch_objects_snapshot as fetch_objects_snapshot_sqlite
+from app.integrations.agency_sqlite import (
+    fetch_eventservice_actions_for_event_pairs as fetch_eventservice_actions_for_event_pairs_sqlite,
+)
 from app.core.config import settings
 from app.models.event import Event
+from app.models.event_action import EventAction
 from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
 from app.models.sync_state import SyncState
 
@@ -217,6 +225,17 @@ def _safe_str(v: Any) -> str | None:
         return None
     s = str(v).strip()
     return s or None
+
+
+def _eventservice_source_table(date_key: int) -> str:
+    s = str(int(date_key))
+    suffix = (s[:6] + "01") if len(s) >= 6 else s
+    return f"eventservice{suffix}"
+
+
+def _uuid_for_source(source_table: str, source_pk: int) -> str:
+    # Stable deterministic UUID: allows safe re-sync without churn.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_table}:{int(source_pk)}"))
 
 
 async def get_mssql_event_cursor(session: AsyncSession) -> tuple[int, int]:
@@ -536,6 +555,7 @@ async def sync_events_from_agency_sqlite_archives(
         objects_by_id = {o.id: o for o in objs}
 
     events_to_insert: list[dict[str, Any]] = []
+    event_pairs: set[tuple[int, int]] = set()
     max_date_key = cur_date_key
     max_event_id = cur_event_id
 
@@ -547,6 +567,7 @@ async def sync_events_from_agency_sqlite_archives(
             continue
 
         max_date_key, max_event_id = (date_key, event_id)
+        event_pairs.add((date_key, event_id))
 
         ts = r.get("TimeEvent")
         if not isinstance(ts, datetime):
@@ -634,6 +655,49 @@ async def sync_events_from_agency_sqlite_archives(
     if not events_to_insert:
         return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
 
+    actions_to_insert: list[dict[str, Any]] = []
+    if event_pairs:
+        try:
+            action_rows = fetch_eventservice_actions_for_event_pairs_sqlite(
+                agency_sqlite_url,
+                event_pairs=list(event_pairs),
+            )
+        except Exception:
+            action_rows = []
+
+        for ar in action_rows:
+            try:
+                dk = int(ar.get("Date_Key"))
+                eid = int(ar.get("Event_id"))
+                sid = int(ar.get("Service_id"))
+            except Exception:
+                continue
+
+            action_name = _safe_str(ar.get("NameState"))
+            if not action_name:
+                continue
+
+            action_time = ar.get("OperationTime")
+            if not isinstance(action_time, datetime):
+                continue
+
+            source_table = _eventservice_source_table(dk)
+            actions_to_insert.append(
+                {
+                    "id": _uuid_for_source(source_table, sid),
+                    "event_id": f"mssql:{dk}:{eid}",
+                    "action_name": action_name,
+                    "action_time": action_time,
+                    "operator_name": _safe_str(ar.get("PersonName")),
+                    "computer": _safe_str(ar.get("Computer")),
+                    "gbr_name": _safe_str(ar.get("GrResponseName")),
+                    "date_key": dk,
+                    "raw_event_id": eid,
+                    "source_table": source_table,
+                    "source_pk": sid,
+                }
+            )
+
     dialect = None
     try:
         bind = session.get_bind()
@@ -642,11 +706,20 @@ async def sync_events_from_agency_sqlite_archives(
         dialect = None
 
     result = None
+    actions_result = None
     if dialect is not None and getattr(dialect, "name", None) == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
         result = await session.execute(stmt)
+
+        if actions_to_insert:
+            a_stmt = (
+                pg_insert(EventAction)
+                .values(actions_to_insert)
+                .on_conflict_do_nothing(index_elements=["source_table", "source_pk"])
+            )
+            actions_result = await session.execute(a_stmt)
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
         from sqlalchemy import bindparam
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -693,6 +766,26 @@ async def sync_events_from_agency_sqlite_archives(
             )
         )
         result = await session.execute(stmt, events_to_insert)
+
+        if actions_to_insert:
+            a_stmt = (
+                sqlite_insert(EventAction)
+                .values(
+                    id=bindparam("id"),
+                    event_id=bindparam("event_id"),
+                    action_name=bindparam("action_name"),
+                    action_time=bindparam("action_time"),
+                    operator_name=bindparam("operator_name"),
+                    computer=bindparam("computer"),
+                    gbr_name=bindparam("gbr_name"),
+                    date_key=bindparam("date_key"),
+                    raw_event_id=bindparam("raw_event_id"),
+                    source_table=bindparam("source_table"),
+                    source_pk=bindparam("source_pk"),
+                )
+                .on_conflict_do_nothing(index_elements=["source_table", "source_pk"])
+            )
+            actions_result = await session.execute(a_stmt, actions_to_insert)
     else:
         existing_ids = set(
             (await session.execute(select(Event.id).where(Event.id.in_([r["id"] for r in events_to_insert]))))
@@ -704,6 +797,29 @@ async def sync_events_from_agency_sqlite_archives(
                 continue
             session.add(Event(**rr))
 
+        if actions_to_insert:
+            existing_src: set[tuple[str, int]] = set()
+            by_table: dict[str, list[int]] = {}
+            for r in actions_to_insert:
+                by_table.setdefault(r["source_table"], []).append(int(r["source_pk"]))
+
+            for st, pks in by_table.items():
+                found = (
+                    await session.execute(
+                        select(EventAction.source_pk).where(
+                            (EventAction.source_table == st) & (EventAction.source_pk.in_(pks))
+                        )
+                    )
+                ).scalars().all()
+                for pk in found:
+                    existing_src.add((st, int(pk)))
+
+            for r in actions_to_insert:
+                key = (r["source_table"], int(r["source_pk"]))
+                if key in existing_src:
+                    continue
+                session.add(EventAction(**r))
+
     await set_mssql_event_cursor(session, max_date_key, max_event_id)
     await session.commit()
 
@@ -714,7 +830,20 @@ async def sync_events_from_agency_sqlite_archives(
     else:
         inserted = len(events_to_insert)
 
-    return {"status": "ok", "processed": int(inserted), "cursor": f"{max_date_key}:{max_event_id}"}
+    actions_inserted = 0
+    if actions_to_insert:
+        if actions_result is not None:
+            rc = getattr(actions_result, "rowcount", None)
+            actions_inserted = len(actions_to_insert) if (rc is None or rc < 0) else int(rc)
+        else:
+            actions_inserted = len(actions_to_insert)
+
+    return {
+        "status": "ok",
+        "processed": int(inserted),
+        "actionsProcessed": int(actions_inserted),
+        "cursor": f"{max_date_key}:{max_event_id}",
+    }
 
 
 async def sync_events_from_agency_mssql_archives(
@@ -752,6 +881,7 @@ async def sync_events_from_agency_mssql_archives(
         objects_by_id = {o.id: o for o in objs}
 
     events_to_insert: list[dict[str, Any]] = []
+    event_pairs: set[tuple[int, int]] = set()
     max_date_key = cur_date_key
     max_event_id = cur_event_id
 
@@ -763,6 +893,7 @@ async def sync_events_from_agency_mssql_archives(
             continue
 
         max_date_key, max_event_id = (date_key, event_id)
+        event_pairs.add((date_key, event_id))
 
         ts = r.get("TimeEvent")
         if not isinstance(ts, datetime):
@@ -855,6 +986,50 @@ async def sync_events_from_agency_mssql_archives(
     if not events_to_insert:
         return {"status": "ok", "processed": 0, "cursor": f"{cur_date_key}:{cur_event_id}"}
 
+    actions_to_insert: list[dict[str, Any]] = []
+    if event_pairs:
+        try:
+            action_rows = fetch_eventservice_actions_for_event_pairs_mssql(
+                agency_mssql_url,
+                archives_db_name=archives_db_name,
+                event_pairs=list(event_pairs),
+            )
+        except Exception:
+            action_rows = []
+
+        for ar in action_rows:
+            try:
+                dk = int(ar.get("Date_Key"))
+                eid = int(ar.get("Event_id"))
+                sid = int(ar.get("Service_id"))
+            except Exception:
+                continue
+
+            action_name = _safe_str(ar.get("NameState"))
+            if not action_name:
+                continue
+
+            action_time = ar.get("OperationTime")
+            if not isinstance(action_time, datetime):
+                continue
+
+            source_table = _eventservice_source_table(dk)
+            actions_to_insert.append(
+                {
+                    "id": _uuid_for_source(source_table, sid),
+                    "event_id": f"mssql:{dk}:{eid}",
+                    "action_name": action_name,
+                    "action_time": action_time,
+                    "operator_name": _safe_str(ar.get("PersonName")),
+                    "computer": _safe_str(ar.get("Computer")),
+                    "gbr_name": _safe_str(ar.get("GrResponseName")),
+                    "date_key": dk,
+                    "raw_event_id": eid,
+                    "source_table": source_table,
+                    "source_pk": sid,
+                }
+            )
+
     dialect = None
     try:
         bind = session.get_bind()
@@ -863,11 +1038,20 @@ async def sync_events_from_agency_mssql_archives(
         dialect = None
 
     result = None
+    actions_result = None
     if dialect is not None and getattr(dialect, "name", None) == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
         result = await session.execute(stmt)
+
+        if actions_to_insert:
+            a_stmt = (
+                pg_insert(EventAction)
+                .values(actions_to_insert)
+                .on_conflict_do_nothing(index_elements=["source_table", "source_pk"])
+            )
+            actions_result = await session.execute(a_stmt)
     elif dialect is not None and getattr(dialect, "name", None) == "sqlite":
         from sqlalchemy import bindparam
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -916,6 +1100,26 @@ async def sync_events_from_agency_mssql_archives(
             )
         )
         result = await session.execute(stmt, events_to_insert)
+
+        if actions_to_insert:
+            a_stmt = (
+                sqlite_insert(EventAction)
+                .values(
+                    id=bindparam("id"),
+                    event_id=bindparam("event_id"),
+                    action_name=bindparam("action_name"),
+                    action_time=bindparam("action_time"),
+                    operator_name=bindparam("operator_name"),
+                    computer=bindparam("computer"),
+                    gbr_name=bindparam("gbr_name"),
+                    date_key=bindparam("date_key"),
+                    raw_event_id=bindparam("raw_event_id"),
+                    source_table=bindparam("source_table"),
+                    source_pk=bindparam("source_pk"),
+                )
+                .on_conflict_do_nothing(index_elements=["source_table", "source_pk"])
+            )
+            actions_result = await session.execute(a_stmt, actions_to_insert)
     else:
         existing_ids = set(
             (
@@ -929,6 +1133,29 @@ async def sync_events_from_agency_mssql_archives(
                 continue
             session.add(Event(**r))
 
+        if actions_to_insert:
+            existing_src: set[tuple[str, int]] = set()
+            by_table: dict[str, list[int]] = {}
+            for r in actions_to_insert:
+                by_table.setdefault(r["source_table"], []).append(int(r["source_pk"]))
+
+            for st, pks in by_table.items():
+                found = (
+                    await session.execute(
+                        select(EventAction.source_pk).where(
+                            (EventAction.source_table == st) & (EventAction.source_pk.in_(pks))
+                        )
+                    )
+                ).scalars().all()
+                for pk in found:
+                    existing_src.add((st, int(pk)))
+
+            for r in actions_to_insert:
+                key = (r["source_table"], int(r["source_pk"]))
+                if key in existing_src:
+                    continue
+                session.add(EventAction(**r))
+
     await set_mssql_event_cursor(session, max_date_key, max_event_id)
     await session.commit()
 
@@ -939,8 +1166,17 @@ async def sync_events_from_agency_mssql_archives(
     else:
         inserted = len(events_to_insert)
 
+    actions_inserted = 0
+    if actions_to_insert:
+        if actions_result is not None:
+            rc = getattr(actions_result, "rowcount", None)
+            actions_inserted = len(actions_to_insert) if (rc is None or rc < 0) else int(rc)
+        else:
+            actions_inserted = len(actions_to_insert)
+
     return {
         "status": "ok",
         "processed": int(inserted),
+        "actionsProcessed": int(actions_inserted),
         "cursor": f"{max_date_key}:{max_event_id}",
     }

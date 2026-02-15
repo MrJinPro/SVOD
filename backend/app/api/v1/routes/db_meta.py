@@ -23,6 +23,7 @@ from app.services.job_service import create_job, get_job, start_job
 from app.prototype_data import mock_events
 from app.models.event import Event
 from app.models.object import Object
+from app.models.event_action import EventAction
 
 from app.db.session import get_session
 
@@ -341,10 +342,15 @@ async def get_sync_status() -> dict[str, Any]:
         # Counts
         events_count = int((await session.execute(select(func.count()).select_from(Event))).scalar() or 0)
         objects_count = int((await session.execute(select(func.count()).select_from(Object))).scalar() or 0)
+        actions_count = int((await session.execute(select(func.count()).select_from(EventAction))).scalar() or 0)
 
         # Latest event timestamp
         latest_ts = (
             await session.execute(select(Event.timestamp).order_by(Event.timestamp.desc()).limit(1))
+        ).scalar_one_or_none()
+
+        latest_action_ts = (
+            await session.execute(select(EventAction.action_time).order_by(EventAction.action_time.desc()).limit(1))
         ).scalar_one_or_none()
 
         # MSSQL cursor (if any)
@@ -360,6 +366,8 @@ async def get_sync_status() -> dict[str, Any]:
                 "events": events_count,
                 "objects": objects_count,
                 "latestEventTimestamp": latest_ts,
+                "eventActions": actions_count,
+                "latestEventActionTime": latest_action_ts,
             },
             "mssql": {"cursor": cursor},
         }
