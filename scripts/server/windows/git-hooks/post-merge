@@ -1,0 +1,6 @@
+#!/bin/sh
+# Auto-restart SVOD backend after git pull/merge.
+# Runs on Git for Windows (sh). Requires that the current user can restart the service.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { Restart-Service -Name '{{SERVICE_NAME}}' -Force } catch { exit 0 }" >/dev/null 2>&1 || true
+exit 0

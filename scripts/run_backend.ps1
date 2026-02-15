@@ -1,12 +1,31 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$python = Join-Path $root '.venv312\Scripts\python.exe'
 $backendDir = Join-Path $root 'backend'
 
-if (-not (Test-Path $python)) {
-  Write-Host "Не найден Python venv: $python" -ForegroundColor Red
-  Write-Host "Сначала создайте/настройте venv .venv312 (Python 3.12) и поставьте зависимости backend." -ForegroundColor Yellow
+function Resolve-PythonExe([string]$rootDir, [string]$backendPath) {
+  $candidates = @(
+    (Join-Path $rootDir '.venv312\Scripts\python.exe'),
+    (Join-Path $backendPath '.venv312\Scripts\python.exe'),
+    (Join-Path $rootDir '.venv\Scripts\python.exe'),
+    (Join-Path $backendPath '.venv\Scripts\python.exe')
+  )
+
+  foreach ($p in $candidates) {
+    if (Test-Path $p) { return $p }
+  }
+
+  $cmd = Get-Command python -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Path }
+
+  return $null
+}
+
+$python = Resolve-PythonExe -rootDir $root -backendPath $backendDir
+
+if (-not $python) {
+  Write-Host "Не найден Python (venv или системный)." -ForegroundColor Red
+  Write-Host "Ожидается один из путей: .venv312\\Scripts\\python.exe, .venv\\Scripts\\python.exe (в корне или backend/)." -ForegroundColor Yellow
   Read-Host "Enter для выхода"
   exit 1
 }

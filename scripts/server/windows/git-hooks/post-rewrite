@@ -1,0 +1,5 @@
+#!/bin/sh
+# Auto-restart SVOD backend after rewrite (e.g., rebase).
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { Restart-Service -Name '{{SERVICE_NAME}}' -Force } catch { exit 0 }" >/dev/null 2>&1 || true
+exit 0

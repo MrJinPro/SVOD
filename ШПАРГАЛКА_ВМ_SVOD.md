@@ -92,6 +92,19 @@ source /home/user/svod/backend/.venv/bin/activate
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Windows CMD: частая ошибка
+
+Если вы запускаете команды в `cmd.exe`, не склеивайте `activate.bat` и `python ...` в одну строку.
+И обязательно используйте `call`, чтобы активация окружения сработала в текущем окне.
+
+Пример (CMD):
+
+```bat
+cd /d C:\svod\SVOD_SOFT\backend
+call ..\.venv312\Scripts\activate.bat
+python -m uvicorn app.main:app --app-dir . --host 0.0.0.0 --port 8000
+```
+
 Запуск в dev-режиме с авто-перезагрузкой:
 
 ```bash
