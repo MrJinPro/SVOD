@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -67,6 +68,19 @@ class Settings(BaseSettings):
         if not self.cors_origins.strip():
             return []
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @field_validator("agency_mssql_archive_start_date_key", mode="before")
+    @classmethod
+    def _empty_str_to_none_for_optional_int(cls, v):
+        # NSSM / Windows env can sometimes set variables to an empty string.
+        # For optional numeric settings, treat empty string as "not set".
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if not s or s.lower() in {"none", "null"}:
+                return None
+        return v
 
 
 settings = Settings()  # type: ignore[call-arg]
