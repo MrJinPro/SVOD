@@ -92,6 +92,7 @@ export type ReportStatus = 'generated' | 'sent' | 'pending' | 'failed';
 export interface Report {
   id: string;
   type: ReportType;
+  title?: string | null;
   periodStart: string;
   periodEnd: string;
   generatedAt: string;

@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from datetime import datetime
+from datetime import datetime, timezone
 from datetime import date as date_type
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import FileResponse
@@ -22,9 +23,23 @@ from app.models.report import Report
 router = APIRouter(prefix="/reports")
 
 
+def _ensure_reports_manage_perm(current: dict) -> None:
+    role = str(current.get("role") or "")
+    if role in {"admin", "analyst"}:
+        return
+    raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
+
+
 def _parse_dt(value: str) -> datetime | None:
     try:
-        return datetime.fromisoformat(value)
+        v = (value or "").strip()
+        # Frontend often sends UTC ISO with trailing 'Z'.
+        if v.endswith("Z"):
+            v = v[:-1] + "+00:00"
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except Exception:
         return None
 
@@ -55,9 +70,28 @@ def _write_report_file(report_id: str, filename: str, content: bytes) -> Path:
 
 
 def _as_report_out_dict(r: Report) -> dict:
+    params: dict = {}
+    try:
+        if r.params_json:
+            params = json.loads(r.params_json)
+    except Exception:
+        params = {}
+
+    title: str | None = None
+    rt = str(r.type)
+    if rt == "gbrRaportXlsx":
+        gbr = str(params.get("gbrName") or "").strip()
+        title = f"Рапорт ГБР по {gbr}" if gbr else "Рапорт ГБР"
+    elif rt == "objectsByCode":
+        code = str(params.get("eventCode") or "").strip()
+        title = f"Объекты по коду {code}" if code else "Объекты по коду"
+    elif rt == "daily":
+        title = "Суточный отчёт"
+
     d = {
         "id": str(r.id),
         "type": str(r.type),
+        "title": title,
         "periodStart": str(r.period_start),
         "periodEnd": str(r.period_end),
         "generatedAt": str(r.generated_at or ""),
@@ -71,6 +105,120 @@ def _as_report_out_dict(r: Report) -> dict:
     if r.storage_path:
         d["downloadUrl"] = f"/reports/{r.id}/download"
     return d
+
+
+def _resolve_and_validate_store_path(storage_path: str) -> Path:
+    path = Path(str(storage_path))
+    if not path.exists():
+        raise HTTPException(status_code=410, detail={"code": "GONE", "message": "Stored file not found"})
+
+    store = _reports_store_dir().resolve()
+    try:
+        resolved = path.resolve()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"code": "BAD_PATH", "message": "Invalid file path"})
+    if store not in resolved.parents and resolved != store:
+        raise HTTPException(status_code=400, detail={"code": "BAD_PATH", "message": "Invalid file path"})
+    return resolved
+
+
+def _file_ext(filename: str | None) -> str:
+    if not filename:
+        return ""
+    f = filename.lower().strip()
+    if f.endswith(".csv"):
+        return "csv"
+    if f.endswith(".xlsx"):
+        return "xlsx"
+    return ""
+
+
+def _preview_table_from_csv_bytes(content: bytes, max_rows: int = 200) -> dict:
+    import csv
+    import io
+
+    text = content.decode("utf-8-sig", errors="replace")
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        return {"kind": "table", "columns": [], "rows": []}
+
+    reader = csv.reader(lines, delimiter=";")
+    rows = list(reader)
+    columns = [str(x or "") for x in (rows[0] if rows else [])]
+    out_rows: list[list[str]] = []
+    for r in rows[1 : 1 + max_rows]:
+        out_rows.append([str(x or "") for x in r])
+    return {"kind": "table", "columns": columns, "rows": out_rows}
+
+
+def _preview_table_from_xlsx_bytes(content: bytes, max_rows: int = 200, max_cols: int = 50) -> dict:
+    from io import BytesIO
+
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        raise HTTPException(status_code=500, detail={"code": "MISSING_DEP", "message": "openpyxl not installed"})
+
+    wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    ws = wb.worksheets[0] if wb.worksheets else None
+    if ws is None:
+        return {"kind": "table", "columns": [], "rows": []}
+
+    collected: list[list[str]] = []
+    for row in ws.iter_rows(values_only=True, max_row=max_rows, max_col=max_cols):
+        collected.append(["" if v is None else str(v) for v in row])
+
+    if not collected:
+        return {"kind": "table", "columns": [], "rows": []}
+
+    columns = collected[0]
+    rows = collected[1:]
+    return {"kind": "table", "columns": columns, "rows": rows}
+
+
+def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
+    import csv
+    import io
+    from io import BytesIO
+
+    try:
+        from openpyxl import Workbook
+    except Exception:
+        raise HTTPException(status_code=500, detail={"code": "MISSING_DEP", "message": "openpyxl not installed"})
+
+    text = content.decode("utf-8-sig", errors="replace")
+    lines = [l for l in text.splitlines() if l.strip()]
+    reader = csv.reader(lines, delimiter=";")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    for r_idx, row in enumerate(reader, start=1):
+        for c_idx, v in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _xlsx_bytes_to_csv_bytes(content: bytes) -> bytes:
+    import csv
+    from io import BytesIO, StringIO
+
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        raise HTTPException(status_code=500, detail={"code": "MISSING_DEP", "message": "openpyxl not installed"})
+
+    wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    ws = wb.worksheets[0] if wb.worksheets else None
+    buf = StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    if ws is not None:
+        for row in ws.iter_rows(values_only=True):
+            writer.writerow(["" if v is None else str(v) for v in row])
+    return buf.getvalue().encode("utf-8-sig")
 
 
 @router.get("")
@@ -112,6 +260,7 @@ async def list_reports(
             {
                 "id": day_str,
                 "type": "daily",
+                "title": "Суточный отчёт",
                 "periodStart": day_str,
                 "periodEnd": day_str,
                 "generatedAt": "",
@@ -375,6 +524,14 @@ async def generate_gbr_raport_xlsx(
     from io import BytesIO
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, Side
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    def clean_excel_text(value: object) -> object:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return re.sub(ILLEGAL_CHARACTERS_RE, "", value)
+        return value
 
     columns = [
         "№ объекта",
@@ -399,12 +556,15 @@ async def generate_gbr_raport_xlsx(
     ws.title = "Рапорт"
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
-    ws.cell(row=1, column=1, value="Рапорт").font = Font(bold=True, size=14)
+    header_title = "Рапорт"
+    if (gbrName or "").strip():
+        header_title = f"Рапорт ГБР по {(gbrName or '').strip()}"
+    ws.cell(row=1, column=1, value=clean_excel_text(header_title)).font = Font(bold=True, size=14)
     ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
 
     period_text = f"За период: {from_dt.strftime('%d.%m.%Y %H:%M')} — {to_dt.strftime('%d.%m.%Y %H:%M')}"
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
-    ws.cell(row=2, column=1, value=period_text).alignment = Alignment(horizontal="center")
+    ws.cell(row=2, column=1, value=clean_excel_text(period_text)).alignment = Alignment(horizontal="center")
 
     ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(columns))
     ws.cell(row=3, column=1, value="оперативная обстановка следующая:").alignment = Alignment(
@@ -474,7 +634,7 @@ async def generate_gbr_raport_xlsx(
             "",
         ]
         for col_idx, v in enumerate(values, start=1):
-            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -490,7 +650,11 @@ async def generate_gbr_raport_xlsx(
     report_id = str(uuid4())
     ps = from_dt.date().isoformat()
     pe = to_dt.date().isoformat()
-    filename = f"raport-gbr-{ps}-{pe}.xlsx"
+    gbr_part = (gbrName or "").strip()
+    if gbr_part:
+        filename = f"raport-gbr-{gbr_part}-{ps}-{pe}.xlsx"
+    else:
+        filename = f"raport-gbr-{ps}-{pe}.xlsx"
     path = _write_report_file(report_id, filename, data)
 
     r = Report(
@@ -519,6 +683,7 @@ async def generate_gbr_raport_xlsx(
 @router.get("/{report_id}/download")
 async def download_report(
     report_id: str,
+    format: str | None = Query(default=None, description="csv|xlsx"),
     session: AsyncSession = Depends(get_session),
     current: dict = Depends(get_current_user),
 ) -> Response:
@@ -537,25 +702,82 @@ async def download_report(
     if not r.storage_path or not r.file_name:
         raise HTTPException(status_code=409, detail={"code": "NO_FILE", "message": "Report has no stored file"})
 
-    path = Path(str(r.storage_path))
-    if not path.exists():
-        raise HTTPException(status_code=410, detail={"code": "GONE", "message": "Stored file not found"})
+    resolved = _resolve_and_validate_store_path(str(r.storage_path))
 
-    # Ensure file is inside our store dir
-    store = _reports_store_dir().resolve()
-    try:
-        resolved = path.resolve()
-    except Exception:
-        raise HTTPException(status_code=400, detail={"code": "BAD_PATH", "message": "Invalid file path"})
-    if store not in resolved.parents and resolved != store:
-        raise HTTPException(status_code=400, detail={"code": "BAD_PATH", "message": "Invalid file path"})
+    requested = (format or "").strip().lower() or None
+    if requested not in {None, "csv", "xlsx"}:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid format"})
 
+    stored_ext = _file_ext(r.file_name)
+    if requested is None or requested == stored_ext or not stored_ext:
+        media = r.mime_type or "application/octet-stream"
+        return FileResponse(
+            path=str(resolved),
+            media_type=media,
+            filename=r.file_name,
+        )
+
+    src = resolved.read_bytes()
+    if stored_ext == "csv" and requested == "xlsx":
+        out = _csv_bytes_to_xlsx_bytes(src)
+        filename = (r.file_name.rsplit(".", 1)[0] + ".xlsx") if r.file_name else "report.xlsx"
+        return Response(
+            content=out,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    if stored_ext == "xlsx" and requested == "csv":
+        out = _xlsx_bytes_to_csv_bytes(src)
+        filename = (r.file_name.rsplit(".", 1)[0] + ".csv") if r.file_name else "report.csv"
+        return Response(
+            content=out,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    # fallback: return as is
     media = r.mime_type or "application/octet-stream"
     return FileResponse(
         path=str(resolved),
         media_type=media,
         filename=r.file_name,
     )
+
+
+@router.delete("/{report_id}")
+async def delete_report(
+    report_id: str,
+    session: AsyncSession = Depends(get_session),
+    current: dict = Depends(get_current_user),
+) -> Response:
+    _ensure_reports_manage_perm(current)
+
+    r = (
+        await session.execute(select(Report).where(Report.id == report_id).limit(1))
+    ).scalars().first()
+    if r is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Report not found"})
+
+    # Permission gate for analytics-based reports
+    if str(r.type) == "gbrRaportXlsx":
+        have = set(map(str, current.get("permissions") or []))
+        if "analytics:read" not in have and current.get("role") != "admin":
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
+
+    if r.storage_path:
+        try:
+            resolved = _resolve_and_validate_store_path(str(r.storage_path))
+            resolved.unlink(missing_ok=True)
+        except HTTPException:
+            # If file is missing/bad path, still allow deleting DB record.
+            pass
+        except Exception:
+            pass
+
+    await session.delete(r)
+    await session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/{report_id}/preview")
@@ -570,37 +792,53 @@ async def preview_report(
     if r is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Report not found"})
 
-    if str(r.type) != "gbrRaportXlsx":
-        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Preview not supported"})
+    # Special preview for analytics-based GBR report (old behavior)
+    if str(r.type) == "gbrRaportXlsx":
+        have = set(map(str, current.get("permissions") or []))
+        if "analytics:read" not in have and current.get("role") != "admin":
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
 
-    have = set(map(str, current.get("permissions") or []))
-    if "analytics:read" not in have and current.get("role") != "admin":
-        raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
-
-    params = {}
-    try:
-        if r.params_json:
-            params = json.loads(r.params_json)
-    except Exception:
         params = {}
+        try:
+            if r.params_json:
+                params = json.loads(r.params_json)
+        except Exception:
+            params = {}
 
-    from app.api.v1.analytics import gbr_trips  # local import
+        from app.api.v1.analytics import gbr_trips  # local import
 
-    date_from = str(params.get("dateFrom") or "")
-    date_to = str(params.get("dateTo") or "")
-    gbr_name = params.get("gbrName")
-    object_id = params.get("objectId")
+        date_from = str(params.get("dateFrom") or "")
+        date_to = str(params.get("dateTo") or "")
+        gbr_name = params.get("gbrName")
+        object_id = params.get("objectId")
 
-    return await gbr_trips(
-        date_from=date_from,
-        date_to=date_to,
-        gbr_name=(str(gbr_name) if gbr_name else None),
-        object_id=(str(object_id) if object_id else None),
-        limit=2000,
-        offset=0,
-        session=session,
-        _perm=current,
-    )
+        out = await gbr_trips(
+            date_from=date_from,
+            date_to=date_to,
+            gbr_name=(str(gbr_name) if gbr_name else None),
+            object_id=(str(object_id) if object_id else None),
+            limit=2000,
+            offset=0,
+            session=session,
+            _perm=current,
+        )
+        out["kind"] = "gbr"
+        return out
+
+    # Generic preview for stored files (CSV/XLSX)
+    if not r.storage_path or not r.file_name:
+        raise HTTPException(status_code=409, detail={"code": "NO_FILE", "message": "Report has no stored file"})
+
+    resolved = _resolve_and_validate_store_path(str(r.storage_path))
+    content = resolved.read_bytes()
+    ext = _file_ext(r.file_name) or ("csv" if (r.mime_type or "").startswith("text/csv") else "")
+
+    if ext == "csv":
+        return _preview_table_from_csv_bytes(content)
+    if ext == "xlsx":
+        return _preview_table_from_xlsx_bytes(content)
+
+    raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Preview not supported"})
 
 
 @router.get("/export/daily")
@@ -613,6 +851,21 @@ async def export_daily(
     return Response(
         content=content,
         media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/export/daily/xlsx")
+async def export_daily_xlsx(
+    date: str = Query(default_factory=today_str, description="YYYY-MM-DD"),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    content = await export_daily_report_csv(session=session, date=date)
+    xlsx = _csv_bytes_to_xlsx_bytes(content)
+    filename = f"daily-report-{date}.xlsx"
+    return Response(
+        content=xlsx,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 

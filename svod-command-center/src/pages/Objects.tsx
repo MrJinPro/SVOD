@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useApiGet } from '@/hooks/useApiGet';
 import { PaginatedResponse, ObjectListItem } from '@/types';
+import { PaginationBar } from '@/components/PaginationBar';
 import {
   Table,
   TableBody,
@@ -85,6 +86,15 @@ export default function Objects() {
 
         {error && <div className="text-sm text-destructive">Ошибка загрузки: {String(error)}</div>}
 
+        <PaginationBar
+          isLoading={isLoading}
+          shown={page.data.length}
+          total={page.total}
+          page={pageNumber}
+          totalPages={page.totalPages}
+          onPageChange={(next) => setPageNumber(next)}
+        />
+
         <div className="rounded-xl border border-border bg-card overflow-hidden">
           <Table>
             <TableHeader>
@@ -124,27 +134,14 @@ export default function Objects() {
           </Table>
         </div>
 
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>{isLoading ? 'Загрузка…' : `Показано ${page.data.length} из ${page.total}`}</span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pageNumber <= 1}
-              onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
-            >
-              Назад
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pageNumber >= page.totalPages}
-              onClick={() => setPageNumber((p) => Math.min(page.totalPages, p + 1))}
-            >
-              Вперёд
-            </Button>
-          </div>
-        </div>
+        <PaginationBar
+          isLoading={isLoading}
+          shown={page.data.length}
+          total={page.total}
+          page={pageNumber}
+          totalPages={page.totalPages}
+          onPageChange={(next) => setPageNumber(next)}
+        />
       </div>
     </MainLayout>
   );

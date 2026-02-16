@@ -26,6 +26,7 @@ import {
 
 interface ReportsTableProps {
   reports: Report[];
+  onChanged?: () => void;
 }
 
 const typeLabels: Record<ReportType, string> = {
@@ -50,7 +51,7 @@ const statusStyles: Record<ReportStatus, string> = {
   failed: 'bg-severity-critical/10 text-severity-critical border-severity-critical/30',
 };
 
-export function ReportsTable({ reports }: ReportsTableProps) {
+export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState('');
   const [previewRows, setPreviewRows] = useState<GbrTripRow[]>([]);
@@ -58,6 +59,9 @@ export function ReportsTable({ reports }: ReportsTableProps) {
   const [tableColumns, setTableColumns] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<string[][]>([]);
   const [previewMode, setPreviewMode] = useState<'none' | 'gbr' | 'table'>('none');
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Report | null>(null);
 
   const formatDate = (dateString: string) => {
     if (!dateString) return '—';
@@ -95,6 +99,18 @@ export function ReportsTable({ reports }: ReportsTableProps) {
     }
   };
 
+  const replaceExt = (name: string, ext: 'csv' | 'xlsx') => {
+    const base = name.replace(/\.(csv|xlsx)$/i, '');
+    return `${base}.${ext}`;
+  };
+
+  const isStoredReport = (report: Report) => {
+    // Stored reports have UUID-like ids and downloadUrl /reports/{id}/download
+    if (!report.generatedAt) return false;
+    if (!report.downloadUrl) return false;
+    return report.downloadUrl.startsWith('/reports/') && report.downloadUrl.includes('/download');
+  };
+
   const parseCsv = (text: string): { columns: string[]; rows: string[][] } => {
     const cleaned = text.replace(/^\uFEFF/, '');
     const lines = cleaned.split(/\r?\n/).filter((l) => l.trim().length > 0);
@@ -108,7 +124,7 @@ export function ReportsTable({ reports }: ReportsTableProps) {
   };
 
   const openPreview = async (report: Report) => {
-    setPreviewTitle(typeLabels[report.type] || 'Отчёт');
+    setPreviewTitle(report.title || typeLabels[report.type] || 'Отчёт');
     setPreviewOpen(true);
     setPreviewLoading(true);
     setPreviewRows([]);
@@ -116,15 +132,24 @@ export function ReportsTable({ reports }: ReportsTableProps) {
     setTableRows([]);
     setPreviewMode('none');
     try {
-      if (report.type === 'gbrRaportXlsx') {
-        setPreviewMode('gbr');
+      if (isStoredReport(report)) {
         const res = await apiFetchRaw(`/reports/${encodeURIComponent(report.id)}/preview`);
-        const data = (await res.json()) as GbrTripsResponse;
-        setPreviewRows(data?.data || []);
+        const json = (await res.json()) as any;
+
+        if (json?.kind === 'gbr' || report.type === 'gbrRaportXlsx') {
+          setPreviewMode('gbr');
+          const data = json as GbrTripsResponse;
+          setPreviewRows(data?.data || []);
+          return;
+        }
+
+        setPreviewMode('table');
+        setTableColumns(Array.isArray(json?.columns) ? json.columns : []);
+        setTableRows(Array.isArray(json?.rows) ? json.rows : []);
         return;
       }
 
-      // CSV previews
+      // Derived previews (no report_id in DB): fallback to CSV download
       setPreviewMode('table');
       let path: string | null = null;
       if (report.downloadUrl) {
@@ -156,20 +181,56 @@ export function ReportsTable({ reports }: ReportsTableProps) {
     }
   };
 
-  const downloadReport = async (report: Report) => {
-    const url = report.downloadUrl || null;
-    if (!url) {
-      // fallback for derived daily
-      if (report.type === 'daily') {
-        const file = report.fileName || `daily-report-${report.periodStart}.csv`;
-        await downloadBlob(`/reports/export/daily?date=${encodeURIComponent(report.periodStart)}`, file);
-        return;
-      }
-      toast({ title: 'Скачать', description: 'Для этого отчёта нет файла.' });
+  const downloadReportAs = async (report: Report, format: 'csv' | 'xlsx') => {
+    // Stored reports: always go through /reports/{id}/download?format=...
+    if (isStoredReport(report)) {
+      const url = `/reports/${encodeURIComponent(report.id)}/download?format=${format}`;
+      const fileBase = report.fileName || `report-${report.id}.${format}`;
+      const file = replaceExt(fileBase, format);
+      await downloadBlob(url, file);
       return;
     }
-    const file = report.fileName || 'report.bin';
-    await downloadBlob(url, file);
+
+    // Derived daily: export endpoints
+    if (report.type === 'daily') {
+      const date = report.periodStart;
+      const url = format === 'csv'
+        ? `/reports/export/daily?date=${encodeURIComponent(date)}`
+        : `/reports/export/daily/xlsx?date=${encodeURIComponent(date)}`;
+      const file = `daily-report-${date}.${format}`;
+      await downloadBlob(url, file);
+      return;
+    }
+
+    // Fallback: download as-is
+    if (report.downloadUrl) {
+      const file = report.fileName || 'report.bin';
+      await downloadBlob(report.downloadUrl, file);
+      return;
+    }
+    toast({ title: 'Скачать', description: 'Для этого отчёта нет файла.' });
+  };
+
+  const confirmDelete = (report: Report) => {
+    setDeleteTarget(report);
+    setDeleteOpen(true);
+  };
+
+  const doDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      await apiFetchRaw(`/reports/${encodeURIComponent(deleteTarget.id)}`, { method: 'DELETE' });
+      toast({ title: 'Отчёт', description: 'Удалено.' });
+      setDeleteOpen(false);
+      setDeleteTarget(null);
+      onChanged?.();
+    } catch (e: any) {
+      toast({
+        title: 'Удаление',
+        description: e?.message || 'Не удалось удалить отчёт',
+        variant: 'destructive',
+      });
+    }
   };
 
   return (
@@ -266,6 +327,25 @@ export function ReportsTable({ reports }: ReportsTableProps) {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Удалить отчёт?</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-muted-foreground">
+            Отчёт будет удалён из истории. Это действие нельзя отменить.
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+              Отмена
+            </Button>
+            <Button variant="destructive" onClick={doDelete}>
+              Удалить
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
@@ -284,7 +364,7 @@ export function ReportsTable({ reports }: ReportsTableProps) {
               <TableCell>
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium text-foreground">{typeLabels[report.type]}</span>
+                  <span className="font-medium text-foreground">{report.title || typeLabels[report.type]}</span>
                 </div>
               </TableCell>
               <TableCell className="font-mono text-sm text-foreground">
@@ -328,10 +408,17 @@ export function ReportsTable({ reports }: ReportsTableProps) {
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
                         onClick={() => {
-                          downloadReport(report);
+                            downloadReportAs(report, 'csv');
                         }}
                       >
-                        Скачать
+                          CSV
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          downloadReportAs(report, 'xlsx');
+                        }}
+                      >
+                        XLSX
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -363,6 +450,16 @@ export function ReportsTable({ reports }: ReportsTableProps) {
                       >
                         Отправить повторно
                       </DropdownMenuItem>
+
+                      {isStoredReport(report) ? (
+                        <DropdownMenuItem
+                          onClick={() => {
+                            confirmDelete(report);
+                          }}
+                        >
+                          Удалить
+                        </DropdownMenuItem>
+                      ) : null}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>

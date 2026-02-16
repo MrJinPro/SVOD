@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react';
 import { API_BASE_URL } from '@/lib/api';
 import { useEventStream } from '@/hooks/useEventStream';
 import { EventDetailsSheet } from '@/components/events/EventDetailsSheet.tsx';
+import { PaginationBar } from '@/components/PaginationBar';
 import type { Event } from '@/types';
 
 const defaultFilters: EventFiltersValue = {
@@ -181,6 +182,15 @@ export default function Events() {
           </div>
         )}
 
+        <PaginationBar
+          isLoading={isLoading}
+          shown={page.data.length}
+          total={page.total}
+          page={pageNumber}
+          totalPages={page.totalPages}
+          onPageChange={(next) => setPageNumber(next)}
+        />
+
         {/* Table */}
         <EventsTable
           events={page.data}
@@ -196,30 +206,14 @@ export default function Events() {
           event={selectedEvent}
         />
 
-        {/* Pagination */}
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>
-            {isLoading ? 'Загрузка…' : `Показано ${page.data.length} из ${page.total}`}
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pageNumber <= 1}
-              onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
-            >
-              Назад
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pageNumber >= page.totalPages}
-              onClick={() => setPageNumber((p) => Math.min(page.totalPages, p + 1))}
-            >
-              Вперёд
-            </Button>
-          </div>
-        </div>
+        <PaginationBar
+          isLoading={isLoading}
+          shown={page.data.length}
+          total={page.total}
+          page={pageNumber}
+          totalPages={page.totalPages}
+          onPageChange={(next) => setPageNumber(next)}
+        />
       </div>
     </MainLayout>
   );

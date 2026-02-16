@@ -627,7 +627,7 @@ export default function Reports() {
         </Dialog>
 
         {/* Table */}
-        <ReportsTable reports={filteredReports} />
+        <ReportsTable reports={filteredReports} onChanged={refetch} />
       </div>
     </MainLayout>
   );

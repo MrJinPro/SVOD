@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { PaginationBar } from '@/components/PaginationBar';
 import { apiFetchRaw } from '@/lib/api';
 import { Download, RefreshCw, RotateCcw, Filter } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -277,6 +278,16 @@ export default function GbrReports() {
         </div>
 
         <Card className="p-0 overflow-hidden">
+          <div className="p-4">
+            <PaginationBar
+              isLoading={isLoading}
+              shown={trips.data.length}
+              total={trips.total}
+              page={page}
+              totalPages={totalPages}
+              onPageChange={(next) => setPage(next)}
+            />
+          </div>
           <div className="overflow-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-muted-foreground">
@@ -321,18 +332,14 @@ export default function GbrReports() {
 
         {error && !forbiddenHint && <div className="text-sm text-destructive">Ошибка загрузки: {error}</div>}
 
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>{isLoading ? 'Загрузка…' : `Показано ${trips.data.length} из ${trips.total}`}</span>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-              Назад
-            </Button>
-            <span className="tabular-nums">{page} / {totalPages}</span>
-            <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
-              Вперёд
-            </Button>
-          </div>
-        </div>
+        <PaginationBar
+          isLoading={isLoading}
+          shown={trips.data.length}
+          total={trips.total}
+          page={page}
+          totalPages={totalPages}
+          onPageChange={(next) => setPage(next)}
+        />
       </div>
     </MainLayout>
   );

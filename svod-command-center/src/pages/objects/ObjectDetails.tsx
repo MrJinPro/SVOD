@@ -2,6 +2,7 @@ import { MainLayout } from '@/components/layout/MainLayout';
 import { useApiGet } from '@/hooks/useApiGet';
 import { apiGet } from '@/lib/api';
 import { Event, ObjectDetails as ObjectDetailsType, PaginatedResponse } from '@/types';
+import { PaginationBar } from '@/components/PaginationBar';
 import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Separator } from '@/components/ui/separator';
@@ -181,31 +182,25 @@ export default function ObjectDetails() {
 
           {eventsError && <div className="text-sm text-destructive">Ошибка загрузки событий: {String(eventsError)}</div>}
 
+          <PaginationBar
+            isLoading={eventsLoading}
+            shown={eventsPageData.data.length}
+            total={eventsPageData.total}
+            page={eventsPage}
+            totalPages={eventsPageData.totalPages}
+            onPageChange={(next) => setEventsPage(next)}
+          />
+
           <EventsTable events={eventsPageData.data} />
 
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>
-              {eventsLoading ? 'Загрузка…' : `Показано ${eventsPageData.data.length} из ${eventsPageData.total}`}
-            </span>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={eventsPage <= 1}
-                onClick={() => setEventsPage((p) => Math.max(1, p - 1))}
-              >
-                Назад
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={eventsPage >= eventsPageData.totalPages}
-                onClick={() => setEventsPage((p) => Math.min(eventsPageData.totalPages, p + 1))}
-              >
-                Вперёд
-              </Button>
-            </div>
-          </div>
+          <PaginationBar
+            isLoading={eventsLoading}
+            shown={eventsPageData.data.length}
+            total={eventsPageData.total}
+            page={eventsPage}
+            totalPages={eventsPageData.totalPages}
+            onPageChange={(next) => setEventsPage(next)}
+          />
         </div>
       </div>
     </MainLayout>
