@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, case, extract, func, select
+from sqlalchemy import and_, case, extract, func, or_, select
 from sqlalchemy.sql import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
@@ -43,6 +43,12 @@ def _parse_dt(value: str | None) -> datetime | None:
         return dt
     except Exception:
         return None
+
+
+def _action_name_matches(col, patterns: list[str]):
+    # Use ILIKE semantics where available; SQLAlchemy will emulate it on SQLite.
+    # Patterns should include % wildcards.
+    return or_(*[col.ilike(p) for p in patterns])
 
 
 def _csv_response(content: str, filename: str) -> Response:
@@ -477,24 +483,15 @@ async def gbr_trips(
     dt_from = _parse_dt(date_from)
     dt_to = _parse_dt(date_to)
 
-    called_ts = func.min(
-        case(
-            (EventAction.action_name.like("Вызвана%"), EventAction.action_time),
-            else_=None,
-        )
-    ).label("called_ts")
-    arrived_ts = func.min(
-        case(
-            (EventAction.action_name.like("Прибытие%"), EventAction.action_time),
-            else_=None,
-        )
-    ).label("arrived_ts")
-    cancelled_ts = func.min(
-        case(
-            (EventAction.action_name.like("Отмена%"), EventAction.action_time),
-            else_=None,
-        )
-    ).label("cancelled_ts")
+    called_match = _action_name_matches(EventAction.action_name, ["%Вызван%", "%Вызов%"])
+    arrived_match = _action_name_matches(EventAction.action_name, ["%Прибыт%"])
+    cancelled_match = _action_name_matches(EventAction.action_name, ["%Отмен%"])
+
+    called_ts = func.min(case((called_match, EventAction.action_time), else_=None)).label("called_ts")
+    arrived_ts = func.min(case((arrived_match, EventAction.action_time), else_=None)).label("arrived_ts")
+    cancelled_ts = func.min(case((cancelled_match, EventAction.action_time), else_=None)).label(
+        "cancelled_ts"
+    )
     last_action_ts = func.max(EventAction.action_time).label("last_action_ts")
 
     base = (
