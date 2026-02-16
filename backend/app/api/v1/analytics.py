@@ -462,13 +462,13 @@ async def operators_activity(
 
 @router.get("/gbr/trips")
 async def gbr_trips(
-    date_from: Annotated[str | None, Query(None, alias="dateFrom")] = None,
-    date_to: Annotated[str | None, Query(None, alias="dateTo")] = None,
-    gbr_name: Annotated[str | None, Query(None, alias="gbrName")] = None,
-    object_id: Annotated[str | None, Query(None, alias="objectId")] = None,
-    status: Annotated[str | None, Query(None, pattern="^(all|arrived|cancelled|called)$")] = None,
-    limit: Annotated[int, Query(200, ge=1, le=2000)] = 200,
-    offset: Annotated[int, Query(0, ge=0)] = 0,
+    date_from: Annotated[str | None, Query(alias="dateFrom")] = None,
+    date_to: Annotated[str | None, Query(alias="dateTo")] = None,
+    gbr_name: Annotated[str | None, Query(alias="gbrName")] = None,
+    object_id: Annotated[str | None, Query(alias="objectId")] = None,
+    status: Annotated[str | None, Query(pattern="^(all|arrived|cancelled|called)$")] = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
     session: AsyncSession = Depends(get_session),
     _perm: Any = Depends(require_permissions("analytics:read")),
 ) -> dict[str, Any]:
