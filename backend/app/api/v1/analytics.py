@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.models.event import Event
 from app.models.event_action import EventAction
+from app.models.object import Responsible
 
 router = APIRouter(prefix="/analytics")
 
@@ -516,6 +517,17 @@ async def gbr_trips(
 
     sq = base.subquery("gbr_trips")
 
+    # Enrich with a single (first) responsible per object (Panel_id).
+    # We pick a deterministic value via MIN(name) which works on SQLite/Postgres.
+    resp_sq = (
+        select(
+            Responsible.object_id.label("object_id"),
+            func.min(Responsible.name).label("responsible_name"),
+        )
+        .group_by(Responsible.object_id)
+        .subquery("resp")
+    )
+
     travel_seconds = _seconds_between(sq.c.arrived_ts, sq.c.called_ts).label("travel_seconds")
 
     q = (
@@ -529,10 +541,12 @@ async def gbr_trips(
             Event.object_id,
             Event.object_name,
             Event.client_name,
+            resp_sq.c.responsible_name,
             travel_seconds,
         )
         .select_from(sq)
         .outerjoin(Event, Event.id == sq.c.event_id)
+        .outerjoin(resp_sq, resp_sq.c.object_id == Event.object_id)
         .where(sq.c.called_ts.is_not(None))
         .order_by(sq.c.called_ts.desc())
         .offset(offset)
@@ -554,6 +568,7 @@ async def gbr_trips(
         obj_id,
         obj_name,
         client_name,
+        responsible_name,
         travel_s,
     ) in rows:
         items.append(
@@ -567,6 +582,7 @@ async def gbr_trips(
                 "objectId": obj_id,
                 "objectName": obj_name,
                 "clientName": client_name,
+                "responsibleName": responsible_name,
                 "travelSeconds": float(travel_s) if travel_s is not None else None,
             }
         )

@@ -213,6 +213,7 @@ export interface GbrTripRow {
   objectId: string | null;
   objectName: string | null;
   clientName: string | null;
+  responsibleName?: string | null;
   travelSeconds: number | null;
 }
 

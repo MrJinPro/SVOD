@@ -242,7 +242,11 @@ export default function GbrReports() {
                     <td className="px-3 py-2">{r.gbrName}</td>
                     <td className="px-3 py-2">
                       <div className="text-foreground">{r.objectName || r.objectId || '—'}</div>
-                      <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {[r.responsibleName || r.clientName || null, r.objectId ? `№ ${r.objectId}` : null]
+                          .filter(Boolean)
+                          .join(' • ')}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatDuration(r.travelSeconds)}</td>
                   </tr>
