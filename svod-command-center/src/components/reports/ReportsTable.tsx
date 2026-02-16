@@ -55,6 +55,9 @@ export function ReportsTable({ reports }: ReportsTableProps) {
   const [previewTitle, setPreviewTitle] = useState('');
   const [previewRows, setPreviewRows] = useState<GbrTripRow[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [tableColumns, setTableColumns] = useState<string[]>([]);
+  const [tableRows, setTableRows] = useState<string[][]>([]);
+  const [previewMode, setPreviewMode] = useState<'none' | 'gbr' | 'table'>('none');
 
   const formatDate = (dateString: string) => {
     if (!dateString) return '—';
@@ -92,19 +95,56 @@ export function ReportsTable({ reports }: ReportsTableProps) {
     }
   };
 
+  const parseCsv = (text: string): { columns: string[]; rows: string[][] } => {
+    const cleaned = text.replace(/^\uFEFF/, '');
+    const lines = cleaned.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length === 0) return { columns: [], rows: [] };
+
+    // Simple MVP parser: delimiter ';', no quoted fields support.
+    const splitLine = (line: string) => line.split(';').map((x) => x.trim());
+    const columns = splitLine(lines[0]);
+    const rows = lines.slice(1, 201).map(splitLine);
+    return { columns, rows };
+  };
+
   const openPreview = async (report: Report) => {
-    if (report.type !== 'gbrRaportXlsx') {
-      toast({ title: 'Просмотр отчёта', description: 'Для этого типа пока нет предпросмотра.' });
-      return;
-    }
-    setPreviewTitle('Рапорт (ГБР)');
+    setPreviewTitle(typeLabels[report.type] || 'Отчёт');
     setPreviewOpen(true);
     setPreviewLoading(true);
     setPreviewRows([]);
+    setTableColumns([]);
+    setTableRows([]);
+    setPreviewMode('none');
     try {
-      const res = await apiFetchRaw(`/reports/${encodeURIComponent(report.id)}/preview`);
-      const data = (await res.json()) as GbrTripsResponse;
-      setPreviewRows(data?.data || []);
+      if (report.type === 'gbrRaportXlsx') {
+        setPreviewMode('gbr');
+        const res = await apiFetchRaw(`/reports/${encodeURIComponent(report.id)}/preview`);
+        const data = (await res.json()) as GbrTripsResponse;
+        setPreviewRows(data?.data || []);
+        return;
+      }
+
+      // CSV previews
+      setPreviewMode('table');
+      let path: string | null = null;
+      if (report.downloadUrl) {
+        path = report.downloadUrl;
+      } else if (report.type === 'daily') {
+        path = `/reports/export/daily?date=${encodeURIComponent(report.periodStart)}`;
+      }
+
+      if (!path) {
+        toast({ title: 'Просмотр отчёта', description: 'Для этого отчёта нет данных для предпросмотра.' });
+        setTableColumns([]);
+        setTableRows([]);
+        return;
+      }
+
+      const res = await apiFetchRaw(path);
+      const text = await res.text();
+      const parsed = parseCsv(text);
+      setTableColumns(parsed.columns);
+      setTableRows(parsed.rows);
     } catch (e: any) {
       toast({
         title: 'Просмотр отчёта',
@@ -141,47 +181,86 @@ export function ReportsTable({ reports }: ReportsTableProps) {
           </DialogHeader>
           <div className="rounded-md border border-border">
             <ScrollArea className="h-[420px]">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-muted-foreground sticky top-0">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2">№ объекта</th>
-                    <th className="text-left font-medium px-3 py-2">Адрес/объект</th>
-                    <th className="text-left font-medium px-3 py-2">ГБР</th>
-                    <th className="text-left font-medium px-3 py-2">Вызов</th>
-                    <th className="text-left font-medium px-3 py-2">Прибыл</th>
-                    <th className="text-right font-medium px-3 py-2">В пути (сек)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewRows.map((r) => (
-                    <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt || ''}`} className="border-t border-border">
-                      <td className="px-3 py-2 font-mono">{r.objectId || '—'}</td>
-                      <td className="px-3 py-2">
-                        <div className="text-foreground">{r.objectName || '—'}</div>
-                        <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
-                      </td>
-                      <td className="px-3 py-2">{r.gbrName}</td>
-                      <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
-                      <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.travelSeconds == null ? '—' : Math.round(r.travelSeconds)}</td>
-                    </tr>
-                  ))}
-                  {!previewLoading && previewRows.length === 0 && (
+              {previewMode === 'gbr' ? (
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                     <tr>
-                      <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
-                        Нет данных
-                      </td>
+                      <th className="text-left font-medium px-3 py-2">№ объекта</th>
+                      <th className="text-left font-medium px-3 py-2">Адрес/объект</th>
+                      <th className="text-left font-medium px-3 py-2">ГБР</th>
+                      <th className="text-left font-medium px-3 py-2">Вызов</th>
+                      <th className="text-left font-medium px-3 py-2">Прибыл</th>
+                      <th className="text-right font-medium px-3 py-2">В пути (сек)</th>
                     </tr>
-                  )}
-                  {previewLoading && (
+                  </thead>
+                  <tbody>
+                    {previewRows.map((r) => (
+                      <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt || ''}`} className="border-t border-border">
+                        <td className="px-3 py-2 font-mono">{r.objectId || '—'}</td>
+                        <td className="px-3 py-2">
+                          <div className="text-foreground">{r.objectName || '—'}</div>
+                          <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
+                        </td>
+                        <td className="px-3 py-2">{r.gbrName}</td>
+                        <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
+                        <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.travelSeconds == null ? '—' : Math.round(r.travelSeconds)}</td>
+                      </tr>
+                    ))}
+                    {!previewLoading && previewRows.length === 0 && (
+                      <tr>
+                        <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                          Нет данных
+                        </td>
+                      </tr>
+                    )}
+                    {previewLoading && (
+                      <tr>
+                        <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                          Загрузка…
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                     <tr>
-                      <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
-                        Загрузка…
-                      </td>
+                      {(tableColumns.length ? tableColumns : ['']).map((c, idx) => (
+                        <th key={`${c}-${idx}`} className="text-left font-medium px-3 py-2 whitespace-nowrap">
+                          {c}
+                        </th>
+                      ))}
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r, i) => (
+                      <tr key={i} className="border-t border-border">
+                        {(r.length ? r : ['']).map((v, j) => (
+                          <td key={j} className="px-3 py-2 align-top whitespace-nowrap">
+                            {v || '—'}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                    {!previewLoading && tableRows.length === 0 && (
+                      <tr>
+                        <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
+                          Нет данных
+                        </td>
+                      </tr>
+                    )}
+                    {previewLoading && (
+                      <tr>
+                        <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
+                          Загрузка…
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
             </ScrollArea>
           </div>
         </DialogContent>
