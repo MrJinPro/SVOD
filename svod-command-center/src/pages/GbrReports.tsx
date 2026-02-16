@@ -10,6 +10,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Card } from '@/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { apiFetchRaw } from '@/lib/api';
 import { Download, RefreshCw, RotateCcw, Filter } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -49,7 +55,7 @@ function formatDuration(seconds: number | null): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-async function downloadCsv(path: string, filename: string) {
+async function downloadFile(path: string, filename: string) {
   const res = await apiFetchRaw(path, { method: 'GET' });
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -116,7 +122,7 @@ export default function GbrReports() {
 
   const totalPages = Math.max(1, Math.ceil((trips.total || 0) / (trips.limit || 200)));
 
-  const exportPath = useMemo(() => {
+  const exportParams = useMemo(() => {
     const params = new URLSearchParams();
 
     if (applied.dateFrom) params.set('dateFrom', toStartOfDayIso(applied.dateFrom));
@@ -125,8 +131,16 @@ export default function GbrReports() {
     if (applied.objectId.trim()) params.set('objectId', applied.objectId.trim());
     if (applied.status !== 'all') params.set('status', applied.status);
 
-    return `/analytics/gbr/trips/export?${params.toString()}`;
+    return params.toString();
   }, [applied]);
+
+  const exportCsvPath = useMemo(() => {
+    return `/analytics/gbr/trips/export?${exportParams}`;
+  }, [exportParams]);
+
+  const exportXlsxPath = useMemo(() => {
+    return `/analytics/gbr/trips/export/table/xlsx?${exportParams}`;
+  }, [exportParams]);
 
   const forbiddenHint = useMemo(() => {
     const combined = [filtersError, error].filter(Boolean).join(' | ').toLowerCase();
@@ -225,15 +239,36 @@ export default function GbrReports() {
                 <RefreshCw className="h-4 w-4" />
                 Обновить
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2"
-                onClick={() => downloadCsv(exportPath, `gbr-trips-${new Date().toISOString().slice(0, 10)}.csv`)}
-              >
-                <Download className="h-4 w-4" />
-                CSV
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">
+                    <Download className="h-4 w-4" />
+                    Скачать
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      downloadFile(
+                        exportCsvPath,
+                        `gbr-trips-${new Date().toISOString().slice(0, 10)}.csv`
+                      )
+                    }
+                  >
+                    CSV
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      downloadFile(
+                        exportXlsxPath,
+                        `gbr-trips-${new Date().toISOString().slice(0, 10)}.xlsx`
+                      )
+                    }
+                  >
+                    XLSX
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 

@@ -485,18 +485,56 @@ async def gbr_trips(
     dt_from = _parse_dt(date_from)
     dt_to = _parse_dt(date_to)
 
-    called_match = _action_name_matches(EventAction.action_name, ["%Вызван%", "%Вызов%"])
-    arrived_match = _action_name_matches(EventAction.action_name, ["%Прибыт%"])
-    cancelled_match = _action_name_matches(EventAction.action_name, ["%Отмен%"])
-
-    called_ts = func.min(case((called_match, EventAction.action_time), else_=None)).label("called_ts")
-    called_operator = func.min(
-        case((called_match, EventAction.operator_name), else_=None)
-    ).label("called_operator")
-    arrived_ts = func.min(case((arrived_match, EventAction.action_time), else_=None)).label("arrived_ts")
-    cancelled_ts = func.min(case((cancelled_match, EventAction.action_time), else_=None)).label(
-        "cancelled_ts"
+    # Match actions robustly but avoid false positives.
+    # We use a strict match (mentions group/GBR/react) with a fallback loose match.
+    called_match_strict = _action_name_matches(
+        EventAction.action_name,
+        [
+            "%Вызван%груп%",
+            "%Вызван%реаг%",
+            "%Вызван%ГБР%",
+            "%Вызов%груп%",
+            "%Вызов%реаг%",
+            "%Вызов%ГБР%",
+        ],
     )
+    called_match_loose = _action_name_matches(EventAction.action_name, ["%Вызван%"])
+
+    arrived_match_strict = _action_name_matches(
+        EventAction.action_name,
+        [
+            "%Приб%груп%",
+            "%Приб%реаг%",
+            "%Приб%ГБР%",
+        ],
+    )
+    arrived_match_loose = _action_name_matches(EventAction.action_name, ["%Прибыт%", "%Прибыл%"])
+
+    cancelled_match_strict = _action_name_matches(
+        EventAction.action_name,
+        [
+            "%Отмен%груп%",
+            "%Отмен%реаг%",
+            "%Отмен%ГБР%",
+        ],
+    )
+    cancelled_match_loose = _action_name_matches(EventAction.action_name, ["%Отмен%"])
+
+    called_ts_strict = func.min(case((called_match_strict, EventAction.action_time), else_=None))
+    called_ts_loose = func.min(case((called_match_loose, EventAction.action_time), else_=None))
+    called_ts = func.coalesce(called_ts_strict, called_ts_loose).label("called_ts")
+
+    called_op_strict = func.min(case((called_match_strict, EventAction.operator_name), else_=None))
+    called_op_loose = func.min(case((called_match_loose, EventAction.operator_name), else_=None))
+    called_operator = func.coalesce(called_op_strict, called_op_loose).label("called_operator")
+
+    arrived_ts_strict = func.min(case((arrived_match_strict, EventAction.action_time), else_=None))
+    arrived_ts_loose = func.min(case((arrived_match_loose, EventAction.action_time), else_=None))
+    arrived_ts = func.coalesce(arrived_ts_strict, arrived_ts_loose).label("arrived_ts")
+
+    cancelled_ts_strict = func.min(case((cancelled_match_strict, EventAction.action_time), else_=None))
+    cancelled_ts_loose = func.min(case((cancelled_match_loose, EventAction.action_time), else_=None))
+    cancelled_ts = func.coalesce(cancelled_ts_strict, cancelled_ts_loose).label("cancelled_ts")
     last_action_ts = func.max(EventAction.action_time).label("last_action_ts")
 
     base = (
@@ -586,6 +624,23 @@ async def gbr_trips(
         called_operator_name,
         travel_s,
     ) in rows:
+        travel_seconds_val: float | None
+        travel_seconds_val = None
+        if travel_s is not None:
+            try:
+                travel_seconds_val = float(travel_s)
+            except Exception:
+                travel_seconds_val = None
+        if travel_seconds_val is None and isinstance(called, datetime) and isinstance(arrived, datetime):
+            try:
+                travel_seconds_val = float((arrived - called).total_seconds())
+            except Exception:
+                travel_seconds_val = None
+        if travel_seconds_val is not None and travel_seconds_val < 0:
+            # Data can contain inverted timestamps due to inconsistent action naming;
+            # for reporting we show absolute travel time.
+            travel_seconds_val = abs(travel_seconds_val)
+
         items.append(
             {
                 "eventId": event_id,
@@ -599,7 +654,7 @@ async def gbr_trips(
                 "clientName": client_name,
                 "responsibleName": responsible_name,
                 "calledOperator": called_operator_name,
-                "travelSeconds": float(travel_s) if travel_s is not None else None,
+                "travelSeconds": travel_seconds_val,
             }
         )
 
@@ -653,30 +708,41 @@ async def gbr_trips_export_csv(
 
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
+    def _fmt_iso(s: str | None) -> str:
+        if not s:
+            return ""
+        try:
+            return s.replace("T", " ")[:19]
+        except Exception:
+            return str(s)
+
+    def _arrival_cell(row: dict[str, Any]) -> str:
+        if row.get("arrivedAt"):
+            return _fmt_iso(row.get("arrivedAt"))
+        if row.get("cancelledAt"):
+            return "Отмена"
+        return "—"
+
     w.writerow([
-        "calledAt",
-        "arrivedAt",
-        "cancelledAt",
-        "travelSeconds",
-        "gbrName",
-            "panelId",
-        "objectName",
-        "clientName",
-        "calledOperator",
-        "eventId",
+        "Вызов",
+        "Прибытие",
+        "ГБР",
+        "№ объекта",
+        "Объект",
+        "Ответственный",
+        "Оператор",
+        "В пути",
     ])
     for r in result.get("data") or []:
         w.writerow([
-            r.get("calledAt") or "",
-            r.get("arrivedAt") or "",
-            r.get("cancelledAt") or "",
-            "" if r.get("travelSeconds") is None else str(r.get("travelSeconds")),
+            _fmt_iso(r.get("calledAt")),
+            _arrival_cell(r),
             r.get("gbrName") or "",
             r.get("objectId") or "",
             r.get("objectName") or "",
-            r.get("clientName") or "",
+            (r.get("responsibleName") or r.get("clientName") or ""),
             r.get("calledOperator") or "",
-            r.get("eventId") or "",
+            (_format_seconds_hhmmss(r.get("travelSeconds")) or "—"),
         ])
 
     name = f"gbr-trips-{datetime.utcnow().date().isoformat()}.csv"
@@ -843,6 +909,101 @@ async def gbr_trips_export_xlsx(
     wb.save(out)
 
     name = f"raport-gbr-{datetime.utcnow().date().isoformat()}.xlsx"
+    return _xlsx_response(out.getvalue(), name)
+
+
+@router.get("/gbr/trips/export/table/xlsx")
+async def gbr_trips_export_table_xlsx(
+    date_from: str | None = Query(None, alias="dateFrom"),
+    date_to: str | None = Query(None, alias="dateTo"),
+    gbr_name: str | None = Query(None, alias="gbrName"),
+    object_id: str | None = Query(None, alias="objectId"),
+    status: str | None = Query(None, pattern="^(all|arrived|cancelled|called)$"),
+    session: AsyncSession = Depends(get_session),
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> Response:
+    """XLSX: выгрузка «как в таблице» на странице Отчёт ГБР."""
+
+    result = await gbr_trips(
+        date_from=date_from,
+        date_to=date_to,
+        gbr_name=gbr_name,
+        object_id=object_id,
+        status=status,
+        limit=2000,
+        offset=0,
+        session=session,
+        _perm=_perm,
+    )
+
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Отчёт ГБР"
+
+    headers = [
+        "Вызов",
+        "Прибытие",
+        "ГБР",
+        "№ объекта",
+        "Объект",
+        "Ответственный",
+        "Оператор",
+        "В пути",
+    ]
+    ws.append(headers)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+
+    def _fmt_iso(s: str | None) -> str:
+        if not s:
+            return ""
+        try:
+            return s.replace("T", " ")[:19]
+        except Exception:
+            return str(s)
+
+    def _arrival_cell(row: dict[str, Any]) -> str:
+        if row.get("arrivedAt"):
+            return _fmt_iso(row.get("arrivedAt"))
+        if row.get("cancelledAt"):
+            return "Отмена"
+        return "—"
+
+    for r in (result.get("data") or []):
+        ws.append(
+            [
+                _fmt_iso(r.get("calledAt")),
+                _arrival_cell(r),
+                r.get("gbrName") or "",
+                r.get("objectId") or "",
+                r.get("objectName") or "",
+                (r.get("responsibleName") or r.get("clientName") or ""),
+                r.get("calledOperator") or "",
+                (_format_seconds_hhmmss(r.get("travelSeconds")) or "—"),
+            ]
+        )
+
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 12
+    ws.column_dimensions["E"].width = 40
+    ws.column_dimensions["F"].width = 30
+    ws.column_dimensions["G"].width = 22
+    ws.column_dimensions["H"].width = 10
+
+    out = BytesIO()
+    wb.save(out)
+
+    name = f"gbr-trips-table-{datetime.utcnow().date().isoformat()}.xlsx"
     return _xlsx_response(out.getvalue(), name)
 
 
