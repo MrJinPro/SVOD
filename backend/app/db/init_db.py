@@ -88,6 +88,10 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ea_cols = (await conn.execute(text("PRAGMA table_info(event_actions)"))).all()
                 ea_col_names = {c[1] for c in ea_cols}
                 for col_name, col_type in (
+                    ("id", "VARCHAR(36)"),
+                    ("event_id", "VARCHAR(64)"),
+                    ("action_name", "VARCHAR(80)"),
+                    ("action_time", "DATETIME"),
                     ("operator_name", "VARCHAR(200)"),
                     ("computer", "VARCHAR(70)"),
                     ("gbr_name", "VARCHAR(100)"),
@@ -185,6 +189,10 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
 
             # event_actions: ensure backward-compatible columns exist
             for col_name, col_type in (
+                ("id", "VARCHAR(36)"),
+                ("event_id", "VARCHAR(64)"),
+                ("action_name", "VARCHAR(80)"),
+                ("action_time", "TIMESTAMP"),
                 ("operator_name", "VARCHAR(200)"),
                 ("computer", "VARCHAR(70)"),
                 ("gbr_name", "VARCHAR(100)"),
