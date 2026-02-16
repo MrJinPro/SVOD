@@ -20,6 +20,7 @@ type Draft = {
   dateTo: string;
   gbrName: string;
   objectId: string;
+  status: 'all' | 'arrived' | 'cancelled' | 'called';
 };
 
 const defaultDraft: Draft = {
@@ -27,6 +28,7 @@ const defaultDraft: Draft = {
   dateTo: '',
   gbrName: 'all',
   objectId: '',
+  status: 'all',
 };
 
 function toStartOfDayIso(date: string): string {
@@ -95,6 +97,7 @@ export default function GbrReports() {
     if (applied.dateTo) params.set('dateTo', toEndOfDayIso(applied.dateTo));
     if (applied.gbrName !== 'all') params.set('gbrName', applied.gbrName);
     if (applied.objectId.trim()) params.set('objectId', applied.objectId.trim());
+    if (applied.status !== 'all') params.set('status', applied.status);
 
     const limit = 200;
     const offset = (page - 1) * limit;
@@ -120,6 +123,7 @@ export default function GbrReports() {
     if (applied.dateTo) params.set('dateTo', toEndOfDayIso(applied.dateTo));
     if (applied.gbrName !== 'all') params.set('gbrName', applied.gbrName);
     if (applied.objectId.trim()) params.set('objectId', applied.objectId.trim());
+    if (applied.status !== 'all') params.set('status', applied.status);
 
     return `/analytics/gbr/trips/export?${params.toString()}`;
   }, [applied]);
@@ -176,6 +180,21 @@ export default function GbrReports() {
               onChange={(e) => setDraft((v) => ({ ...v, objectId: e.target.value }))}
             />
 
+            <Select
+              value={draft.status}
+              onValueChange={(v) => setDraft((s) => ({ ...s, status: v as Draft['status'] }))}
+            >
+              <SelectTrigger className="w-[200px] bg-background">
+                <SelectValue placeholder="Статус" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все статусы</SelectItem>
+                <SelectItem value="arrived">Прибыл</SelectItem>
+                <SelectItem value="cancelled">Отмена</SelectItem>
+                <SelectItem value="called">Только вызов</SelectItem>
+              </SelectContent>
+            </Select>
+
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
@@ -230,7 +249,9 @@ export default function GbrReports() {
                   <th className="text-left font-medium px-3 py-2">Вызов</th>
                   <th className="text-left font-medium px-3 py-2">Прибытие</th>
                   <th className="text-left font-medium px-3 py-2">ГБР</th>
+                  <th className="text-left font-medium px-3 py-2">№ объекта</th>
                   <th className="text-left font-medium px-3 py-2">Объект</th>
+                  <th className="text-left font-medium px-3 py-2">Оператор</th>
                   <th className="text-right font-medium px-3 py-2">В пути</th>
                 </tr>
               </thead>
@@ -240,20 +261,20 @@ export default function GbrReports() {
                     <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
                     <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
                     <td className="px-3 py-2">{r.gbrName}</td>
+                    <td className="px-3 py-2 tabular-nums">{r.objectId || '—'}</td>
                     <td className="px-3 py-2">
-                      <div className="text-foreground">{r.objectName || r.objectId || '—'}</div>
+                      <div className="text-foreground">{r.objectName || '—'}</div>
                       <div className="text-xs text-muted-foreground">
-                        {[r.responsibleName || r.clientName || null, r.objectId ? `№ ${r.objectId}` : null]
-                          .filter(Boolean)
-                          .join(' • ')}
+                        {r.responsibleName || r.clientName || ''}
                       </div>
                     </td>
+                    <td className="px-3 py-2">{r.calledOperator || '—'}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatDuration(r.travelSeconds)}</td>
                   </tr>
                 ))}
                 {!isLoading && (trips.data || []).length === 0 && (
                   <tr>
-                    <td className="px-3 py-6 text-muted-foreground" colSpan={5}>
+                    <td className="px-3 py-6 text-muted-foreground" colSpan={7}>
                       Нет данных по выбранным фильтрам
                     </td>
                   </tr>

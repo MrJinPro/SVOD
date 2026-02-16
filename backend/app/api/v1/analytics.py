@@ -466,6 +466,7 @@ async def gbr_trips(
     date_to: str | None = Query(None, alias="dateTo"),
     gbr_name: str | None = Query(None, alias="gbrName"),
     object_id: str | None = Query(None, alias="objectId"),
+    status: str | None = Query(None, pattern="^(all|arrived|cancelled|called)$"),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -489,6 +490,9 @@ async def gbr_trips(
     cancelled_match = _action_name_matches(EventAction.action_name, ["%Отмен%"])
 
     called_ts = func.min(case((called_match, EventAction.action_time), else_=None)).label("called_ts")
+    called_operator = func.min(
+        case((called_match, EventAction.operator_name), else_=None)
+    ).label("called_operator")
     arrived_ts = func.min(case((arrived_match, EventAction.action_time), else_=None)).label("arrived_ts")
     cancelled_ts = func.min(case((cancelled_match, EventAction.action_time), else_=None)).label(
         "cancelled_ts"
@@ -500,6 +504,7 @@ async def gbr_trips(
             EventAction.event_id.label("event_id"),
             EventAction.gbr_name.label("gbr_name"),
             called_ts,
+            called_operator,
             arrived_ts,
             cancelled_ts,
             last_action_ts,
@@ -542,6 +547,7 @@ async def gbr_trips(
             Event.object_name,
             Event.client_name,
             resp_sq.c.responsible_name,
+            sq.c.called_operator,
             travel_seconds,
         )
         .select_from(sq)
@@ -552,6 +558,14 @@ async def gbr_trips(
         .offset(offset)
         .limit(limit)
     )
+
+    status_norm = (status or "all").strip().lower()
+    if status_norm == "arrived":
+        q = q.where(sq.c.arrived_ts.is_not(None))
+    elif status_norm == "cancelled":
+        q = q.where(sq.c.arrived_ts.is_(None)).where(sq.c.cancelled_ts.is_not(None))
+    elif status_norm == "called":
+        q = q.where(sq.c.arrived_ts.is_(None)).where(sq.c.cancelled_ts.is_(None))
 
     if object_id:
         q = q.where(Event.object_id == object_id)
@@ -569,6 +583,7 @@ async def gbr_trips(
         obj_name,
         client_name,
         responsible_name,
+        called_operator_name,
         travel_s,
     ) in rows:
         items.append(
@@ -583,6 +598,7 @@ async def gbr_trips(
                 "objectName": obj_name,
                 "clientName": client_name,
                 "responsibleName": responsible_name,
+                "calledOperator": called_operator_name,
                 "travelSeconds": float(travel_s) if travel_s is not None else None,
             }
         )
@@ -594,6 +610,13 @@ async def gbr_trips(
         .outerjoin(Event, Event.id == sq.c.event_id)
         .where(sq.c.called_ts.is_not(None))
     )
+
+    if status_norm == "arrived":
+        count_inner = count_inner.where(sq.c.arrived_ts.is_not(None))
+    elif status_norm == "cancelled":
+        count_inner = count_inner.where(sq.c.arrived_ts.is_(None)).where(sq.c.cancelled_ts.is_not(None))
+    elif status_norm == "called":
+        count_inner = count_inner.where(sq.c.arrived_ts.is_(None)).where(sq.c.cancelled_ts.is_(None))
     if object_id:
         count_inner = count_inner.where(Event.object_id == object_id)
     count_q = select(func.count()).select_from(count_inner.subquery())
@@ -608,6 +631,7 @@ async def gbr_trips_export_csv(
     date_to: str | None = Query(None, alias="dateTo"),
     gbr_name: str | None = Query(None, alias="gbrName"),
     object_id: str | None = Query(None, alias="objectId"),
+    status: str | None = Query(None, pattern="^(all|arrived|cancelled|called)$"),
     session: AsyncSession = Depends(get_session),
     _perm: Any = Depends(require_permissions("analytics:read")),
 ) -> Response:
@@ -617,6 +641,7 @@ async def gbr_trips_export_csv(
         date_to=date_to,
         gbr_name=gbr_name,
         object_id=object_id,
+        status=status,
         limit=2000,
         offset=0,
         session=session,
@@ -634,9 +659,10 @@ async def gbr_trips_export_csv(
         "cancelledAt",
         "travelSeconds",
         "gbrName",
-        "objectId",
+            "panelId",
         "objectName",
         "clientName",
+        "calledOperator",
         "eventId",
     ])
     for r in result.get("data") or []:
@@ -649,6 +675,7 @@ async def gbr_trips_export_csv(
             r.get("objectId") or "",
             r.get("objectName") or "",
             r.get("clientName") or "",
+            r.get("calledOperator") or "",
             r.get("eventId") or "",
         ])
 

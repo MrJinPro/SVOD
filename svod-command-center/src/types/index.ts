@@ -214,6 +214,7 @@ export interface GbrTripRow {
   objectName: string | null;
   clientName: string | null;
   responsibleName?: string | null;
+  calledOperator?: string | null;
   travelSeconds: number | null;
 }
 
