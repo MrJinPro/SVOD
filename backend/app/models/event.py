@@ -30,6 +30,7 @@ class Event(Base):
     state_is_over_process: Mapped[bool | None] = mapped_column(nullable=True)
 
     description: Mapped[str] = mapped_column(Text)
+    result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     operator_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -135,10 +135,6 @@ export default function GbrReports() {
     return params.toString();
   }, [applied]);
 
-  const exportCsvPath = useMemo(() => {
-    return `/analytics/gbr/trips/export?${exportParams}`;
-  }, [exportParams]);
-
   const exportXlsxPath = useMemo(() => {
     return `/analytics/gbr/trips/export/table/xlsx?${exportParams}`;
   }, [exportParams]);
@@ -248,16 +244,6 @@ export default function GbrReports() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      downloadFile(
-                        exportCsvPath,
-                        `gbr-trips-${new Date().toISOString().slice(0, 10)}.csv`
-                      )
-                    }
-                  >
-                    CSV
-                  </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() =>
                       downloadFile(

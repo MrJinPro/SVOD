@@ -38,13 +38,20 @@ import type { DateRange } from 'react-day-picker';
 import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type CreateReportKind = 'daily' | 'objectsByCode' | 'gbrRaportXlsx';
+type CreateReportKind = 'daily' | 'objectsByCode' | 'gbrRaportXlsx' | 'pcnLedger';
 
 function formatLocalYYYYMMDD(d: Date): string {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function setTimeOnDate(d: Date, hhmm: string): Date {
+  const [hh, mm] = (hhmm || '00:00').split(':');
+  const out = new Date(d);
+  out.setHours(Number(hh || '0'), Number(mm || '0'), 0, 0);
+  return out;
 }
 
 type EventCodeItem = {
@@ -195,12 +202,35 @@ export default function Reports() {
 
   const [dailyDate, setDailyDate] = useState(() => formatLocalYYYYMMDD(new Date()));
 
+  const [pcnOperatorQuery, setPcnOperatorQuery] = useState('');
+  const [pcnPay0, setPcnPay0] = useState('0');
+  const [pcnPay1, setPcnPay1] = useState('330');
+  const [pcnPay2, setPcnPay2] = useState('430');
+  const [pcnPay3, setPcnPay3] = useState('480');
+
+  const [pcnThr3_1, setPcnThr3_1] = useState('29');
+  const [pcnThr3_2, setPcnThr3_2] = useState('36');
+  const [pcnThr3_3, setPcnThr3_3] = useState('40');
+
+  const [pcnThr4_1, setPcnThr4_1] = useState('21');
+  const [pcnThr4_2, setPcnThr4_2] = useState('27');
+  const [pcnThr4_3, setPcnThr4_3] = useState('30');
+
+  const [pcnThr5_1, setPcnThr5_1] = useState('17');
+  const [pcnThr5_2, setPcnThr5_2] = useState('23');
+  const [pcnThr5_3, setPcnThr5_3] = useState('26');
+
   const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
     const now = new Date();
     const from = new Date(now);
     from.setDate(from.getDate() - 7);
     return { from, to: now };
   });
+
+  const [rangeYear, setRangeYear] = useState(() => String(new Date().getFullYear()));
+  const [rangeMonth, setRangeMonth] = useState<'all' | string>('all');
+  const [timeFrom, setTimeFrom] = useState('00:00');
+  const [timeTo, setTimeTo] = useState('23:59');
   const [clientName, setClientName] = useState('');
   const [objectQuery, setObjectQuery] = useState('');
   const [eventCode, setEventCode] = useState('');
@@ -209,6 +239,44 @@ export default function Reports() {
   const [gbrObjectId, setGbrObjectId] = useState('');
   const [gbrPreview, setGbrPreview] = useState<GbrTripRow[]>([]);
   const [gbrPreviewLoading, setGbrPreviewLoading] = useState(false);
+
+  const setRangeToYear = (year: number) => {
+    setRangeYear(String(year));
+    setRangeMonth('all');
+    setDateRange({ from: new Date(year, 0, 1), to: new Date(year, 11, 31) });
+  };
+
+  const setRangeToMonth = (year: number, month1to12: number) => {
+    setRangeYear(String(year));
+    setRangeMonth(String(month1to12));
+    setDateRange({ from: new Date(year, month1to12 - 1, 1), to: new Date(year, month1to12, 0) });
+  };
+
+  const applyQuickRange = (kind: 'y2024' | 'y2025' | 'curMonth' | 'prevMonth') => {
+    const now = new Date();
+    if (kind === 'y2024') return setRangeToYear(2024);
+    if (kind === 'y2025') return setRangeToYear(2025);
+    if (kind === 'curMonth') return setRangeToMonth(now.getFullYear(), now.getMonth() + 1);
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return setRangeToMonth(prev.getFullYear(), prev.getMonth() + 1);
+  };
+
+  const QuickRangeButtons = () => (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" variant="outline" size="sm" onClick={() => applyQuickRange('y2024')}>
+        2024
+      </Button>
+      <Button type="button" variant="outline" size="sm" onClick={() => applyQuickRange('y2025')}>
+        2025
+      </Button>
+      <Button type="button" variant="outline" size="sm" onClick={() => applyQuickRange('curMonth')}>
+        Текущий месяц
+      </Button>
+      <Button type="button" variant="outline" size="sm" onClick={() => applyQuickRange('prevMonth')}>
+        Прошлый месяц
+      </Button>
+    </div>
+  );
 
   const downloadBlob = async (path: string, filename: string) => {
     const res = await apiFetchRaw(path, { method: 'GET' });
@@ -235,8 +303,8 @@ export default function Reports() {
     try {
       const params = new URLSearchParams();
       // Use UTC ISO like other pages (Analytics/GbrReports)
-      const df = new Date(`${formatLocalYYYYMMDD(dateRange.from)}T00:00:00`).toISOString();
-      const dt = new Date(`${formatLocalYYYYMMDD(dateRange.to)}T23:59:59.999`).toISOString();
+      const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
+      const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
       params.set('dateFrom', df);
       params.set('dateTo', dt);
       if (gbrName !== 'all') params.set('gbrName', String(gbrName));
@@ -263,48 +331,14 @@ export default function Reports() {
       return;
     }
     const params = new URLSearchParams();
-    const df = new Date(`${formatLocalYYYYMMDD(dateRange.from)}T00:00:00`).toISOString();
-    const dt = new Date(`${formatLocalYYYYMMDD(dateRange.to)}T23:59:59.999`).toISOString();
+    const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
+    const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
     params.set('dateFrom', df);
     params.set('dateTo', dt);
     if (gbrName !== 'all') params.set('gbrName', String(gbrName));
     if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
     const name = `raport-gbr-${formatLocalYYYYMMDD(new Date())}.xlsx`;
     await downloadBlob(`/analytics/gbr/trips/export/xlsx?${params.toString()}`, name);
-  };
-
-  const downloadDailyCsv = (date: string) => {
-    const url = `${API_BASE_URL}/reports/export/daily?date=${encodeURIComponent(date)}`;
-    window.location.href = url;
-  };
-
-  const downloadObjectsByCodeCsv = () => {
-    if (!eventCode.trim()) {
-      toast({
-        title: 'Отчёт',
-        description: 'Выберите код события.',
-        variant: 'destructive',
-      });
-      return;
-    }
-    if (!dateRange?.from || !dateRange?.to) {
-      toast({
-        title: 'Отчёт',
-        description: 'Выберите период (от и до).',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const params = new URLSearchParams();
-    params.set('eventCode', eventCode.trim());
-    params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
-    params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
-    if (clientName.trim()) params.set('clientName', clientName.trim());
-    if (objectQuery.trim()) params.set('objectQuery', objectQuery.trim());
-
-    const url = `${API_BASE_URL}/reports/export/objects-by-code?${params.toString()}`;
-    window.location.href = url;
   };
 
   const createReportInHistory = async () => {
@@ -322,24 +356,53 @@ export default function Reports() {
         }
         const params = new URLSearchParams();
         params.set('eventCode', eventCode.trim());
-        params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
-        params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
+        params.set('dateFrom', setTimeOnDate(dateRange.from, timeFrom).toISOString());
+        params.set('dateTo', setTimeOnDate(dateRange.to, timeTo).toISOString());
         if (clientName.trim()) params.set('clientName', clientName.trim());
         if (objectQuery.trim()) params.set('objectQuery', objectQuery.trim());
         await apiPost(`/reports/generate/objects-by-code?${params.toString()}`);
-      } else {
+      } else if (createKind === 'gbrRaportXlsx') {
         if (!dateRange?.from || !dateRange?.to) {
           toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
           return;
         }
         const params = new URLSearchParams();
-        const df = new Date(`${formatLocalYYYYMMDD(dateRange.from)}T00:00:00`).toISOString();
-        const dt = new Date(`${formatLocalYYYYMMDD(dateRange.to)}T23:59:59.999`).toISOString();
+        const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
+        const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
         params.set('dateFrom', df);
         params.set('dateTo', dt);
         if (gbrName !== 'all') params.set('gbrName', String(gbrName));
         if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
         await apiPost(`/reports/generate/gbr-raport-xlsx?${params.toString()}`);
+      } else if (createKind === 'pcnLedger') {
+        if (!dateRange?.from || !dateRange?.to) {
+          toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+          return;
+        }
+        const params = new URLSearchParams();
+        params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
+        params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
+        if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
+
+        // Configurable payouts/thresholds (will be printed in XLSX header)
+        if (pcnPay0.trim()) params.set('pay0', pcnPay0.trim());
+        if (pcnPay1.trim()) params.set('pay1', pcnPay1.trim());
+        if (pcnPay2.trim()) params.set('pay2', pcnPay2.trim());
+        if (pcnPay3.trim()) params.set('pay3', pcnPay3.trim());
+
+        if (pcnThr3_1.trim()) params.set('thr3_1', pcnThr3_1.trim());
+        if (pcnThr3_2.trim()) params.set('thr3_2', pcnThr3_2.trim());
+        if (pcnThr3_3.trim()) params.set('thr3_3', pcnThr3_3.trim());
+
+        if (pcnThr4_1.trim()) params.set('thr4_1', pcnThr4_1.trim());
+        if (pcnThr4_2.trim()) params.set('thr4_2', pcnThr4_2.trim());
+        if (pcnThr4_3.trim()) params.set('thr4_3', pcnThr4_3.trim());
+
+        if (pcnThr5_1.trim()) params.set('thr5_1', pcnThr5_1.trim());
+        if (pcnThr5_2.trim()) params.set('thr5_2', pcnThr5_2.trim());
+        if (pcnThr5_3.trim()) params.set('thr5_3', pcnThr5_3.trim());
+
+        await apiPost(`/reports/generate/pcn-ledger-xlsx?${params.toString()}`);
       }
 
       toast({ title: 'Отчёт', description: 'Отчёт добавлен в историю.' });
@@ -378,6 +441,9 @@ export default function Reports() {
               <SelectContent>
                 <SelectItem value="all">Все типы</SelectItem>
                 <SelectItem value="daily">Суточные</SelectItem>
+                <SelectItem value="objectsByCode">Объекты по коду</SelectItem>
+                <SelectItem value="gbrRaportXlsx">Рапорт (ГБР)</SelectItem>
+                <SelectItem value="pcnLedger">Ведомость (ПЦН)</SelectItem>
                 <SelectItem value="weekly">Недельные</SelectItem>
                 <SelectItem value="monthly">Месячные</SelectItem>
               </SelectContent>
@@ -430,9 +496,10 @@ export default function Reports() {
                     <SelectValue placeholder="Тип отчёта" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="objectsByCode">Объекты по коду события (CSV)</SelectItem>
+                    <SelectItem value="objectsByCode">Объекты по коду события (XLSX)</SelectItem>
                     <SelectItem value="gbrRaportXlsx">Рапорт (ГБР) по шаблону (XLSX)</SelectItem>
-                    <SelectItem value="daily">Суточный журнал событий (CSV)</SelectItem>
+                    <SelectItem value="pcnLedger">Ведомость по тревогам (ПЦН) (XLSX)</SelectItem>
+                    <SelectItem value="daily">Суточный журнал событий (XLSX)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -456,23 +523,90 @@ export default function Reports() {
                   <div className="flex flex-wrap items-end gap-3">
                     <div className="space-y-1">
                       <div className="text-sm text-muted-foreground">Период</div>
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <Button variant="outline" className="w-[280px] justify-start font-normal">
-                            {dateRange?.from && dateRange?.to
-                              ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
-                              : 'Выберите период'}
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-auto p-0" align="start">
-                          <Calendar
-                            mode="range"
-                            numberOfMonths={2}
-                            selected={dateRange}
-                            onSelect={setDateRange}
-                          />
-                        </PopoverContent>
-                      </Popover>
+                      <QuickRangeButtons />
+                      <div className="flex flex-wrap items-end gap-2">
+                        <Select
+                          value={rangeYear}
+                          onValueChange={(v) => {
+                            setRangeYear(v);
+                            const y = Number(v);
+                            const m = rangeMonth === 'all' ? null : Number(rangeMonth);
+                            const from = m == null ? new Date(y, 0, 1) : new Date(y, m - 1, 1);
+                            const to = m == null ? new Date(y, 11, 31) : new Date(y, m, 0);
+                            setDateRange({ from, to });
+                          }}
+                        >
+                          <SelectTrigger className="w-[120px] bg-background">
+                            <SelectValue placeholder="Год" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Array.from({ length: 8 }).map((_, i) => {
+                              const y = new Date().getFullYear() - (6 - i);
+                              return (
+                                <SelectItem key={y} value={String(y)}>
+                                  {y}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+
+                        <Select
+                          value={rangeMonth}
+                          onValueChange={(v) => {
+                            setRangeMonth(v as any);
+                            const y = Number(rangeYear);
+                            if (v === 'all') {
+                              setDateRange({ from: new Date(y, 0, 1), to: new Date(y, 11, 31) });
+                              return;
+                            }
+                            const m = Number(v);
+                            setDateRange({ from: new Date(y, m - 1, 1), to: new Date(y, m, 0) });
+                          }}
+                        >
+                          <SelectTrigger className="w-[160px] bg-background">
+                            <SelectValue placeholder="Месяц" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Весь год</SelectItem>
+                            {Array.from({ length: 12 }).map((_, i) => {
+                              const m = i + 1;
+                              return (
+                                <SelectItem key={m} value={String(m)}>
+                                  {String(m).padStart(2, '0')}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-[280px] justify-start font-normal">
+                              {dateRange?.from && dateRange?.to
+                                ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
+                                : 'Выберите период'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="range"
+                              numberOfMonths={2}
+                              selected={dateRange}
+                              onSelect={setDateRange}
+                            />
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Время (от/до)</div>
+                      <div className="flex items-center gap-2">
+                        <Input type="time" className="w-[140px] bg-background" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} />
+                        <div className="text-muted-foreground">—</div>
+                        <Input type="time" className="w-[140px] bg-background" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} />
+                      </div>
                     </div>
 
                     <div className="space-y-1">
@@ -512,23 +646,90 @@ export default function Reports() {
                   <div className="flex flex-wrap items-end gap-3">
                     <div className="space-y-1">
                       <div className="text-sm text-muted-foreground">Период</div>
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <Button variant="outline" className="w-[280px] justify-start font-normal">
-                            {dateRange?.from && dateRange?.to
-                              ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
-                              : 'Выберите период'}
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-auto p-0" align="start">
-                          <Calendar
-                            mode="range"
-                            numberOfMonths={2}
-                            selected={dateRange}
-                            onSelect={setDateRange}
-                          />
-                        </PopoverContent>
-                      </Popover>
+                      <QuickRangeButtons />
+                      <div className="flex flex-wrap items-end gap-2">
+                        <Select
+                          value={rangeYear}
+                          onValueChange={(v) => {
+                            setRangeYear(v);
+                            const y = Number(v);
+                            const m = rangeMonth === 'all' ? null : Number(rangeMonth);
+                            const from = m == null ? new Date(y, 0, 1) : new Date(y, m - 1, 1);
+                            const to = m == null ? new Date(y, 11, 31) : new Date(y, m, 0);
+                            setDateRange({ from, to });
+                          }}
+                        >
+                          <SelectTrigger className="w-[120px] bg-background">
+                            <SelectValue placeholder="Год" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Array.from({ length: 8 }).map((_, i) => {
+                              const y = new Date().getFullYear() - (6 - i);
+                              return (
+                                <SelectItem key={y} value={String(y)}>
+                                  {y}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+
+                        <Select
+                          value={rangeMonth}
+                          onValueChange={(v) => {
+                            setRangeMonth(v as any);
+                            const y = Number(rangeYear);
+                            if (v === 'all') {
+                              setDateRange({ from: new Date(y, 0, 1), to: new Date(y, 11, 31) });
+                              return;
+                            }
+                            const m = Number(v);
+                            setDateRange({ from: new Date(y, m - 1, 1), to: new Date(y, m, 0) });
+                          }}
+                        >
+                          <SelectTrigger className="w-[160px] bg-background">
+                            <SelectValue placeholder="Месяц" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Весь год</SelectItem>
+                            {Array.from({ length: 12 }).map((_, i) => {
+                              const m = i + 1;
+                              return (
+                                <SelectItem key={m} value={String(m)}>
+                                  {String(m).padStart(2, '0')}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-[280px] justify-start font-normal">
+                              {dateRange?.from && dateRange?.to
+                                ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
+                                : 'Выберите период'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="range"
+                              numberOfMonths={2}
+                              selected={dateRange}
+                              onSelect={setDateRange}
+                            />
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Время (от/до)</div>
+                      <div className="flex items-center gap-2">
+                        <Input type="time" className="w-[140px] bg-background" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} />
+                        <div className="text-muted-foreground">—</div>
+                        <Input type="time" className="w-[140px] bg-background" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} />
+                      </div>
                     </div>
 
                     <div className="space-y-1">
@@ -605,6 +806,161 @@ export default function Reports() {
                         </tbody>
                       </table>
                     </ScrollArea>
+                  </div>
+                </div>
+              ) : null}
+
+              {createKind === 'pcnLedger' ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Период</div>
+                      <QuickRangeButtons />
+                      <div className="flex flex-wrap items-end gap-2">
+                        <Select
+                          value={rangeYear}
+                          onValueChange={(v) => {
+                            setRangeYear(v);
+                            const y = Number(v);
+                            const m = rangeMonth === 'all' ? null : Number(rangeMonth);
+                            const from = m == null ? new Date(y, 0, 1) : new Date(y, m - 1, 1);
+                            const to = m == null ? new Date(y, 11, 31) : new Date(y, m, 0);
+                            setDateRange({ from, to });
+                          }}
+                        >
+                          <SelectTrigger className="w-[120px] bg-background">
+                            <SelectValue placeholder="Год" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Array.from({ length: 8 }).map((_, i) => {
+                              const y = new Date().getFullYear() - (6 - i);
+                              return (
+                                <SelectItem key={y} value={String(y)}>
+                                  {y}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+
+                        <Select
+                          value={rangeMonth}
+                          onValueChange={(v) => {
+                            setRangeMonth(v as any);
+                            const y = Number(rangeYear);
+                            if (v === 'all') {
+                              setDateRange({ from: new Date(y, 0, 1), to: new Date(y, 11, 31) });
+                              return;
+                            }
+                            const m = Number(v);
+                            setDateRange({ from: new Date(y, m - 1, 1), to: new Date(y, m, 0) });
+                          }}
+                        >
+                          <SelectTrigger className="w-[160px] bg-background">
+                            <SelectValue placeholder="Месяц" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Весь год</SelectItem>
+                            {Array.from({ length: 12 }).map((_, i) => {
+                              const m = i + 1;
+                              return (
+                                <SelectItem key={m} value={String(m)}>
+                                  {String(m).padStart(2, '0')}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-[280px] justify-start font-normal">
+                              {dateRange?.from && dateRange?.to
+                                ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
+                                : 'Выберите период'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="range"
+                              numberOfMonths={2}
+                              selected={dateRange}
+                              onSelect={setDateRange}
+                            />
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Оператор (опционально)</div>
+                      <Input
+                        className="w-[320px] bg-background"
+                        placeholder="ФИО или часть"
+                        value={pcnOperatorQuery}
+                        onChange={(e) => setPcnOperatorQuery(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border p-3 space-y-3">
+                    <div className="text-sm font-medium text-foreground">Пороги и выплаты (можно менять)</div>
+
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="space-y-1">
+                        <div className="text-xs text-muted-foreground">Выплата 0</div>
+                        <Input type="number" className="w-[120px] bg-background" value={pcnPay0} onChange={(e) => setPcnPay0(e.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs text-muted-foreground">Выплата 1</div>
+                        <Input type="number" className="w-[120px] bg-background" value={pcnPay1} onChange={(e) => setPcnPay1(e.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs text-muted-foreground">Выплата 2</div>
+                        <Input type="number" className="w-[120px] bg-background" value={pcnPay2} onChange={(e) => setPcnPay2(e.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs text-muted-foreground">Выплата 3</div>
+                        <Input type="number" className="w-[120px] bg-background" value={pcnPay3} onChange={(e) => setPcnPay3(e.target.value)} />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-end gap-6">
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground">3 диспетчера (t1/t2/t3)</div>
+                        <div className="flex items-end gap-2">
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr3_1} onChange={(e) => setPcnThr3_1(e.target.value)} />
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr3_2} onChange={(e) => setPcnThr3_2(e.target.value)} />
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr3_3} onChange={(e) => setPcnThr3_3(e.target.value)} />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground">4 диспетчера (t1/t2/t3)</div>
+                        <div className="flex items-end gap-2">
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr4_1} onChange={(e) => setPcnThr4_1(e.target.value)} />
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr4_2} onChange={(e) => setPcnThr4_2(e.target.value)} />
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr4_3} onChange={(e) => setPcnThr4_3(e.target.value)} />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground">5 диспетчеров (t1/t2/t3)</div>
+                        <div className="flex items-end gap-2">
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr5_1} onChange={(e) => setPcnThr5_1(e.target.value)} />
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr5_2} onChange={(e) => setPcnThr5_2(e.target.value)} />
+                          <Input type="number" className="w-[90px] bg-background" value={pcnThr5_3} onChange={(e) => setPcnThr5_3(e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      Пороги должны быть по возрастанию (0–100). Эти значения будут напечатаны в шапке XLSX как правило расчёта.
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    Тревоги считаются по действиям оператора «Прием на обработку». Пороговые выплаты берутся как в шаблоне.
                   </div>
                 </div>
               ) : null}

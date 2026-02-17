@@ -86,7 +86,7 @@ export interface ObjectDetails {
 }
 
 // Report Types
-export type ReportType = 'daily' | 'weekly' | 'monthly' | 'objectsByCode' | 'gbrRaportXlsx';
+export type ReportType = 'daily' | 'weekly' | 'monthly' | 'objectsByCode' | 'gbrRaportXlsx' | 'pcnLedger';
 export type ReportStatus = 'generated' | 'sent' | 'pending' | 'failed';
 
 export interface Report {

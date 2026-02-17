@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.services.sync_service import (
     get_mssql_event_cursor,
+    get_sqlite_event_cursor,
     set_mssql_event_cursor,
     sync_events_from_agency_mssql_archives,
     sync_events_from_agency_sqlite_archives,
@@ -360,6 +361,13 @@ async def get_sync_status() -> dict[str, Any]:
         except Exception:
             cursor = None
 
+        # SQLite cursor (if any)
+        try:
+            s_cur_date_key, s_cur_event_id = await get_sqlite_event_cursor(session)
+            sqlite_cursor = f"{s_cur_date_key}:{s_cur_event_id}"
+        except Exception:
+            sqlite_cursor = None
+
         return {
             "autoSync": status,
             "db": {
@@ -370,9 +378,10 @@ async def get_sync_status() -> dict[str, Any]:
                 "latestEventActionTime": latest_action_ts,
             },
             "mssql": {"cursor": cursor},
+            "sqlite": {"cursor": sqlite_cursor},
         }
 
-    return {"autoSync": status, "db": None, "mssql": {"cursor": None}}
+    return {"autoSync": status, "db": None, "mssql": {"cursor": None}, "sqlite": {"cursor": None}}
 
 
 @router.get("/tables")
@@ -386,6 +395,26 @@ async def list_tables(
     """
     async for session in get_session():
         session: AsyncSession
+        try:
+            dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+        except Exception:
+            dialect_name = None
+
+        if dialect_name == "sqlite":
+            q = text(
+                """
+                SELECT name AS table_name
+                FROM sqlite_master
+                WHERE type='table'
+                  AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+                """
+            )
+            rows = (await session.execute(q)).mappings().all()
+            tables = [{"table_schema": "main", "table_name": str(r.get("table_name") or "")} for r in rows]
+            tables = [t for t in tables if t["table_name"]]
+            return {"count": len(tables), "tables": tables}
+
         if include_system:
             q = text(
                 """
@@ -418,6 +447,28 @@ async def list_columns(
 ) -> dict[str, Any]:
     async for session in get_session():
         session: AsyncSession
+        try:
+            dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+        except Exception:
+            dialect_name = None
+
+        if dialect_name == "sqlite":
+            q = text(f"PRAGMA table_info({table_name!r})")
+            rows = (await session.execute(q)).mappings().all()
+            cols = []
+            for r in rows:
+                cols.append(
+                    {
+                        "column_name": str(r.get("name") or ""),
+                        "data_type": str(r.get("type") or ""),
+                        "is_nullable": "NO" if int(r.get("notnull") or 0) else "YES",
+                        "column_default": r.get("dflt_value"),
+                        "pk": int(r.get("pk") or 0),
+                    }
+                )
+            cols = [c for c in cols if c["column_name"]]
+            return {"count": len(cols), "columns": cols}
+
         q = text(
             """
             SELECT

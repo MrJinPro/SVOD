@@ -22,6 +22,23 @@ from app.models.event_action import EventAction
 router = APIRouter(prefix="/events")
 
 
+def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
+    from openpyxl import Workbook
+
+    text = content.decode("utf-8-sig", errors="replace")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "data"
+
+    reader = csv.reader(io.StringIO(text), delimiter=";")
+    for row in reader:
+        ws.append(list(row))
+
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 def _parse_dt(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value)
@@ -42,6 +59,7 @@ def _event_to_out(e: Event) -> dict[str, Any]:
         "code": getattr(e, "code", None),
         "codeText": getattr(e, "code_text", None),
         "stateName": getattr(e, "state_name", None),
+        "resultText": getattr(e, "result_text", None),
         "description": e.description,
         "location": e.location,
         "operatorId": e.operator_id,
@@ -170,7 +188,7 @@ async def list_events(
 
 
 @router.get("/export")
-async def export_events_csv(
+async def export_events_export(
     dateFrom: str | None = None,
     dateTo: str | None = None,
     type: str | None = None,  # noqa: A002
@@ -219,27 +237,37 @@ async def export_events_csv(
         stmt = stmt.where(where)
     rows = (await session.execute(stmt)).scalars().all()
 
-    buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";")
-    writer.writerow(
-        [
-            "id",
-            "timestamp",
-            "type",
-            "object_id",
-            "object_name",
-            "client_name",
-            "code",
-            "code_text",
-            "state_name",
-            "severity",
-            "status",
-            "location",
-            "description",
-        ]
-    )
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "События"
+
+    headers = [
+        "ID",
+        "Дата/время",
+        "Тип",
+        "Номер объекта",
+        "Название объекта",
+        "Контрагент",
+        "Код",
+        "Расшифровка кода",
+        "Статус (агентство)",
+        "Важность",
+        "Статус",
+        "Адрес",
+        "Пометка (Result_Text)",
+        "Описание",
+    ]
+    ws.append(headers)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+
     for e in rows:
-        writer.writerow(
+        ws.append(
             [
                 e.id,
                 e.timestamp.isoformat(),
@@ -253,16 +281,60 @@ async def export_events_csv(
                 e.severity,
                 e.status,
                 e.location or "",
+                getattr(e, "result_text", "") or "",
                 (e.description or "").replace("\r\n", "\n"),
             ]
         )
 
-    content = buf.getvalue()
-    filename = f"events-export-{datetime.utcnow().date().isoformat()}.csv"
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 40
+    ws.column_dimensions["F"].width = 30
+    ws.column_dimensions["G"].width = 10
+    ws.column_dimensions["H"].width = 40
+    ws.column_dimensions["I"].width = 22
+    ws.column_dimensions["J"].width = 10
+    ws.column_dimensions["K"].width = 12
+    ws.column_dimensions["L"].width = 40
+    ws.column_dimensions["M"].width = 40
+    ws.column_dimensions["N"].width = 80
+
+    xlsx = io.BytesIO()
+    wb.save(xlsx)
+
+    filename = f"events-export-{datetime.utcnow().date().isoformat()}.xlsx"
     return Response(
-        content=content,
-        media_type="text/csv; charset=utf-8",
+        content=xlsx.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/export/xlsx")
+async def export_events_xlsx(
+    dateFrom: str | None = None,
+    dateTo: str | None = None,
+    type: str | None = None,  # noqa: A002
+    objectId: str | None = None,
+    severity: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    limit: int = Query(50000, ge=1, le=200000),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    return await export_events_export(
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        type=type,
+        objectId=objectId,
+        severity=severity,
+        status=status,
+        search=search,
+        limit=limit,
+        session=session,
     )
 
 

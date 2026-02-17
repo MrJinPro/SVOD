@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 SYNC_KEY_LAST_ALARM_ID = "agency_mysql.last_alarm_id"
 SYNC_KEY_MSSQL_EVENT_CURSOR = "agency_mssql.archive.cursor"
+SYNC_KEY_SQLITE_EVENT_CURSOR = "agency_sqlite.archive.cursor"
 
 
 def _derive_severity(row: dict[str, Any]) -> str:
@@ -392,6 +393,7 @@ async def sync_recent_events_from_agency_mssql_archives(
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
+                "result_text": result_text,
                 "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }
@@ -628,6 +630,31 @@ async def set_mssql_event_cursor(session: AsyncSession, date_key: int, event_id:
     row = await session.get(SyncState, SYNC_KEY_MSSQL_EVENT_CURSOR)
     if row is None:
         row = SyncState(key=SYNC_KEY_MSSQL_EVENT_CURSOR, value=value, updated_at=datetime.utcnow())
+        session.add(row)
+    else:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+
+
+async def get_sqlite_event_cursor(session: AsyncSession) -> tuple[int, int]:
+    """Возвращает (Date_Key, Event_id) для SQLite архивов."""
+    row = await session.get(SyncState, SYNC_KEY_SQLITE_EVENT_CURSOR)
+    if not row or not row.value:
+        start_key = int(settings.agency_sqlite_archive_start_date_key or 20230101)
+        return (start_key, 0)
+    try:
+        parts = row.value.split(":", 1)
+        return (int(parts[0]), int(parts[1] if len(parts) > 1 else 0))
+    except Exception:
+        start_key = int(settings.agency_sqlite_archive_start_date_key or 20230101)
+        return (start_key, 0)
+
+
+async def set_sqlite_event_cursor(session: AsyncSession, date_key: int, event_id: int) -> None:
+    value = f"{int(date_key)}:{int(event_id)}"
+    row = await session.get(SyncState, SYNC_KEY_SQLITE_EVENT_CURSOR)
+    if row is None:
+        row = SyncState(key=SYNC_KEY_SQLITE_EVENT_CURSOR, value=value, updated_at=datetime.utcnow())
         session.add(row)
     else:
         row.value = value
@@ -900,7 +927,7 @@ async def sync_events_from_agency_sqlite_archives(
     *,
     batch_limit: int = 500,
 ) -> dict[str, Any]:
-    cur_date_key, cur_event_id = await get_mssql_event_cursor(session)
+    cur_date_key, cur_event_id = await get_sqlite_event_cursor(session)
     rows = fetch_archive_events_since_sqlite(
         agency_sqlite_url,
         cursor_date_key=cur_date_key,
@@ -1014,6 +1041,7 @@ async def sync_events_from_agency_sqlite_archives(
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
+                "result_text": result_text,
                 "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }
@@ -1190,7 +1218,7 @@ async def sync_events_from_agency_sqlite_archives(
                     continue
                 session.add(EventAction(**r))
 
-    await set_mssql_event_cursor(session, max_date_key, max_event_id)
+    await set_sqlite_event_cursor(session, max_date_key, max_event_id)
     await session.commit()
 
     inserted = 0
@@ -1349,6 +1377,7 @@ async def sync_events_from_agency_mssql_archives(
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
+                "result_text": result_text,
                 "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }

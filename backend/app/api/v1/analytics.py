@@ -52,16 +52,6 @@ def _action_name_matches(col, patterns: list[str]):
     return or_(*[col.ilike(p) for p in patterns])
 
 
-def _csv_response(content: str, filename: str) -> Response:
-    # Use UTF-8 BOM for Excel-friendly import in Windows environments.
-    data = content.encode("utf-8-sig")
-    return Response(
-        content=data,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
-
-
 def _xlsx_response(data: bytes, filename: str) -> Response:
     return Response(
         content=data,
@@ -693,61 +683,16 @@ async def gbr_trips_export_csv(
     # Reuse the list endpoint logic with a high limit; export is for management reports.
     result = await gbr_trips(
         date_from=date_from,
-        date_to=date_to,
-        gbr_name=gbr_name,
-        object_id=object_id,
-        status=status,
-        limit=2000,
-        offset=0,
-        session=session,
-        _perm=_perm,
-    )
-
-    import csv
-    import io
-
-    buf = io.StringIO()
-    w = csv.writer(buf, delimiter=";")
-    def _fmt_iso(s: str | None) -> str:
-        if not s:
-            return ""
-        try:
-            return s.replace("T", " ")[:19]
-        except Exception:
-            return str(s)
-
-    def _arrival_cell(row: dict[str, Any]) -> str:
-        if row.get("arrivedAt"):
-            return _fmt_iso(row.get("arrivedAt"))
-        if row.get("cancelledAt"):
-            return "Отмена"
-        return "—"
-
-    w.writerow([
-        "Вызов",
-        "Прибытие",
-        "ГБР",
-        "№ объекта",
-        "Объект",
-        "Ответственный",
-        "Оператор",
-        "В пути",
-    ])
-    for r in result.get("data") or []:
-        w.writerow([
-            _fmt_iso(r.get("calledAt")),
-            _arrival_cell(r),
-            r.get("gbrName") or "",
-            r.get("objectId") or "",
-            r.get("objectName") or "",
-            (r.get("responsibleName") or r.get("clientName") or ""),
-            r.get("calledOperator") or "",
-            (_format_seconds_hhmmss(r.get("travelSeconds")) or "—"),
-        ])
-
-    name = f"gbr-trips-{datetime.utcnow().date().isoformat()}.csv"
-    return _csv_response(buf.getvalue(), name)
-
+            # CSV больше не поддерживаем: отдаём XLSX (как в таблице UI).
+            return await gbr_trips_export_table_xlsx(
+                date_from=date_from,
+                date_to=date_to,
+                gbr_name=gbr_name,
+                object_id=object_id,
+                status=None,
+                session=session,
+                _perm=_perm,
+            )
 
 @router.get("/gbr/trips/export/xlsx")
 async def gbr_trips_export_xlsx(

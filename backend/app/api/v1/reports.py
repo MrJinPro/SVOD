@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from datetime import datetime, timezone
 from datetime import date as date_type
+from datetime import time as time_type
+from datetime import timedelta
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -51,6 +53,72 @@ def _parse_date(value: str) -> date_type | None:
         return None
 
 
+def _parse_hhmm(value: str, *, default: time_type) -> time_type:
+    v = (value or "").strip()
+    if not v:
+        return default
+    try:
+        parts = v.split(":")
+        hh = int(parts[0])
+        mm = int(parts[1]) if len(parts) > 1 else 0
+        return time_type(hour=hh, minute=mm)
+    except Exception:
+        return default
+
+
+def _shift_bucket(
+    ts: datetime,
+    *,
+    day_start: time_type,
+    night_start: time_type,
+) -> tuple[date_type, str]:
+    """Returns (shift_date, shift_name).
+
+    day shift: [day_start, night_start)
+    night shift: [night_start, next_day day_start)
+
+    If ts time is before day_start it is counted to previous day's night shift.
+    """
+
+    t = ts.time()
+    d = ts.date()
+    if t >= night_start:
+        return (d, "ночь")
+    if t >= day_start:
+        return (d, "день")
+    return (d - timedelta(days=1), "ночь")
+
+
+def _pcn_ledger_payout(
+    dispatchers: int,
+    percent: float,
+    *,
+    payouts: tuple[int, int, int, int],
+    thresholds: dict[int, tuple[int, int, int]],
+) -> int:
+    """Payout based on percent and dispatcher count.
+
+    Logic matches the Excel formula shape:
+    - < t1 -> pay0
+    - < t2 -> pay1
+    - <= t3 -> pay2
+    - else -> pay3
+    """
+
+    t = thresholds.get(int(dispatchers))
+    if not t:
+        return int(payouts[0])
+    t1, t2, t3 = t
+    pay0, pay1, pay2, pay3 = payouts
+    if percent < t1:
+        return int(pay0)
+    if percent < t2:
+        return int(pay1)
+    if percent <= t3:
+        return int(pay2)
+    return int(pay3)
+
+
 def _backend_root_dir() -> Path:
     # backend/app/api/v1/reports.py -> parents[3] == backend/
     return Path(__file__).resolve().parents[3]
@@ -87,6 +155,10 @@ def _as_report_out_dict(r: Report) -> dict:
         title = f"Объекты по коду {code}" if code else "Объекты по коду"
     elif rt == "daily":
         title = "Суточный отчёт"
+    elif rt == "pcnLedger":
+        ps = str(r.period_start or "").strip()
+        pe = str(r.period_end or "").strip()
+        title = f"Ведомость по тревогам (ПЦН) {ps}–{pe}" if ps and pe else "Ведомость по тревогам (ПЦН)"
 
     d = {
         "id": str(r.id),
@@ -267,9 +339,9 @@ async def list_reports(
                 "status": "generated",
                 "eventsCount": int(events_count or 0),
                 "criticalCount": int(critical_count or 0),
-                "downloadUrl": f"/reports/export/daily?date={day_str}",
-                "fileName": f"daily-report-{day_str}.csv",
-                "mimeType": "text/csv; charset=utf-8",
+                "downloadUrl": f"/reports/export/daily/xlsx?date={day_str}",
+                "fileName": f"daily-report-{day_str}.xlsx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             }
         )
     return out
@@ -307,8 +379,9 @@ async def generate_daily_report(
 
     try:
         content = await export_daily_report_csv(session=session, date=day.isoformat())
-        filename = f"daily-report-{day.isoformat()}.csv"
-        path = _write_report_file(report_id, filename, content)
+        xlsx = _csv_bytes_to_xlsx_bytes(content)
+        filename = f"daily-report-{day.isoformat()}.xlsx"
+        path = _write_report_file(report_id, filename, xlsx)
 
         # fill counts
         dt_from = datetime.combine(day, datetime.min.time())
@@ -326,7 +399,7 @@ async def generate_daily_report(
 
         r.status = "generated"
         r.file_name = filename
-        r.mime_type = "text/csv; charset=utf-8"
+        r.mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         r.storage_path = str(path)
         r.events_count = events_count
         r.critical_count = critical_count
@@ -351,8 +424,8 @@ async def generate_objects_by_code_report(
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
-    # Generate CSV now and store.
-    # Reuse logic from export_objects_by_code but produce bytes.
+    # Generate XLSX now and store (CSV is not generated as an artifact).
+    # We still reuse CSV-building logic and convert to XLSX.
     dt_from: datetime | None = None
     dt_to: datetime | None = None
 
@@ -443,7 +516,8 @@ async def generate_objects_by_code_report(
             ]
         )
 
-    content = buf.getvalue().encode("utf-8-sig")
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    xlsx = _csv_bytes_to_xlsx_bytes(csv_bytes)
 
     # Determine period strings for list
     ps = (dt_from.date().isoformat() if dt_from else (str(year) if year else ""))
@@ -454,8 +528,8 @@ async def generate_objects_by_code_report(
         pe = ps
 
     report_id = str(uuid4())
-    filename = f"objects-by-code-{eventCode.strip()}-{ps}-{pe}.csv"
-    path = _write_report_file(report_id, filename, content)
+    filename = f"objects-by-code-{eventCode.strip()}-{ps}-{pe}.xlsx"
+    path = _write_report_file(report_id, filename, xlsx)
 
     r = Report(
         id=report_id,
@@ -467,7 +541,7 @@ async def generate_objects_by_code_report(
         events_count=sum(int(x[3] or 0) for x in rows) if rows else 0,
         critical_count=0,
         file_name=filename,
-        mime_type="text/csv; charset=utf-8",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         storage_path=str(path),
         params_json=json.dumps(
             {
@@ -680,6 +754,364 @@ async def generate_gbr_raport_xlsx(
     return _as_report_out_dict(r)
 
 
+@router.post("/generate/pcn-ledger-xlsx")
+async def generate_pcn_ledger_xlsx(
+    dateFrom: str = Query(description="YYYY-MM-DD"),
+    dateTo: str = Query(description="YYYY-MM-DD"),
+    dayStart: str | None = Query(default="08:00", description="HH:MM (start of day shift)"),
+    nightStart: str | None = Query(default="20:00", description="HH:MM (start of night shift)"),
+    actionName: str | None = Query(default="Прием на обработку", description="EventAction.action_name match"),
+    operatorQuery: str | None = Query(default=None, description="Filter by operator name (substring)"),
+    pay0: int = Query(default=0, ge=0, le=100000, description="Payout for lowest bracket"),
+    pay1: int = Query(default=330, ge=0, le=100000, description="Payout for bracket 2"),
+    pay2: int = Query(default=430, ge=0, le=100000, description="Payout for bracket 3"),
+    pay3: int = Query(default=480, ge=0, le=100000, description="Payout for top bracket"),
+    thr3_1: int = Query(default=29, ge=0, le=100, description="3 dispatchers: threshold 1"),
+    thr3_2: int = Query(default=36, ge=0, le=100, description="3 dispatchers: threshold 2"),
+    thr3_3: int = Query(default=40, ge=0, le=100, description="3 dispatchers: threshold 3"),
+    thr4_1: int = Query(default=21, ge=0, le=100, description="4 dispatchers: threshold 1"),
+    thr4_2: int = Query(default=27, ge=0, le=100, description="4 dispatchers: threshold 2"),
+    thr4_3: int = Query(default=30, ge=0, le=100, description="4 dispatchers: threshold 3"),
+    thr5_1: int = Query(default=17, ge=0, le=100, description="5 dispatchers: threshold 1"),
+    thr5_2: int = Query(default=23, ge=0, le=100, description="5 dispatchers: threshold 2"),
+    thr5_3: int = Query(default=26, ge=0, le=100, description="5 dispatchers: threshold 3"),
+    bonusDefault: int = Query(default=500, ge=0, le=100000, description="Default bonus per operator row"),
+    bonusOverride: list[str] | None = Query(
+        default=None,
+        description="Repeatable override: 'ФИО:1000'",
+    ),
+    session: AsyncSession = Depends(get_session),
+    _current: dict = Depends(get_current_user),
+) -> dict:
+    # Stored XLSX report: "Ведомость учета работы операторов ПЦН".
+
+    d_from = _parse_date(dateFrom) or (_parse_dt(dateFrom).date() if _parse_dt(dateFrom) else None)
+    d_to = _parse_date(dateTo) or (_parse_dt(dateTo).date() if _parse_dt(dateTo) else None)
+    if not d_from or not d_to or d_to < d_from:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    day_start = _parse_hhmm(dayStart or "", default=time_type(8, 0))
+    night_start = _parse_hhmm(nightStart or "", default=time_type(20, 0))
+
+    payouts: tuple[int, int, int, int] = (int(pay0), int(pay1), int(pay2), int(pay3))
+    thresholds: dict[int, tuple[int, int, int]] = {
+        3: (int(thr3_1), int(thr3_2), int(thr3_3)),
+        4: (int(thr4_1), int(thr4_2), int(thr4_3)),
+        5: (int(thr5_1), int(thr5_2), int(thr5_3)),
+    }
+
+    def _validate_thresholds(label: str, t: tuple[int, int, int]) -> None:
+        a, b, c = t
+        if not (0 <= a <= b <= c <= 100):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "BAD_REQUEST", "message": f"Invalid thresholds for {label}"},
+            )
+
+    _validate_thresholds("3 dispatchers", thresholds[3])
+    _validate_thresholds("4 dispatchers", thresholds[4])
+    _validate_thresholds("5 dispatchers", thresholds[5])
+
+    # Build query window that covers the last night shift up to next day's dayStart.
+    window_start = datetime.combine(d_from, day_start)
+    window_end = datetime.combine(d_to + timedelta(days=1), day_start)
+
+    # Bonus overrides parsing
+    overrides: dict[str, int] = {}
+    for item in bonusOverride or []:
+        try:
+            if not item:
+                continue
+            if ":" not in item:
+                continue
+            name, val = item.split(":", 1)
+            name = name.strip()
+            val_i = int(val.strip())
+            if name:
+                overrides[name] = val_i
+        except Exception:
+            continue
+
+    # Select one representative action_time per (event_id, operator) for the chosen action.
+    # Then group in Python into shifts because SQL bucketing differs between SQLite/Postgres.
+    act = (actionName or "").strip()
+    stmt = (
+        select(
+            EventAction.event_id,
+            EventAction.operator_name,
+            func.min(EventAction.action_time).label("ts"),
+        )
+        .select_from(EventAction)
+        .join(Event, Event.id == EventAction.event_id)
+        .where(Event.type == "alarm")
+        .where(EventAction.operator_name.is_not(None))
+        .where(EventAction.action_time >= window_start)
+        .where(EventAction.action_time < window_end)
+        .group_by(EventAction.event_id, EventAction.operator_name)
+    )
+
+    if act:
+        # Prefer exact match but allow substring match for robustness.
+        stmt = stmt.where(or_(EventAction.action_name == act, EventAction.action_name.ilike(f"%{act}%")))
+
+    oq = (operatorQuery or "").strip()
+    if oq:
+        stmt = stmt.where(EventAction.operator_name.ilike(f"%{oq}%"))
+
+    rows = (await session.execute(stmt)).all()
+
+    # Aggregate counts per (shift_date, shift_name, operator)
+    counts: dict[tuple[date_type, str, str], int] = {}
+    for event_id, op, ts in rows:
+        if not isinstance(ts, datetime) or not op:
+            continue
+        shift_date, shift_name = _shift_bucket(ts, day_start=day_start, night_start=night_start)
+        if shift_date < d_from or shift_date > d_to:
+            continue
+        key = (shift_date, shift_name, str(op))
+        counts[key] = counts.get(key, 0) + 1
+
+    # Totals per shift
+    shift_totals: dict[tuple[date_type, str], int] = {}
+    shift_ops: dict[tuple[date_type, str], set[str]] = {}
+    for (sd, sh, op), c in counts.items():
+        shift_totals[(sd, sh)] = shift_totals.get((sd, sh), 0) + int(c or 0)
+        shift_ops.setdefault((sd, sh), set()).add(op)
+
+    # Build ordered output rows
+    ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
+    out_rows: list[dict[str, object]] = []
+    for sd, sh in ordered_shifts:
+        total = int(shift_totals.get((sd, sh)) or 0)
+        dispatchers = len(shift_ops.get((sd, sh)) or set())
+        # Operators for this shift
+        ops = []
+        for (sd2, sh2, op), c in counts.items():
+            if sd2 == sd and sh2 == sh:
+                ops.append((op, int(c or 0)))
+        ops.sort(key=lambda x: (-x[1], x[0].lower()))
+
+        for op, c in ops:
+            percent = (float(c) * 100.0 / float(total)) if total > 0 else 0.0
+            payout = _pcn_ledger_payout(dispatchers, percent, payouts=payouts, thresholds=thresholds)
+            bonus = int(overrides.get(op, bonusDefault))
+            out_rows.append(
+                {
+                    "date": sd,
+                    "dispatchers": dispatchers,
+                    "shift": sh,
+                    "operator": op,
+                    "alarms": c,
+                    "percent": percent,
+                    "payout": payout,
+                    "bonus": bonus,
+                    "total": payout + bonus,
+                }
+            )
+
+    # Build XLSX
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, Side
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    def clean_excel_text(value: object) -> object:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return re.sub(ILLEGAL_CHARACTERS_RE, "", value)
+        return value
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Ведомость"
+
+    thin = Side(style="thin", color="D0D0D0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # Threshold legend (like sample)
+    ws["C3"].value = f"{payouts[0]} р."
+    ws["D3"].value = f"{payouts[1]} р."
+    ws["E3"].value = f"{payouts[2]} р."
+    ws["F3"].value = f"{payouts[3]} р."
+
+    t31, t32, t33 = thresholds[3]
+    t41, t42, t43 = thresholds[4]
+    t51, t52, t53 = thresholds[5]
+
+    ws["B4"].value = "3 диспетчера"
+    ws["C4"].value = f"< {t31} %"
+    ws["D4"].value = f"{t31}– {t32} %"
+    ws["E4"].value = f"{t32} – {t33} %"
+    ws["F4"].value = f">{t33} %"
+
+    ws["B5"].value = "4 диспетчера"
+    ws["C5"].value = f"< {t41} %"
+    ws["D5"].value = f"{t41} – {t42} %"
+    ws["E5"].value = f"{t42} – {t43} %"
+    ws["F5"].value = f">{t43} %"
+
+    ws["B6"].value = "5 диспетчеров"
+    ws["C6"].value = f"< {t51} %"
+    ws["D6"].value = f"{t51} – {t52} %"
+    ws["E6"].value = f"{t52} – {t53} %"
+    ws["F6"].value = f">{t53} %"
+
+    for r in range(3, 7):
+        for c in range(2, 7):
+            cell = ws.cell(r, c)
+            cell.alignment = center
+            cell.border = border
+            cell.font = Font(size=10, bold=(r == 3))
+
+    # Formula note (so the sheet always shows the exact rule used)
+    ws.merge_cells(start_row=7, start_column=2, end_row=8, end_column=10)
+    formula_note = (
+        "Формула: % = (тревоги оператора * 100) / (все тревоги смены). "
+        "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n"
+        f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. "
+        f"Отработка тревоги: действие '{actionName or ''}'."
+    )
+    ws.cell(7, 2, clean_excel_text(formula_note)).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.cell(7, 2).font = Font(size=10)
+
+    # Title
+    ws.merge_cells(start_row=9, start_column=2, end_row=9, end_column=10)
+    if d_from.year == d_to.year and d_from.month == d_to.month and d_from.day == 1:
+        title = f"Ведомость учета работы операторов ПЦН за {d_from.strftime('%m.%Y')}г."
+    else:
+        title = f"Ведомость учета работы операторов ПЦН за период {d_from.isoformat()}–{d_to.isoformat()}"
+    ws.cell(9, 2, clean_excel_text(title)).font = Font(bold=True, size=12)
+    ws.cell(9, 2).alignment = Alignment(horizontal="center")
+
+    headers = [
+        "Дата",
+        "Количество диспетчеров в смену",
+        "Смена",
+        "ФИО",
+        "Тревоги",
+        "%",
+        "Сумма",
+        "Доплата",
+        "Всего в смену, руб.",
+    ]
+
+    start_row = 11
+    for idx, h in enumerate(headers, start=2):
+        cell = ws.cell(start_row, idx, clean_excel_text(h))
+        cell.font = Font(bold=True)
+        cell.alignment = center
+        cell.border = border
+
+    cur = start_row + 1
+    # Group by shift
+    from collections import defaultdict
+
+    grouped: dict[tuple[date_type, str], list[dict[str, object]]] = defaultdict(list)
+    for r in out_rows:
+        grouped[(r["date"], r["shift"])].append(r)
+
+    for sd, sh in ordered_shifts:
+        items = grouped.get((sd, sh)) or []
+        if not items:
+            continue
+
+        # Operator rows
+        total_alarms = sum(int(x.get("alarms") or 0) for x in items)
+        total_payout = sum(int(x.get("payout") or 0) for x in items)
+        total_bonus = sum(int(x.get("bonus") or 0) for x in items)
+        total_total = sum(int(x.get("total") or 0) for x in items)
+
+        for i, x in enumerate(items):
+            ws.cell(cur, 2, sd).number_format = "DD.MM.YYYY" if i == 0 else ""
+            ws.cell(cur, 3, int(x.get("dispatchers") or 0) if i == 0 else "")
+            ws.cell(cur, 4, sh if i == 0 else "")
+            ws.cell(cur, 5, clean_excel_text(x.get("operator")))
+            ws.cell(cur, 6, int(x.get("alarms") or 0))
+            ws.cell(cur, 7, float(x.get("percent") or 0.0))
+            ws.cell(cur, 7).number_format = "0.00"
+            ws.cell(cur, 8, int(x.get("payout") or 0))
+            ws.cell(cur, 9, int(x.get("bonus") or 0))
+            ws.cell(cur, 10, int(x.get("total") or 0))
+
+            for col in range(2, 11):
+                cell = ws.cell(cur, col)
+                cell.border = border
+                cell.alignment = center if col != 5 else Alignment(horizontal="left", vertical="center")
+            cur += 1
+
+        # Summary row
+        ws.cell(cur, 3, "Всего в смену:").font = Font(bold=True)
+        ws.cell(cur, 6, int(total_alarms)).font = Font(bold=True)
+        ws.cell(cur, 8, int(total_payout)).font = Font(bold=True)
+        ws.cell(cur, 9, int(total_bonus)).font = Font(bold=True)
+        ws.cell(cur, 10, int(total_total)).font = Font(bold=True)
+        for col in range(2, 11):
+            ws.cell(cur, col).border = border
+            ws.cell(cur, col).alignment = center if col != 5 else Alignment(horizontal="left", vertical="center")
+        cur += 1
+
+    # Column widths (approx)
+    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 10
+    ws.column_dimensions["E"].width = 26
+    ws.column_dimensions["F"].width = 10
+    ws.column_dimensions["G"].width = 8
+    ws.column_dimensions["H"].width = 10
+    ws.column_dimensions["I"].width = 12
+    ws.column_dimensions["J"].width = 16
+
+    bio = BytesIO()
+    wb.save(bio)
+    data = bio.getvalue()
+
+    report_id = str(uuid4())
+    ps = d_from.isoformat()
+    pe = d_to.isoformat()
+    filename = f"pcn-ledger-{ps}-{pe}.xlsx"
+    path = _write_report_file(report_id, filename, data)
+
+    r = Report(
+        id=report_id,
+        type="pcnLedger",
+        period_start=ps,
+        period_end=pe,
+        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
+        status="generated",
+        events_count=sum(int(v or 0) for v in shift_totals.values()) if shift_totals else 0,
+        critical_count=0,
+        file_name=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        storage_path=str(path),
+        params_json=json.dumps(
+            {
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "dayStart": dayStart,
+                "nightStart": nightStart,
+                "actionName": actionName,
+                "operatorQuery": operatorQuery,
+                "payouts": {"pay0": pay0, "pay1": pay1, "pay2": pay2, "pay3": pay3},
+                "thresholds": {
+                    "3": [thr3_1, thr3_2, thr3_3],
+                    "4": [thr4_1, thr4_2, thr4_3],
+                    "5": [thr5_1, thr5_2, thr5_3],
+                },
+                "bonusDefault": bonusDefault,
+                "bonusOverride": bonusOverride or [],
+            },
+            ensure_ascii=False,
+        ),
+        error_message=None,
+    )
+    session.add(r)
+    await session.commit()
+    return _as_report_out_dict(r)
+
+
 @router.get("/{report_id}/download")
 async def download_report(
     report_id: str,
@@ -705,34 +1137,25 @@ async def download_report(
     resolved = _resolve_and_validate_store_path(str(r.storage_path))
 
     requested = (format or "").strip().lower() or None
-    if requested not in {None, "csv", "xlsx"}:
+    if requested not in {None, "xlsx"}:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid format"})
 
     stored_ext = _file_ext(r.file_name)
-    if requested is None or requested == stored_ext or not stored_ext:
-        media = r.mime_type or "application/octet-stream"
+    # Always return XLSX to users.
+    if stored_ext == "xlsx":
         return FileResponse(
             path=str(resolved),
-            media_type=media,
+            media_type=r.mime_type or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=r.file_name,
         )
 
     src = resolved.read_bytes()
-    if stored_ext == "csv" and requested == "xlsx":
+    if stored_ext == "csv":
         out = _csv_bytes_to_xlsx_bytes(src)
         filename = (r.file_name.rsplit(".", 1)[0] + ".xlsx") if r.file_name else "report.xlsx"
         return Response(
             content=out,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
-
-    if stored_ext == "xlsx" and requested == "csv":
-        out = _xlsx_bytes_to_csv_bytes(src)
-        filename = (r.file_name.rsplit(".", 1)[0] + ".csv") if r.file_name else "report.csv"
-        return Response(
-            content=out,
-            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
 
@@ -847,10 +1270,11 @@ async def export_daily(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     content = await export_daily_report_csv(session=session, date=date)
-    filename = f"daily-report-{date}.csv"
+    xlsx = _csv_bytes_to_xlsx_bytes(content)
+    filename = f"daily-report-{date}.xlsx"
     return Response(
-        content=content,
-        media_type="text/csv; charset=utf-8",
+        content=xlsx,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
@@ -860,14 +1284,7 @@ async def export_daily_xlsx(
     date: str = Query(default_factory=today_str, description="YYYY-MM-DD"),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    content = await export_daily_report_csv(session=session, date=date)
-    xlsx = _csv_bytes_to_xlsx_bytes(content)
-    filename = f"daily-report-{date}.xlsx"
-    return Response(
-        content=xlsx,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+    return await export_daily(date=date, session=session)
 
 
 @router.get("/export/phrase-counts")
@@ -949,24 +1366,31 @@ async def export_phrase_counts(
 
     rows = (await session.execute(stmt)).all()
 
-    import csv
-    import io
+    from io import BytesIO
 
-    buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";")
-    writer.writerow(
-        [
-            "object_id",
-            "object_name",
-            "address",
-            phraseA,
-            phraseB,
-            "примечание",
-        ]
-    )
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Фразы"
+
+    headers = [
+        "Номер объекта",
+        "Название объекта",
+        "Адрес",
+        phraseA,
+        phraseB,
+        "Примечание",
+    ]
+    ws.append(headers)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
 
     for object_id, object_name, address, c_a, c_b in rows:
-        writer.writerow(
+        ws.append(
             [
                 object_id or "",
                 object_name or "",
@@ -977,14 +1401,23 @@ async def export_phrase_counts(
             ]
         )
 
-    # Use UTF-8 with BOM for Excel compatibility
-    content = buf.getvalue().encode("utf-8-sig")
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 40
+    ws.column_dimensions["C"].width = 50
+    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["E"].width = 18
+    ws.column_dimensions["F"].width = 20
+
+    out = BytesIO()
+    wb.save(out)
+    content = out.getvalue()
     y = str(year) if year is not None else "custom"
     safe_client = client.replace('"', "").replace("'", "").strip() or "all"
-    filename = f"phrase-counts-{y}-{safe_client}.csv"
+    filename = f"phrase-counts-{y}-{safe_client}.xlsx"
     return Response(
         content=content,
-        media_type="text/csv; charset=utf-8",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
@@ -1041,7 +1474,7 @@ async def export_objects_by_code(
     limit: int = Query(default=50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Экспорт CSV: по выбранному коду события — сколько раз и по каким объектам за период."""
+    """XLSX: по выбранному коду события — сколько раз и по каким объектам за период."""
     dt_from: datetime | None = None
     dt_to: datetime | None = None
 
@@ -1110,26 +1543,33 @@ async def export_objects_by_code(
 
     rows = (await session.execute(stmt)).all()
 
-    import csv
-    import io
+    from io import BytesIO
 
-    buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";")
-    writer.writerow(
-        [
-            "event_code",
-            "object_id",
-            "object_name",
-            "address",
-            "events_count",
-            "first_time",
-            "last_time",
-            "note",
-        ]
-    )
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Объекты"
+
+    headers = [
+        "Код события",
+        "Номер объекта",
+        "Название объекта",
+        "Адрес",
+        "Количество событий",
+        "Первое срабатывание",
+        "Последнее срабатывание",
+        "Примечание",
+    ]
+    ws.append(headers)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
 
     for object_id, object_name, address, events_count, first_time, last_time in rows:
-        writer.writerow(
+        ws.append(
             [
                 eventCode,
                 object_id or "",
@@ -1142,11 +1582,46 @@ async def export_objects_by_code(
             ]
         )
 
-    content = buf.getvalue().encode("utf-8-sig")
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 40
+    ws.column_dimensions["D"].width = 50
+    ws.column_dimensions["E"].width = 20
+    ws.column_dimensions["F"].width = 22
+    ws.column_dimensions["G"].width = 22
+    ws.column_dimensions["H"].width = 20
+
+    out = BytesIO()
+    wb.save(out)
+    content = out.getvalue()
     safe_code = eventCode.replace("/", "_").replace("\\", "_")
-    filename = f"objects-by-code-{safe_code}.csv"
+    filename = f"objects-by-code-{safe_code}.xlsx"
     return Response(
         content=content,
-        media_type="text/csv; charset=utf-8",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/export/objects-by-code/xlsx")
+async def export_objects_by_code_xlsx(
+    eventCode: str = Query(min_length=1, max_length=16, description="Код события, например E1001"),
+    dateFrom: str | None = Query(default=None, description="ISO datetime или YYYY-MM-DD"),
+    dateTo: str | None = Query(default=None, description="ISO datetime или YYYY-MM-DD"),
+    year: int | None = Query(default=None, ge=1970, le=2100, description="Год (если указан — задаёт период)"),
+    clientName: str | None = Query(default=None, description="Контрагент/клиент (поиск по подстроке)"),
+    objectQuery: str | None = Query(default=None, description="Поиск по объекту/адресу/ID"),
+    limit: int = Query(default=50000, ge=1, le=200000),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    return await export_objects_by_code(
+        eventCode=eventCode,
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        year=year,
+        clientName=clientName,
+        objectQuery=objectQuery,
+        limit=limit,
+        session=session,
     )

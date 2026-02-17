@@ -35,6 +35,7 @@ const typeLabels: Record<ReportType, string> = {
   monthly: 'Месячный',
   objectsByCode: 'Объекты по коду',
   gbrRaportXlsx: 'Рапорт (ГБР)',
+  pcnLedger: 'Ведомость по тревогам (ПЦН)',
 };
 
 const statusLabels: Record<ReportStatus, string> = {
@@ -59,6 +60,36 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   const [tableColumns, setTableColumns] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<string[][]>([]);
   const [previewMode, setPreviewMode] = useState<'none' | 'gbr' | 'table'>('none');
+
+  const humanizeColumn = (c: string) => {
+    const s = String(c || '').trim();
+    if (!s) return s;
+    const map: Record<string, string> = {
+      Panel_ID: 'Номер объекта',
+      Panel_id: 'Номер объекта',
+      panel_id: 'Номер объекта',
+      object_id: 'Номер объекта',
+      objectId: 'Номер объекта',
+
+      Object_name: 'Название объекта',
+      object_name: 'Название объекта',
+      objectName: 'Название объекта',
+      'Object name': 'Название объекта',
+
+      client_name: 'Контрагент',
+      clientName: 'Контрагент',
+
+      timestamp: 'Дата/время',
+      TimeEvent: 'Дата/время',
+
+      severity: 'Важность',
+      status: 'Статус',
+      description: 'Описание',
+      location: 'Адрес',
+      address: 'Адрес',
+    };
+    return map[s] || s;
+  };
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Report | null>(null);
@@ -99,7 +130,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     }
   };
 
-  const replaceExt = (name: string, ext: 'csv' | 'xlsx') => {
+  const replaceExt = (name: string, ext: 'xlsx') => {
     const base = name.replace(/\.(csv|xlsx)$/i, '');
     return `${base}.${ext}`;
   };
@@ -109,18 +140,6 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     if (!report.generatedAt) return false;
     if (!report.downloadUrl) return false;
     return report.downloadUrl.startsWith('/reports/') && report.downloadUrl.includes('/download');
-  };
-
-  const parseCsv = (text: string): { columns: string[]; rows: string[][] } => {
-    const cleaned = text.replace(/^\uFEFF/, '');
-    const lines = cleaned.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    if (lines.length === 0) return { columns: [], rows: [] };
-
-    // Simple MVP parser: delimiter ';', no quoted fields support.
-    const splitLine = (line: string) => line.split(';').map((x) => x.trim());
-    const columns = splitLine(lines[0]);
-    const rows = lines.slice(1, 201).map(splitLine);
-    return { columns, rows };
   };
 
   const openPreview = async (report: Report) => {
@@ -144,32 +163,19 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
         }
 
         setPreviewMode('table');
-        setTableColumns(Array.isArray(json?.columns) ? json.columns : []);
+        setTableColumns(Array.isArray(json?.columns) ? json.columns.map(humanizeColumn) : []);
         setTableRows(Array.isArray(json?.rows) ? json.rows : []);
         return;
       }
 
-      // Derived previews (no report_id in DB): fallback to CSV download
-      setPreviewMode('table');
-      let path: string | null = null;
-      if (report.downloadUrl) {
-        path = report.downloadUrl;
-      } else if (report.type === 'daily') {
-        path = `/reports/export/daily?date=${encodeURIComponent(report.periodStart)}`;
-      }
-
-      if (!path) {
-        toast({ title: 'Просмотр отчёта', description: 'Для этого отчёта нет данных для предпросмотра.' });
-        setTableColumns([]);
-        setTableRows([]);
-        return;
-      }
-
-      const res = await apiFetchRaw(path);
-      const text = await res.text();
-      const parsed = parseCsv(text);
-      setTableColumns(parsed.columns);
-      setTableRows(parsed.rows);
+      // Derived reports: preview is not supported (we only keep XLSX downloads).
+      toast({
+        title: 'Просмотр отчёта',
+        description: 'Предпросмотр доступен только для отчётов из истории. Скачайте XLSX для просмотра.',
+      });
+      setPreviewMode('none');
+      setTableColumns([]);
+      setTableRows([]);
     } catch (e: any) {
       toast({
         title: 'Просмотр отчёта',
@@ -181,33 +187,32 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     }
   };
 
-  const downloadReportAs = async (report: Report, format: 'csv' | 'xlsx') => {
-    // Stored reports: always go through /reports/{id}/download?format=...
+  const downloadReportXlsx = async (report: Report) => {
+    // Stored reports: always go through /reports/{id}/download?format=xlsx
     if (isStoredReport(report)) {
-      const url = `/reports/${encodeURIComponent(report.id)}/download?format=${format}`;
-      const fileBase = report.fileName || `report-${report.id}.${format}`;
-      const file = replaceExt(fileBase, format);
+      const url = `/reports/${encodeURIComponent(report.id)}/download?format=xlsx`;
+      const fileBase = report.fileName || `report-${report.id}.xlsx`;
+      const file = replaceExt(fileBase, 'xlsx');
       await downloadBlob(url, file);
       return;
     }
 
-    // Derived daily: export endpoints
+    // Derived daily: export endpoint (xlsx)
     if (report.type === 'daily') {
       const date = report.periodStart;
-      const url = format === 'csv'
-        ? `/reports/export/daily?date=${encodeURIComponent(date)}`
-        : `/reports/export/daily/xlsx?date=${encodeURIComponent(date)}`;
-      const file = `daily-report-${date}.${format}`;
+      const url = `/reports/export/daily/xlsx?date=${encodeURIComponent(date)}`;
+      const file = `daily-report-${date}.xlsx`;
       await downloadBlob(url, file);
       return;
     }
 
-    // Fallback: download as-is
+    // Fallback: if backend gave direct URL, try it as-is
     if (report.downloadUrl) {
-      const file = report.fileName || 'report.bin';
+      const file = report.fileName || 'report.xlsx';
       await downloadBlob(report.downloadUrl, file);
       return;
     }
+
     toast({ title: 'Скачать', description: 'Для этого отчёта нет файла.' });
   };
 
@@ -242,7 +247,11 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
           </DialogHeader>
           <div className="rounded-md border border-border">
             <ScrollArea className="h-[420px]">
-              {previewMode === 'gbr' ? (
+              {previewMode === 'none' ? (
+                <div className="p-4 text-sm text-muted-foreground">
+                  {previewLoading ? 'Загрузка…' : 'Предпросмотр недоступен для этого отчёта. Скачайте XLSX.'}
+                </div>
+              ) : previewMode === 'gbr' ? (
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                     <tr>
@@ -408,14 +417,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
                         onClick={() => {
-                            downloadReportAs(report, 'csv');
-                        }}
-                      >
-                          CSV
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => {
-                          downloadReportAs(report, 'xlsx');
+                          downloadReportXlsx(report);
                         }}
                       >
                         XLSX

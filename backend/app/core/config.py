@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # Если не задано, используется первое число текущего месяца.
     agency_mssql_archive_start_date_key: int | None = None
 
+    # SQLite archives: с какого Date_Key начинать первичную загрузку,
+    # если курсора ещё нет в sync_state. Формат: YYYYMMDD.
+    # По умолчанию тянем историю с 2023-01-01, чтобы годовые отчёты были быстрыми.
+    agency_sqlite_archive_start_date_key: int | None = 20230101
+
     # Демо-эндпоинты для заполнения мок-данными (по умолчанию выключены)
     enable_demo_seed: bool = False
 
@@ -70,6 +75,9 @@ class Settings(BaseSettings):
     auto_sync_recent_limit: int = 500
     auto_sync_burst_batches: int = 1
 
+    # SQLite backfill can be local and fast: allow more batches per loop iteration.
+    auto_sync_sqlite_burst_batches: int = 5
+
     # UI defaults: keep events feed fast on huge datasets.
     ui_events_default_lookback_hours: int = 24
 
@@ -78,7 +86,11 @@ class Settings(BaseSettings):
             return []
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
-    @field_validator("agency_mssql_archive_start_date_key", mode="before")
+    @field_validator(
+        "agency_mssql_archive_start_date_key",
+        "agency_sqlite_archive_start_date_key",
+        mode="before",
+    )
     @classmethod
     def _empty_str_to_none_for_optional_int(cls, v):
         # NSSM / Windows env can sometimes set variables to an empty string.

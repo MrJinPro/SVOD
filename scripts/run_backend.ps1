@@ -64,4 +64,9 @@ Set-Location $backendDir
 # превращает stderr от native-команд в ErrorRecord (NativeCommandError).
 # VS Code task из-за этого может завершаться с ошибкой. Запускаем через cmd.exe.
 $cmd = '"{0}" -m uvicorn app.main:app --app-dir "{1}" --host 0.0.0.0 --port 8000' -f $python, $backendDir
-cmd /c $cmd 2>&1 | Tee-Object -FilePath $logFile
+
+# Важно: редирект делаем внутри cmd.exe, чтобы PowerShell не превращал stderr
+# от native-команд в NativeCommandError и не завершал VS Code task.
+$cmdLine = "$cmd 1>> \"$logFile\" 2>>&1"
+cmd /c $cmdLine
+exit $LASTEXITCODE

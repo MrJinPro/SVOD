@@ -26,15 +26,16 @@ async def export_daily_report_csv(session: AsyncSession, date: str) -> bytes:
     writer = csv.writer(out, delimiter=';')
     writer.writerow(
         [
-            "id",
-            "timestamp",
-            "type",
-            "objectName",
-            "clientName",
-            "severity",
-            "status",
-            "description",
-            "location",
+            "ID",
+            "Дата/время",
+            "Тип",
+            "Номер объекта",
+            "Название объекта",
+            "Контрагент",
+            "Важность",
+            "Статус",
+            "Описание",
+            "Адрес",
         ]
     )
 
@@ -51,6 +52,7 @@ async def export_daily_report_csv(session: AsyncSession, date: str) -> bytes:
                 e.id,
                 e.timestamp.isoformat(),
                 e.type,
+                e.object_id or "",
                 e.object_name,
                 e.client_name,
                 e.severity,

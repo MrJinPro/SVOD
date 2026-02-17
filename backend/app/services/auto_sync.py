@@ -123,11 +123,19 @@ async def _auto_sync_loop(stop_event: asyncio.Event) -> None:
                             ):
                                 break
                     else:
-                        await sync_events_from_agency_sqlite_archives(
-                            session=session,
-                            agency_sqlite_url=url,
-                            batch_limit=settings.auto_sync_events_limit,
-                        )
+                        burst = max(1, int(getattr(settings, "auto_sync_sqlite_burst_batches", 1)))
+                        for _ in range(burst):
+                            res = await sync_events_from_agency_sqlite_archives(
+                                session=session,
+                                agency_sqlite_url=url,
+                                batch_limit=settings.auto_sync_events_limit,
+                            )
+                            if (
+                                int(res.get("processed") or 0) == 0
+                                and int(res.get("actionsProcessed") or 0) == 0
+                                and int(res.get("actionsFetched") or 0) == 0
+                            ):
+                                break
 
                     now = time.monotonic()
                     if (now - last_objects_sync_ts) >= settings.auto_sync_objects_interval_seconds:

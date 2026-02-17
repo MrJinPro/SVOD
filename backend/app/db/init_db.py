@@ -37,6 +37,9 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             if "state_is_over_process" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN state_is_over_process BOOLEAN"))
 
+            if "result_text" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN result_text TEXT"))
+
             user_cols = (await conn.execute(text("PRAGMA table_info(users)"))).all()
             user_col_names = {c[1] for c in user_cols}
             if "password_hash" not in user_col_names:
@@ -143,6 +146,7 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ("code_text", "VARCHAR(500)"),
                 ("state_name", "VARCHAR(60)"),
                 ("state_is_over_process", "BOOLEAN"),
+                ("result_text", "TEXT"),
             ):
                 col_exists = (
                     await conn.execute(
