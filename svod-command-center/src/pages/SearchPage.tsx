@@ -66,7 +66,7 @@ export default function SearchPage() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                onKeyDown={(e) => e.key === 'Enter' && void handleSearch()}
                 placeholder="Введите поисковый запрос (описание, объект, клиент, локация)..."
                 className="pl-12 h-12 text-lg bg-background"
               />
@@ -81,7 +81,7 @@ export default function SearchPage() {
                 </Button>
               )}
             </div>
-            <Button onClick={handleSearch} className="h-12 px-8">
+            <Button onClick={() => void handleSearch()} className="h-12 px-8">
               <Search className="h-5 w-5 mr-2" />
               Поиск
             </Button>

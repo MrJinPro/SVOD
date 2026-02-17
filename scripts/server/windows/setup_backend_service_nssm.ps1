@@ -1,20 +1,21 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$RepoRoot,
+  [string]$RepoRoot
 
   [Parameter(Mandatory = $true)]
-  [string]$NssmExe,
+  [string]$NssmExe
 
-  [string]$ServiceName = 'SVOD-Backend',
-  [Alias('Host')]
-  [string]$BindHost = '0.0.0.0',
-  [int]$Port = 8000,
+  [string]$ServiceName = 'SVOD-Backend'
+  [string]$BindAddress
+  [int]$Port = 8000
 
   # Create/update venv in backend\.venv (recommended)
-  [switch]$EnsureVenv = $true
+  [bool]$SkipVenv = $false
 )
 
 $ErrorActionPreference = 'Stop'
+
+if (-not $BindAddress) { $BindAddress = '0.0.0.0' }
 
 function Resolve-PythonForService([string]$repoRoot) {
   $backendDir = Join-Path $repoRoot 'backend'
@@ -49,7 +50,7 @@ $backendDir = Join-Path $RepoRoot 'backend'
 if (-not (Test-Path $backendDir)) { throw "Backend dir not found: $backendDir" }
 
 # Create venv if requested
-if ($EnsureVenv) {
+if (-not $SkipVenv) {
   $venvDir = Join-Path $backendDir '.venv'
   $venvPython = Join-Path $venvDir 'Scripts\python.exe'
 
@@ -87,7 +88,7 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
   Start-Sleep -Seconds 1
 }
 
-$parameters = "-m uvicorn app.main:app --app-dir . --host $BindHost --port $Port"
+$parameters = "-m uvicorn app.main:app --app-dir . --host $BindAddress --port $Port"
 
 Write-Host "Installing service: $ServiceName" -ForegroundColor Cyan
 & $NssmExe install $ServiceName $pythonExe $parameters | Out-Null

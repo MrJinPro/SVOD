@@ -33,7 +33,7 @@ export function PaginationBar({
           size="sm"
           disabled={!canGoPrev}
           onClick={() => onPageChange(1)}
-          title="В начало"ЫЫ
+          title="В начало"
         >
           <ChevronsLeft className="h-4 w-4" />
         </Button>
