@@ -22,9 +22,9 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"
 
-    # Дефолт позволяет стартовать сервис даже без .env (подключение к БД
-    # фактически происходит только при обращении к эндпоинтам, использующим session).
-    database_url: str = "postgresql+asyncpg://svod:svod@localhost:5432/svod"
+    # Безопасный дефолт для Windows/NSSM: SQLite в папке backend.
+    # Для Postgres/MSSQL окружений задайте DATABASE_URL в backend/.env.
+    database_url: str = "sqlite+aiosqlite:///./svod.db"
     agency_database_url: str | None = None
 
     # MSSQL: имя базы с архивными таблицами archiveYYYYMM01/eventserviceYYYYMM01

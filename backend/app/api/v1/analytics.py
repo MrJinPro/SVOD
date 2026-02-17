@@ -671,7 +671,7 @@ async def gbr_trips(
 
 
 @router.get("/gbr/trips/export")
-async def gbr_trips_export_csv(
+async def gbr_trips_export(
     date_from: str | None = Query(None, alias="dateFrom"),
     date_to: str | None = Query(None, alias="dateTo"),
     gbr_name: str | None = Query(None, alias="gbrName"),
@@ -680,19 +680,16 @@ async def gbr_trips_export_csv(
     session: AsyncSession = Depends(get_session),
     _perm: Any = Depends(require_permissions("analytics:read")),
 ) -> Response:
-    # Reuse the list endpoint logic with a high limit; export is for management reports.
-    result = await gbr_trips(
+    # CSV больше не поддерживаем: отдаём XLSX (как в таблице UI).
+    return await gbr_trips_export_table_xlsx(
         date_from=date_from,
-            # CSV больше не поддерживаем: отдаём XLSX (как в таблице UI).
-            return await gbr_trips_export_table_xlsx(
-                date_from=date_from,
-                date_to=date_to,
-                gbr_name=gbr_name,
-                object_id=object_id,
-                status=None,
-                session=session,
-                _perm=_perm,
-            )
+        date_to=date_to,
+        gbr_name=gbr_name,
+        object_id=object_id,
+        status=status,
+        session=session,
+        _perm=_perm,
+    )
 
 @router.get("/gbr/trips/export/xlsx")
 async def gbr_trips_export_xlsx(
