@@ -18,6 +18,7 @@ from sqlalchemy import and_, case, func, or_, select
 from app.api.v1.deps import get_current_user
 from app.db.session import get_session
 from app.services.report_service import export_daily_report_csv, today_str
+from app.models.event_action import EventAction
 from app.models.event import Event
 from app.models.object import Object
 from app.models.report import Report
@@ -912,9 +913,18 @@ async def generate_pcn_ledger_xlsx(
     # Build XLSX
     from io import BytesIO
 
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, Side
-    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    try:
+        from openpyxl import Workbook
+        from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+        from openpyxl.styles import Alignment, Border, Font, Side
+    except ModuleNotFoundError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "MISSING_DEP",
+                "message": "Не установлен openpyxl (нужен для XLSX). Установите зависимости: pip install -r backend/requirements.txt",
+            },
+        ) from e
 
     def clean_excel_text(value: object) -> object:
         if value is None:
