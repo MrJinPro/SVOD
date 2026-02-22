@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/notifications")
 async def list_notifications(
     current: dict = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    includeRead: bool = Query(False, description="Include read notifications"),
 ) -> list[dict[str, Any]]:
     user_id = str(current.get("id") or "")
 
@@ -57,6 +58,10 @@ async def list_notifications(
     for e in events:
         title = "Критическое событие" if e.severity == "critical" else "Предупреждение"
         msg = (e.description.splitlines()[0] if e.description else e.object_name) if e else ""
+
+        is_read = e.id in read_set
+        if is_read and not includeRead:
+            continue
         out.append(
             {
                 "id": e.id,
@@ -64,7 +69,7 @@ async def list_notifications(
                 "message": msg,
                 "severity": e.severity,
                 "timestamp": e.timestamp.isoformat(),
-                "read": e.id in read_set,
+                "read": is_read,
                 "eventId": e.id,
             }
         )

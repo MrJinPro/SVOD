@@ -71,7 +71,7 @@ export function NotificationItem({ notification }: NotificationItemProps) {
         </div>
         {notification.eventId && (
           <Button asChild variant="link" size="sm" className="h-auto p-0 mt-2 text-primary">
-            <Link to="/events">Перейти к событию →</Link>
+            <Link to={`/events?openEventId=${encodeURIComponent(notification.eventId)}`}>Перейти к событию →</Link>
           </Button>
         )}
       </div>

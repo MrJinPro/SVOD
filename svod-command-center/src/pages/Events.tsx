@@ -5,12 +5,13 @@ import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Download, RefreshCw } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
-import { useMemo, useState } from 'react';
-import { API_BASE_URL } from '@/lib/api';
+import { useEffect, useMemo, useState } from 'react';
+import { API_BASE_URL, apiGet } from '@/lib/api';
 import { useEventStream } from '@/hooks/useEventStream';
 import { EventDetailsSheet } from '@/components/events/EventDetailsSheet.tsx';
 import { PaginationBar } from '@/components/PaginationBar';
-import type { Event } from '@/types';
+import type { Event, EventDetailsResponse } from '@/types';
+import { useSearchParams } from 'react-router-dom';
 
 const defaultFilters: EventFiltersValue = {
   search: '',
@@ -27,6 +28,7 @@ function toLocalIso(dt: Date): string {
 }
 
 export default function Events() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [draftFilters, setDraftFilters] = useState<EventFiltersValue>(defaultFilters);
   const [appliedFilters, setAppliedFilters] = useState<EventFiltersValue>(defaultFilters);
   const [pageNumber, setPageNumber] = useState(1);
@@ -34,6 +36,45 @@ export default function Events() {
   const [pendingNew, setPendingNew] = useState(0);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+
+  const openEventId = searchParams.get('openEventId');
+
+  // Deep-link support: open event details from notifications.
+  // It fetches the event even if it's not in the current page/filters.
+  // After opening, removes the query param (prevents re-opening on refresh/refetch).
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (!openEventId) return;
+
+      try {
+        const res = await apiGet<EventDetailsResponse>(
+          `/events/${encodeURIComponent(openEventId)}?actionsLimit=500`
+        );
+        if (cancelled) return;
+
+        setSelectedEvent(res.event);
+        setDetailsOpen(true);
+      } catch (e: any) {
+        if (cancelled) return;
+        toast({
+          title: 'Событие',
+          description: e?.message || 'Не удалось открыть событие',
+          variant: 'destructive',
+        });
+      } finally {
+        if (cancelled) return;
+        const next = new URLSearchParams(searchParams);
+        next.delete('openEventId');
+        setSearchParams(next, { replace: true });
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [openEventId, searchParams, setSearchParams]);
 
   const path = useMemo(() => {
     const params = new URLSearchParams();
