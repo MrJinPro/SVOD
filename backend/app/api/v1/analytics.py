@@ -571,6 +571,17 @@ async def gbr_trips(
             return parts[-1] or None
         return None
 
+    def _trip_status(called: object, arrived: object, cancelled: object) -> str | None:
+        # Best-effort status derived from the trip state.
+        # Full GBR statuses like "На СТО/АЗС/..." require a separate source table.
+        if arrived is not None:
+            return "На объекте"
+        if cancelled is not None:
+            return "Свободна"
+        if called is not None:
+            return "На выезде"
+        return None
+
     q = (
         select(
             sq.c.event_id,
@@ -663,6 +674,7 @@ async def gbr_trips(
                 "resultText": result_text,
                 "meterCount": meter_count,
                 "timeMeterCount": time_meter_count.isoformat() if isinstance(time_meter_count, datetime) else None,
+                "tripStatus": _trip_status(called, arrived, cancelled),
             }
         )
 
@@ -764,6 +776,7 @@ async def gbr_trips_export_xlsx(
         "ID события (аг.)",
         "Параметр (MeterCount)",
         "Пометка оператора (Result_Text)",
+        "Статус",
     ]
 
     # Header area similar to the screenshot
@@ -814,6 +827,7 @@ async def gbr_trips_export_xlsx(
         16,  # ID события (аг.)
         28,  # Параметр (MeterCount)
         45,  # Пометка оператора (Result_Text)
+        14,  # Статус
     ]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(ord('A') + i - 1)].width = w
@@ -861,6 +875,7 @@ async def gbr_trips_export_xlsx(
             r.get("agencyEventId") or "",
             r.get("meterCount") or "",
             r.get("resultText") or "",
+            r.get("tripStatus") or "",
         ]
 
         for col_idx, v in enumerate(values, start=1):
@@ -917,6 +932,7 @@ async def gbr_trips_export_table_xlsx(
     headers = [
         "Вызов",
         "Прибытие",
+        "Статус",
         "ГБР",
         "№ объекта",
         "Объект",
@@ -953,6 +969,7 @@ async def gbr_trips_export_table_xlsx(
             [
                 _fmt_iso(r.get("calledAt")),
                 _arrival_cell(r),
+                r.get("tripStatus") or "—",
                 r.get("gbrName") or "",
                 r.get("objectId") or "",
                 r.get("objectName") or "",
@@ -968,15 +985,16 @@ async def gbr_trips_export_table_xlsx(
     ws.freeze_panes = "A2"
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 20
-    ws.column_dimensions["C"].width = 16
-    ws.column_dimensions["D"].width = 12
-    ws.column_dimensions["E"].width = 40
-    ws.column_dimensions["F"].width = 30
-    ws.column_dimensions["G"].width = 22
-    ws.column_dimensions["H"].width = 10
-    ws.column_dimensions["I"].width = 16
-    ws.column_dimensions["J"].width = 30
-    ws.column_dimensions["K"].width = 45
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 12
+    ws.column_dimensions["F"].width = 40
+    ws.column_dimensions["G"].width = 30
+    ws.column_dimensions["H"].width = 22
+    ws.column_dimensions["I"].width = 10
+    ws.column_dimensions["J"].width = 16
+    ws.column_dimensions["K"].width = 30
+    ws.column_dimensions["L"].width = 45
 
     out = BytesIO()
     wb.save(out)

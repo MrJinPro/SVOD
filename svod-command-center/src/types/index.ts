@@ -227,6 +227,8 @@ export interface GbrTripRow {
   meterCount?: string | null;
   timeMeterCount?: string | null;
   resultText?: string | null;
+
+  tripStatus?: string | null;
 }
 
 export interface GbrTripsResponse {

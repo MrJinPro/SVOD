@@ -280,6 +280,7 @@ export default function GbrReports() {
                 <tr>
                   <th className="text-left font-medium px-3 py-2">Вызов</th>
                   <th className="text-left font-medium px-3 py-2">Прибытие</th>
+                  <th className="text-left font-medium px-3 py-2">Статус</th>
                   <th className="text-left font-medium px-3 py-2">ГБР</th>
                   <th className="text-left font-medium px-3 py-2">№ объекта</th>
                   <th className="text-left font-medium px-3 py-2">Объект</th>
@@ -292,6 +293,7 @@ export default function GbrReports() {
                   <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt}`} className="border-t border-border">
                     <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
                     <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
+                    <td className="px-3 py-2">{r.tripStatus || '—'}</td>
                     <td className="px-3 py-2">{r.gbrName}</td>
                     <td className="px-3 py-2 tabular-nums">{r.objectId || '—'}</td>
                     <td className="px-3 py-2">
@@ -306,7 +308,7 @@ export default function GbrReports() {
                 ))}
                 {!isLoading && (trips.data || []).length === 0 && (
                   <tr>
-                    <td className="px-3 py-6 text-muted-foreground" colSpan={7}>
+                    <td className="px-3 py-6 text-muted-foreground" colSpan={8}>
                       Нет данных по выбранным фильтрам
                     </td>
                   </tr>

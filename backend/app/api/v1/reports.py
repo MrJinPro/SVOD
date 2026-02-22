@@ -717,6 +717,7 @@ async def generate_gbr_raport_xlsx(
         "ID события (аг.)",
         "Параметр (MeterCount)",
         "Пометка оператора (Result_Text)",
+        "Статус",
     ]
 
     wb = Workbook()
@@ -743,7 +744,7 @@ async def generate_gbr_raport_xlsx(
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18, 16, 28, 45]
+    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18, 16, 28, 45, 14]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(ord('A') + i - 1)].width = w
 
@@ -803,6 +804,7 @@ async def generate_gbr_raport_xlsx(
             r.get("agencyEventId") or "",
             r.get("meterCount") or "",
             r.get("resultText") or "",
+            r.get("tripStatus") or "",
         ]
         for col_idx, v in enumerate(values, start=1):
             c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
