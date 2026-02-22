@@ -67,12 +67,21 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
     };
   };
 
+  const getAgencyEventId = (id: string): string | null => {
+    // Expected formats: "mssql:20260201:924804774" or other "source:dateKey:eventId"
+    // If not matching, return null.
+    const parts = id.split(':');
+    if (parts.length >= 3) return parts[parts.length - 1] || null;
+    return null;
+  };
+
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
+            <TableHead className="w-[150px] text-muted-foreground font-medium">ID события (аг.)</TableHead>
             <TableHead className="text-muted-foreground font-medium">Тип</TableHead>
             <TableHead className="text-muted-foreground font-medium">Код / сообщение</TableHead>
             <TableHead className="text-muted-foreground font-medium">Объект</TableHead>
@@ -80,6 +89,8 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
             <TableHead className="text-muted-foreground font-medium">Серьёзность</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус агентства</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Параметр</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Пометка оператора</TableHead>
             <TableHead className="text-muted-foreground font-medium">Оператор</TableHead>
             <TableHead className="w-[80px]"></TableHead>
           </TableRow>
@@ -87,6 +98,7 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
         <TableBody>
           {events.map((event) => {
             const { date, time } = formatDateTime(event.timestamp);
+            const agencyEventId = getAgencyEventId(event.id);
             return (
               <TableRow 
                 key={event.id} 
@@ -101,6 +113,10 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                     <div className="text-foreground">{time}</div>
                     <div className="text-xs text-muted-foreground">{date}</div>
                   </div>
+                </TableCell>
+
+                <TableCell className="font-mono text-sm text-muted-foreground">
+                  {agencyEventId || '—'}
                 </TableCell>
                 <TableCell>
                   <div className="space-y-1">
@@ -145,6 +161,18 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
 
                 <TableCell className="text-muted-foreground">
                   {event.stateName || '—'}
+                </TableCell>
+
+                <TableCell className="max-w-[220px]">
+                  <div className="text-sm text-foreground truncate" title={event.meterCount || ''}>
+                    {event.meterCount || '—'}
+                  </div>
+                </TableCell>
+
+                <TableCell className="max-w-[280px]">
+                  <div className="text-sm text-foreground truncate" title={event.resultText || ''}>
+                    {event.resultText || '—'}
+                  </div>
                 </TableCell>
 
                 <TableCell className="text-muted-foreground">

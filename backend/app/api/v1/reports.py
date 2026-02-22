@@ -452,6 +452,22 @@ async def generate_objects_by_code_report(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
+    def _agency_event_id(event_id: str | None) -> str | None:
+        if not event_id:
+            return None
+        parts = str(event_id).split(":")
+        if len(parts) >= 3:
+            return parts[-1] or None
+        return None
+
+    def _agency_event_id(event_id: str | None) -> str | None:
+        if not event_id:
+            return None
+        parts = str(event_id).split(":")
+        if len(parts) >= 3:
+            return parts[-1] or None
+        return None
+
     # best-effort: take one code_text for code
     code_text = (
         await session.execute(select(func.max(Event.code_text)).where(Event.code == eventCode.strip()))
@@ -464,11 +480,13 @@ async def generate_objects_by_code_report(
 
     base_stmt = (
         select(
+            Event.id.label("event_id"),
             Event.object_id.label("object_id"),
             obj_name.label("object_name"),
             obj_addr.label("address"),
             Event.timestamp.label("timestamp"),
             Event.result_text.label("result_text"),
+            Event.meter_count.label("meter_count"),
         )
         .select_from(Event)
         .outerjoin(Object, Object.id == Event.object_id)
@@ -493,7 +511,9 @@ async def generate_objects_by_code_report(
 
     rn_stmt = select(
         base.c.object_id.label("object_id"),
+        base.c.event_id.label("event_id"),
         base.c.result_text.label("result_text"),
+        base.c.meter_count.label("meter_count"),
         base.c.timestamp.label("timestamp"),
         func.row_number().over(partition_by=base.c.object_id, order_by=base.c.timestamp.desc()).label("rn"),
     )
@@ -501,7 +521,9 @@ async def generate_objects_by_code_report(
     last_note = (
         select(
             rn.c.object_id.label("object_id"),
+            rn.c.event_id.label("last_event_id"),
             rn.c.result_text.label("last_result_text"),
+            rn.c.meter_count.label("last_meter_count"),
         )
         .where(rn.c.rn == 1)
         .subquery("last_note")
@@ -515,6 +537,8 @@ async def generate_objects_by_code_report(
             agg.c.events_count,
             agg.c.first_time,
             agg.c.last_time,
+            last_note.c.last_event_id,
+            last_note.c.last_meter_count,
             last_note.c.last_result_text,
         )
         .select_from(agg)
@@ -537,6 +561,8 @@ async def generate_objects_by_code_report(
         "Событие",
         "Первое срабатывание",
         "Последнее срабатывание",
+        "ID события (аг.)",
+        "Параметр (MeterCount)",
         "Пометка оператора",
     ]
     ws.append(headers)
@@ -550,7 +576,7 @@ async def generate_objects_by_code_report(
             return ""
         return dt.isoformat(sep=" ", timespec="seconds")
 
-    for object_id, object_name, address, events_count, first_time, last_time, last_result_text in rows:
+    for object_id, object_name, address, events_count, first_time, last_time, last_event_id, last_meter_count, last_result_text in rows:
         ws.append(
             [
                 object_id or "",
@@ -561,6 +587,8 @@ async def generate_objects_by_code_report(
                 code_text or "",
                 fmt_ts(first_time),
                 fmt_ts(last_time),
+                _agency_event_id(last_event_id) or "",
+                last_meter_count or "",
                 last_result_text or "",
             ]
         )
@@ -574,7 +602,9 @@ async def generate_objects_by_code_report(
     ws.column_dimensions["F"].width = 40
     ws.column_dimensions["G"].width = 22
     ws.column_dimensions["H"].width = 22
-    ws.column_dimensions["I"].width = 35
+    ws.column_dimensions["I"].width = 16
+    ws.column_dimensions["J"].width = 32
+    ws.column_dimensions["K"].width = 35
 
     out = BytesIO()
     wb.save(out)
@@ -684,6 +714,9 @@ async def generate_gbr_raport_xlsx(
         "Заявка",
         "Штраф",
         "Сработок за полгода",
+        "ID события (аг.)",
+        "Параметр (MeterCount)",
+        "Пометка оператора (Result_Text)",
     ]
 
     wb = Workbook()
@@ -710,7 +743,7 @@ async def generate_gbr_raport_xlsx(
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18]
+    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18, 16, 28, 45]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(ord('A') + i - 1)].width = w
 
@@ -767,6 +800,9 @@ async def generate_gbr_raport_xlsx(
             "",
             "",
             "",
+            r.get("agencyEventId") or "",
+            r.get("meterCount") or "",
+            r.get("resultText") or "",
         ]
         for col_idx, v in enumerate(values, start=1):
             c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
@@ -1604,11 +1640,13 @@ async def export_objects_by_code(
 
     base_stmt = (
         select(
+            Event.id.label("event_id"),
             Event.object_id.label("object_id"),
             obj_name.label("object_name"),
             obj_addr.label("address"),
             Event.timestamp.label("timestamp"),
             Event.result_text.label("result_text"),
+            Event.meter_count.label("meter_count"),
         )
         .select_from(Event)
         .outerjoin(Object, Object.id == Event.object_id)
@@ -1633,7 +1671,9 @@ async def export_objects_by_code(
 
     rn_stmt = select(
         base.c.object_id.label("object_id"),
+        base.c.event_id.label("event_id"),
         base.c.result_text.label("result_text"),
+        base.c.meter_count.label("meter_count"),
         base.c.timestamp.label("timestamp"),
         func.row_number().over(partition_by=base.c.object_id, order_by=base.c.timestamp.desc()).label("rn"),
     )
@@ -1641,7 +1681,9 @@ async def export_objects_by_code(
     last_note = (
         select(
             rn.c.object_id.label("object_id"),
+            rn.c.event_id.label("last_event_id"),
             rn.c.result_text.label("last_result_text"),
+            rn.c.meter_count.label("last_meter_count"),
         )
         .where(rn.c.rn == 1)
         .subquery("last_note")
@@ -1655,6 +1697,8 @@ async def export_objects_by_code(
             agg.c.events_count,
             agg.c.first_time,
             agg.c.last_time,
+            last_note.c.last_event_id,
+            last_note.c.last_meter_count,
             last_note.c.last_result_text,
         )
         .select_from(agg)
@@ -1681,6 +1725,8 @@ async def export_objects_by_code(
         "Количество событий",
         "Первое срабатывание",
         "Последнее срабатывание",
+        "ID события (аг.)",
+        "Параметр (MeterCount)",
         "Пометка оператора",
     ]
     ws.append(headers)
@@ -1689,7 +1735,7 @@ async def export_objects_by_code(
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
 
-    for object_id, object_name, address, events_count, first_time, last_time, last_result_text in rows:
+    for object_id, object_name, address, events_count, first_time, last_time, last_event_id, last_meter_count, last_result_text in rows:
         ws.append(
             [
                 eventCode,
@@ -1699,6 +1745,8 @@ async def export_objects_by_code(
                 int(events_count or 0),
                 first_time.isoformat() if first_time else "",
                 last_time.isoformat() if last_time else "",
+                _agency_event_id(last_event_id) or "",
+                last_meter_count or "",
                 last_result_text or "",
             ]
         )
@@ -1711,7 +1759,9 @@ async def export_objects_by_code(
     ws.column_dimensions["E"].width = 20
     ws.column_dimensions["F"].width = 22
     ws.column_dimensions["G"].width = 22
-    ws.column_dimensions["H"].width = 35
+    ws.column_dimensions["H"].width = 16
+    ws.column_dimensions["I"].width = 32
+    ws.column_dimensions["J"].width = 35
 
     out = BytesIO()
     wb.save(out)

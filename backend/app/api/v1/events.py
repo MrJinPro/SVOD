@@ -250,8 +250,17 @@ async def export_events_export(
     ws = wb.active
     ws.title = "События"
 
+    def _agency_event_id(event_id: str | None) -> str:
+        if not event_id:
+            return ""
+        parts = str(event_id).split(":")
+        if len(parts) >= 3:
+            return parts[-1] or ""
+        return ""
+
     headers = [
-        "ID",
+        "ID (SVOD)",
+        "ID события (аг.)",
         "Дата/время",
         "Тип",
         "Номер объекта",
@@ -278,6 +287,7 @@ async def export_events_export(
         ws.append(
             [
                 e.id,
+                _agency_event_id(e.id),
                 e.timestamp.isoformat(),
                 e.type,
                 e.object_id or "",
@@ -302,22 +312,23 @@ async def export_events_export(
 
     ws.freeze_panes = "A2"
     ws.column_dimensions["A"].width = 26
-    ws.column_dimensions["B"].width = 20
-    ws.column_dimensions["C"].width = 12
-    ws.column_dimensions["D"].width = 14
-    ws.column_dimensions["E"].width = 40
-    ws.column_dimensions["F"].width = 30
-    ws.column_dimensions["G"].width = 10
-    ws.column_dimensions["H"].width = 40
-    ws.column_dimensions["I"].width = 22
-    ws.column_dimensions["J"].width = 10
-    ws.column_dimensions["K"].width = 12
-    ws.column_dimensions["L"].width = 40
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 12
+    ws.column_dimensions["E"].width = 14
+    ws.column_dimensions["F"].width = 40
+    ws.column_dimensions["G"].width = 30
+    ws.column_dimensions["H"].width = 10
+    ws.column_dimensions["I"].width = 40
+    ws.column_dimensions["J"].width = 22
+    ws.column_dimensions["K"].width = 10
+    ws.column_dimensions["L"].width = 12
     ws.column_dimensions["M"].width = 40
-    ws.column_dimensions["N"].width = 22
+    ws.column_dimensions["N"].width = 40
     ws.column_dimensions["O"].width = 22
-    ws.column_dimensions["P"].width = 40
-    ws.column_dimensions["Q"].width = 80
+    ws.column_dimensions["P"].width = 22
+    ws.column_dimensions["Q"].width = 40
+    ws.column_dimensions["R"].width = 80
 
     xlsx = io.BytesIO()
     wb.save(xlsx)

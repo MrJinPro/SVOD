@@ -18,6 +18,11 @@ export interface Event {
   description: string;
   location?: string;
   operatorId?: string;
+
+  // Agency archive fields (optional; not present for synthetic/demo events)
+  resultText?: string | null;
+  meterCount?: string | null;
+  timeMeterCount?: string | null;
 }
 
 export interface EventAction {
@@ -206,6 +211,7 @@ export interface OperatorLiveRow {
 
 export interface GbrTripRow {
   eventId: string;
+  agencyEventId?: string | null;
   gbrName: string;
   calledAt: string | null;
   arrivedAt: string | null;
@@ -217,6 +223,10 @@ export interface GbrTripRow {
   responsibleName?: string | null;
   calledOperator?: string | null;
   travelSeconds: number | null;
+
+  meterCount?: string | null;
+  timeMeterCount?: string | null;
+  resultText?: string | null;
 }
 
 export interface GbrTripsResponse {

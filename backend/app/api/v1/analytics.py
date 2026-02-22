@@ -563,6 +563,14 @@ async def gbr_trips(
 
     travel_seconds = _seconds_between(sq.c.arrived_ts, sq.c.called_ts).label("travel_seconds")
 
+    def _agency_event_id(event_id: str | None) -> str | None:
+        if not event_id:
+            return None
+        parts = str(event_id).split(":")
+        if len(parts) >= 3:
+            return parts[-1] or None
+        return None
+
     q = (
         select(
             sq.c.event_id,
@@ -574,6 +582,9 @@ async def gbr_trips(
             Event.object_id,
             Event.object_name,
             Event.client_name,
+            Event.result_text,
+            Event.meter_count,
+            Event.time_meter_count,
             resp_sq.c.responsible_name,
             sq.c.called_operator,
             travel_seconds,
@@ -610,6 +621,9 @@ async def gbr_trips(
         obj_id,
         obj_name,
         client_name,
+        result_text,
+        meter_count,
+        time_meter_count,
         responsible_name,
         called_operator_name,
         travel_s,
@@ -634,6 +648,7 @@ async def gbr_trips(
         items.append(
             {
                 "eventId": event_id,
+                "agencyEventId": _agency_event_id(event_id),
                 "gbrName": gbr,
                 "calledAt": called.isoformat() if isinstance(called, datetime) else None,
                 "arrivedAt": arrived.isoformat() if isinstance(arrived, datetime) else None,
@@ -645,6 +660,9 @@ async def gbr_trips(
                 "responsibleName": responsible_name,
                 "calledOperator": called_operator_name,
                 "travelSeconds": travel_seconds_val,
+                "resultText": result_text,
+                "meterCount": meter_count,
+                "timeMeterCount": time_meter_count.isoformat() if isinstance(time_meter_count, datetime) else None,
             }
         )
 
@@ -726,7 +744,7 @@ async def gbr_trips_export_xlsx(
     ws = wb.active
     ws.title = "Рапорт"
 
-    # Columns A..O (15 columns) to match the visual template width.
+    # Columns to match the visual template width.
     columns = [
         "№ объекта",
         "Адрес",
@@ -743,6 +761,9 @@ async def gbr_trips_export_xlsx(
         "Заявка",
         "Штраф",
         "Сработок за полгода",
+        "ID события (аг.)",
+        "Параметр (MeterCount)",
+        "Пометка оператора (Result_Text)",
     ]
 
     # Header area similar to the screenshot
@@ -790,6 +811,9 @@ async def gbr_trips_export_xlsx(
         14,  # Заявка
         10,  # Штраф
         18,  # Сработок
+        16,  # ID события (аг.)
+        28,  # Параметр (MeterCount)
+        45,  # Пометка оператора (Result_Text)
     ]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(ord('A') + i - 1)].width = w
@@ -834,6 +858,9 @@ async def gbr_trips_export_xlsx(
             "",  # заявка
             "",  # штраф
             "",  # сработок
+            r.get("agencyEventId") or "",
+            r.get("meterCount") or "",
+            r.get("resultText") or "",
         ]
 
         for col_idx, v in enumerate(values, start=1):
@@ -896,6 +923,9 @@ async def gbr_trips_export_table_xlsx(
         "Ответственный",
         "Оператор",
         "В пути",
+        "ID события (аг.)",
+        "Параметр (MeterCount)",
+        "Пометка оператора (Result_Text)",
     ]
     ws.append(headers)
     for c in range(1, len(headers) + 1):
@@ -929,6 +959,9 @@ async def gbr_trips_export_table_xlsx(
                 (r.get("responsibleName") or r.get("clientName") or ""),
                 r.get("calledOperator") or "",
                 (_format_seconds_hhmmss(r.get("travelSeconds")) or "—"),
+                r.get("agencyEventId") or "",
+                r.get("meterCount") or "",
+                r.get("resultText") or "",
             ]
         )
 
@@ -941,6 +974,9 @@ async def gbr_trips_export_table_xlsx(
     ws.column_dimensions["F"].width = 30
     ws.column_dimensions["G"].width = 22
     ws.column_dimensions["H"].width = 10
+    ws.column_dimensions["I"].width = 16
+    ws.column_dimensions["J"].width = 30
+    ws.column_dimensions["K"].width = 45
 
     out = BytesIO()
     wb.save(out)
