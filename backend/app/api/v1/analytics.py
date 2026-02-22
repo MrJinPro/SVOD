@@ -13,7 +13,10 @@ from starlette.responses import Response
 from app.api.v1.deps import require_permissions
 from app.core.config import settings
 from app.db.session import get_session
-from app.integrations.agency_mssql import fetch_gbr_archive_trips as fetch_gbr_archive_trips_mssql
+from app.integrations.agency_mssql import (
+    fetch_gbr_archive_trips as fetch_gbr_archive_trips_mssql,
+    fetch_gbr_group_statuses as fetch_gbr_group_statuses_mssql,
+)
 from app.integrations.agency_sqlite import (
     fetch_gbr_archive_trips as fetch_gbr_archive_trips_sqlite,
     fetch_gbr_group_statuses,
@@ -96,14 +99,16 @@ async def gbr_statuses(
         raise HTTPException(status_code=400, detail="AGENCY_DATABASE_URL не задан (нужно sqlite:///.../agency_raw.db)")
 
     scheme = (url.split(":", 1)[0] or "").lower()
-    if not scheme.startswith("sqlite"):
+    if not (scheme.startswith("sqlite") or scheme.startswith("mssql")):
         raise HTTPException(
             status_code=400,
-            detail="Эндпоинт /analytics/gbr/statuses поддерживает только AGENCY_DATABASE_URL=sqlite:///...",
+            detail="Эндпоинт /analytics/gbr/statuses поддерживает только AGENCY_DATABASE_URL=sqlite:///... или mssql+pyodbc://...",
         )
 
     try:
-        return fetch_gbr_group_statuses(url)
+        if scheme.startswith("mssql"):
+            return await asyncio.to_thread(fetch_gbr_group_statuses_mssql, url)
+        return await asyncio.to_thread(fetch_gbr_group_statuses, url)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

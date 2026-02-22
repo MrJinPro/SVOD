@@ -112,6 +112,61 @@ def _rows_to_dicts(cursor) -> list[dict[str, Any]]:
     return out
 
 
+def fetch_gbr_group_statuses(mssql_url: str) -> dict[str, Any]:
+    """Возвращает текущие статусы групп реагирования (ГБР) напрямую из MSSQL.
+
+    Источник:
+    - dbo.GroupResponse: текущий Status_id по каждой группе
+    - dbo.StatusGroupResponse: справочник статусов (Reason)
+    """
+
+    pyodbc = _require_pyodbc()
+    info = parse_mssql_url(mssql_url)
+    conn_str = _build_odbc_conn_str(info)
+
+    snapshot_at = datetime.utcnow()
+
+    sql = """
+    SELECT
+        gr.Group_id,
+        gr.Description,
+        gr.Status_id,
+        sgr.reason AS StatusReason,
+        gr.Event_id,
+        gr.Panel_id,
+        gr.Group_,
+        gr.Engine,
+        gr.Track,
+        gr.Mphone_id,
+        gr.Disabled,
+        gr.Category,
+        gr.callsign,
+        gr.DislocationPointLat,
+        gr.DislocationPointLon,
+        gr.TimeArriveToObject,
+        gr.StartTime,
+        gr.EndTime
+    FROM dbo.GroupResponse gr
+    LEFT JOIN dbo.StatusGroupResponse sgr
+        ON sgr.status_id = gr.Status_id
+    ORDER BY ISNULL(gr.Description, ''), gr.Group_id
+    """
+
+    with pyodbc.connect(conn_str, timeout=10) as conn:
+        conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+        conn.setencoding(encoding="utf-8")
+
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = _rows_to_dicts(cur)
+
+    return {
+        "snapshotAt": snapshot_at.isoformat(),
+        "rows": rows,
+    }
+
+
 def fetch_objects_snapshot(mssql_url: str) -> dict[str, Any]:
     """Снимает снапшот объектов/групп/ответственных из Pult4DB.
 
