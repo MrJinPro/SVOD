@@ -81,11 +81,10 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
         <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
-            <TableHead className="w-[150px] text-muted-foreground font-medium">ID события (аг.)</TableHead>
+            <TableHead className="w-[150px] text-muted-foreground font-medium">ID события</TableHead>
             <TableHead className="text-muted-foreground font-medium">Тип</TableHead>
             <TableHead className="text-muted-foreground font-medium">Код / сообщение</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Объект</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Клиент</TableHead>
+            <TableHead className="text-muted-foreground font-medium">№ / Объект / Адрес</TableHead>
             <TableHead className="text-muted-foreground font-medium">Серьёзность</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус агентства</TableHead>
@@ -141,13 +140,13 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                 </TableCell>
                 <TableCell>
                   <div className="space-y-0.5">
+                    <div className="font-mono text-xs text-muted-foreground">{event.objectId || '—'}</div>
                     <div className="font-medium text-foreground">{event.objectName}</div>
                     {event.location && (
                       <div className="text-xs text-muted-foreground">{event.location}</div>
                     )}
                   </div>
                 </TableCell>
-                <TableCell className="text-foreground">{event.clientName}</TableCell>
                 <TableCell>
                   <Badge className={cn('font-medium border', severityStyles[event.severity])}>
                     {severityLabels[event.severity]}

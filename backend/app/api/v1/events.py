@@ -120,9 +120,15 @@ async def list_events(
     severity: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
+
+    # UI requirement: hide operator-irrelevant noise (e.g., постановка/снятие).
+    # These are classified as type=access during agency archive sync.
+    if not includeNoise:
+        filters.append(Event.type != "access")
 
     if type:
         filters.append(Event.type == type)
@@ -202,10 +208,14 @@ async def export_events_export(
     severity: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     filters: list[Any] = []
+
+    if not includeNoise:
+        filters.append(Event.type != "access")
 
     if type:
         filters.append(Event.type == type)
@@ -350,6 +360,7 @@ async def export_events_xlsx(
     severity: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -361,6 +372,7 @@ async def export_events_xlsx(
         severity=severity,
         status=status,
         search=search,
+        includeNoise=includeNoise,
         limit=limit,
         session=session,
     )
@@ -370,6 +382,7 @@ async def export_events_xlsx(
 async def stream_events(
     since: str | None = Query(None, description="ISO timestamp; stream events newer than this"),
     pollSeconds: float = Query(1.0, ge=0.2, le=10.0),
+    includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ):
@@ -392,12 +405,10 @@ async def stream_events(
 
         while True:
             # Query a small batch; client can keep connection open.
-            stmt: Select[tuple[Event]] = (
-                select(Event)
-                .where(Event.timestamp > last_ts)
-                .order_by(Event.timestamp.asc())
-                .limit(500)
-            )
+            stmt: Select[tuple[Event]] = select(Event).where(Event.timestamp > last_ts)
+            if not includeNoise:
+                stmt = stmt.where(Event.type != "access")
+            stmt = stmt.order_by(Event.timestamp.asc()).limit(500)
             rows = (await session.execute(stmt)).scalars().all()
             for e in rows:
                 payload = _event_to_out(e)

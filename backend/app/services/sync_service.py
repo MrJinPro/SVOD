@@ -232,6 +232,73 @@ def _safe_str(v: Any) -> str | None:
     return s or None
 
 
+def _classify_agency_archive_event(
+    *,
+    code: str | None,
+    code_text: str | None,
+    state_name: str | None,
+    name_state: str | None,
+) -> tuple[str, str]:
+    """Best-effort классификация событий из архивов агентства.
+
+    Важно: фронтенд ожидает ограниченный набор типов:
+    intrusion | alarm | access | patrol | incident | maintenance
+
+    Это эвристика по текстам (CodeText/StateName/NameState).
+    """
+
+    parts = [code, code_text, state_name, name_state]
+    text = " ".join([p for p in parts if isinstance(p, str) and p.strip()]).lower()
+
+    access_kw = (
+        "постанов",
+        "постав",
+        "взят",
+        "взято",
+        "под охран",
+        "снят",
+        "снято",
+        "снятие",
+        "снята",
+        "с охраны",
+    )
+    if any(k in text for k in access_kw):
+        return ("access", "info")
+
+    fire_kw = ("пожар", "дым", "fire")
+    if any(k in text for k in fire_kw):
+        return ("alarm", "critical")
+
+    intrusion_kw = ("проникнов", "вскрыт", "вскрытие", "вторжен", "нарушение")
+    if any(k in text for k in intrusion_kw):
+        return ("intrusion", "critical")
+
+    alarm_kw = ("тревог", "паник", "напад", "саботаж")
+    if any(k in text for k in alarm_kw):
+        return ("alarm", "warning")
+
+    maintenance_kw = (
+        "неисправ",
+        "ошибк",
+        "отказ",
+        "нет связи",
+        "потеря связи",
+        "разряд",
+        "батар",
+        "питани",
+        "tamper",
+        "тест",
+    )
+    if any(k in text for k in maintenance_kw):
+        return ("maintenance", "warning")
+
+    patrol_kw = ("обход", "патрул", "гбр")
+    if any(k in text for k in patrol_kw):
+        return ("patrol", "info")
+
+    return ("incident", "info")
+
+
 def _coerce_dt(v: Any) -> datetime | None:
     if v is None:
         return None
@@ -377,15 +444,29 @@ async def sync_recent_events_from_agency_mssql_archives(
         else:
             status = "active"
 
+        event_type, event_severity = _classify_agency_archive_event(
+            code=code,
+            code_text=code_text,
+            state_name=state_name,
+            name_state=name_state,
+        )
+
+        event_type, event_severity = _classify_agency_archive_event(
+            code=code,
+            code_text=code_text,
+            state_name=state_name,
+            name_state=name_state,
+        )
+
         events_to_insert.append(
             {
                 "id": f"mssql:{date_key}:{event_id}",
                 "timestamp": ts,
-                "type": "alarm",
+                "type": event_type,
                 "object_id": panel_id,
                 "object_name": (obj.name if obj and obj.name else None) or panel_id or "Объект",
                 "client_name": (obj.client_name if obj and obj.client_name else None) or panel_id or "Не указан",
-                "severity": "info",
+                "severity": event_severity,
                 "status": status,
                 "code": code,
                 "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
@@ -1029,11 +1110,11 @@ async def sync_events_from_agency_sqlite_archives(
             {
                 "id": f"mssql:{date_key}:{event_id}",
                 "timestamp": ts,
-                "type": "alarm",
+                "type": event_type,
                 "object_id": panel_id,
                 "object_name": (obj.name if obj and obj.name else None) or panel_id or "Объект",
                 "client_name": (obj.client_name if obj and obj.client_name else None) or panel_id or "Не указан",
-                "severity": "info",
+                "severity": event_severity,
                 "status": status,
                 "code": code,
                 "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
@@ -1361,15 +1442,22 @@ async def sync_events_from_agency_mssql_archives(
         else:
             status = "active"
 
+        event_type, event_severity = _classify_agency_archive_event(
+            code=code,
+            code_text=code_text,
+            state_name=state_name,
+            name_state=name_state,
+        )
+
         events_to_insert.append(
             {
                 "id": f"mssql:{date_key}:{event_id}",
                 "timestamp": ts,
-                "type": "alarm",
+                "type": event_type,
                 "object_id": panel_id,
                 "object_name": (obj.name if obj and obj.name else None) or panel_id or "Объект",
                 "client_name": (obj.client_name if obj and obj.client_name else None) or panel_id or "Не указан",
-                "severity": "info",
+                "severity": event_severity,
                 "status": status,
                 "code": code,
                 "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
