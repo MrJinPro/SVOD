@@ -31,6 +31,8 @@ class Event(Base):
 
     description: Mapped[str] = mapped_column(Text)
     result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meter_count: Mapped[str | None] = mapped_column(Text, nullable=True)
+    time_meter_count: Mapped[datetime | None] = mapped_column(nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     operator_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

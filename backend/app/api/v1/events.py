@@ -60,6 +60,12 @@ def _event_to_out(e: Event) -> dict[str, Any]:
         "codeText": getattr(e, "code_text", None),
         "stateName": getattr(e, "state_name", None),
         "resultText": getattr(e, "result_text", None),
+        "meterCount": getattr(e, "meter_count", None),
+        "timeMeterCount": (
+            getattr(e, "time_meter_count", None).isoformat()
+            if getattr(e, "time_meter_count", None) is not None
+            else None
+        ),
         "description": e.description,
         "location": e.location,
         "operatorId": e.operator_id,
@@ -257,6 +263,8 @@ async def export_events_export(
         "Важность",
         "Статус",
         "Адрес",
+        "Параметр (MeterCount)",
+        "Время параметра (TimeMeterCount)",
         "Пометка (Result_Text)",
         "Описание",
     ]
@@ -281,6 +289,12 @@ async def export_events_export(
                 e.severity,
                 e.status,
                 e.location or "",
+                getattr(e, "meter_count", "") or "",
+                (
+                    getattr(e, "time_meter_count", None).isoformat()
+                    if getattr(e, "time_meter_count", None) is not None
+                    else ""
+                ),
                 getattr(e, "result_text", "") or "",
                 (e.description or "").replace("\r\n", "\n"),
             ]
@@ -300,7 +314,10 @@ async def export_events_export(
     ws.column_dimensions["K"].width = 12
     ws.column_dimensions["L"].width = 40
     ws.column_dimensions["M"].width = 40
-    ws.column_dimensions["N"].width = 80
+    ws.column_dimensions["N"].width = 22
+    ws.column_dimensions["O"].width = 22
+    ws.column_dimensions["P"].width = 40
+    ws.column_dimensions["Q"].width = 80
 
     xlsx = io.BytesIO()
     wb.save(xlsx)

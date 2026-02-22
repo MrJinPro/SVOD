@@ -69,6 +69,7 @@ def _build_description(r: sqlite3.Row) -> str:
     zone = r.get("Zone")
     line = _safe_str(r.get("Line"))
     result_text = _safe_str(r.get("Result_Text"))
+    meter_count = _safe_str(r.get("MeterCount"))
 
     state_event = r.get("StateEvent")
     state_name = _safe_str(r.get("StateName"))
@@ -111,6 +112,8 @@ def _build_description(r: sqlite3.Row) -> str:
         parts.append(f"ГБР: {gbr}")
     if result_text:
         parts.append(result_text)
+    if meter_count:
+        parts.append(f"Параметр: {meter_count}")
 
     return "\n".join(parts)
 
@@ -177,6 +180,8 @@ def import_events(
             state_name = _safe_str(row.get("StateName"))
             state_is_over = row.get("StateIsOverProcess")
             result_text = _safe_str(row.get("Result_Text"))
+            meter_count = _safe_str(row.get("MeterCount"))
+            time_meter_count = row.get("TimeMeterCount")
             person = _safe_str(row.get("PersonName"))
 
             object_name = (obj[0] if obj and obj[0] else None) or panel_id or "Объект"
@@ -204,6 +209,12 @@ def import_events(
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": desc,
                 "result_text": result_text,
+                "meter_count": meter_count,
+                "time_meter_count": (
+                    time_meter_count.isoformat() if isinstance(time_meter_count, datetime) else (
+                        str(time_meter_count) if time_meter_count is not None else None
+                    )
+                ),
                 "location": address,
                 "operator_id": person,
             }
