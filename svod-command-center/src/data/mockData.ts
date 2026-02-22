@@ -94,7 +94,7 @@ export const mockEvents: Event[] = [
 export const mockReports: Report[] = [
   {
     id: '1',
-    type: 'daily',
+    type: 'weekly',
     periodStart: '2026-01-09',
     periodEnd: '2026-01-09',
     generatedAt: '2026-01-10T00:05:00',
@@ -124,7 +124,7 @@ export const mockReports: Report[] = [
   },
   {
     id: '4',
-    type: 'daily',
+    type: 'weekly',
     periodStart: '2026-01-08',
     periodEnd: '2026-01-08',
     generatedAt: '2026-01-09T00:05:00',
@@ -134,7 +134,7 @@ export const mockReports: Report[] = [
   },
   {
     id: '5',
-    type: 'daily',
+    type: 'weekly',
     periodStart: '2026-01-10',
     periodEnd: '2026-01-10',
     generatedAt: '',

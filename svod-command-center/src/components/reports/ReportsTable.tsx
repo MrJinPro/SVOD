@@ -30,7 +30,6 @@ interface ReportsTableProps {
 }
 
 const typeLabels: Record<ReportType, string> = {
-  daily: 'Суточный',
   weekly: 'Недельный',
   monthly: 'Месячный',
   objectsByCode: 'Объекты по коду',
@@ -197,15 +196,6 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
       return;
     }
 
-    // Derived daily: export endpoint (xlsx)
-    if (report.type === 'daily') {
-      const date = report.periodStart;
-      const url = `/reports/export/daily/xlsx?date=${encodeURIComponent(date)}`;
-      const file = `daily-report-${date}.xlsx`;
-      await downloadBlob(url, file);
-      return;
-    }
-
     // Fallback: if backend gave direct URL, try it as-is
     if (report.downloadUrl) {
       const file = report.fileName || 'report.xlsx';
@@ -241,95 +231,99 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="sm:max-w-[900px]">
+        <DialogContent className="sm:max-w-[900px] max-w-[calc(100vw-2rem)] overflow-hidden">
           <DialogHeader>
             <DialogTitle>{previewTitle}</DialogTitle>
           </DialogHeader>
           <div className="rounded-md border border-border">
-            <ScrollArea className="h-[420px]">
+            <ScrollArea className="h-[420px] w-full">
               {previewMode === 'none' ? (
                 <div className="p-4 text-sm text-muted-foreground">
                   {previewLoading ? 'Загрузка…' : 'Предпросмотр недоступен для этого отчёта. Скачайте XLSX.'}
                 </div>
               ) : previewMode === 'gbr' ? (
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 text-muted-foreground sticky top-0">
-                    <tr>
-                      <th className="text-left font-medium px-3 py-2">№ объекта</th>
-                      <th className="text-left font-medium px-3 py-2">Адрес/объект</th>
-                      <th className="text-left font-medium px-3 py-2">ГБР</th>
-                      <th className="text-left font-medium px-3 py-2">Вызов</th>
-                      <th className="text-left font-medium px-3 py-2">Прибыл</th>
-                      <th className="text-right font-medium px-3 py-2">В пути (сек)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewRows.map((r) => (
-                      <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt || ''}`} className="border-t border-border">
-                        <td className="px-3 py-2 font-mono">{r.objectId || '—'}</td>
-                        <td className="px-3 py-2">
-                          <div className="text-foreground">{r.objectName || '—'}</div>
-                          <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
-                        </td>
-                        <td className="px-3 py-2">{r.gbrName}</td>
-                        <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
-                        <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{r.travelSeconds == null ? '—' : Math.round(r.travelSeconds)}</td>
-                      </tr>
-                    ))}
-                    {!previewLoading && previewRows.length === 0 && (
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full min-w-max text-sm">
+                    <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                       <tr>
-                        <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
-                          Нет данных
-                        </td>
+                        <th className="text-left font-medium px-3 py-2 whitespace-nowrap">№ объекта</th>
+                        <th className="text-left font-medium px-3 py-2">Адрес/объект</th>
+                        <th className="text-left font-medium px-3 py-2 whitespace-nowrap">ГБР</th>
+                        <th className="text-left font-medium px-3 py-2 whitespace-nowrap">Вызов</th>
+                        <th className="text-left font-medium px-3 py-2 whitespace-nowrap">Прибыл</th>
+                        <th className="text-right font-medium px-3 py-2 whitespace-nowrap">В пути (сек)</th>
                       </tr>
-                    )}
-                    {previewLoading && (
-                      <tr>
-                        <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
-                          Загрузка…
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 text-muted-foreground sticky top-0">
-                    <tr>
-                      {(tableColumns.length ? tableColumns : ['']).map((c, idx) => (
-                        <th key={`${c}-${idx}`} className="text-left font-medium px-3 py-2 whitespace-nowrap">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tableRows.map((r, i) => (
-                      <tr key={i} className="border-t border-border">
-                        {(r.length ? r : ['']).map((v, j) => (
-                          <td key={j} className="px-3 py-2 align-top whitespace-nowrap">
-                            {v || '—'}
+                    </thead>
+                    <tbody>
+                      {previewRows.map((r) => (
+                        <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt || ''}`} className="border-t border-border">
+                          <td className="px-3 py-2 font-mono whitespace-nowrap">{r.objectId || '—'}</td>
+                          <td className="px-3 py-2 align-top whitespace-normal break-words max-w-[520px]">
+                            <div className="text-foreground">{r.objectName || '—'}</div>
+                            <div className="text-xs text-muted-foreground">{r.clientName || ''}</div>
                           </td>
+                          <td className="px-3 py-2 whitespace-nowrap">{r.gbrName}</td>
+                          <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
+                          <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
+                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{r.travelSeconds == null ? '—' : Math.round(r.travelSeconds)}</td>
+                        </tr>
+                      ))}
+                      {!previewLoading && previewRows.length === 0 && (
+                        <tr>
+                          <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                            Нет данных
+                          </td>
+                        </tr>
+                      )}
+                      {previewLoading && (
+                        <tr>
+                          <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                            Загрузка…
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full min-w-max text-sm">
+                    <thead className="bg-muted/50 text-muted-foreground sticky top-0">
+                      <tr>
+                        {(tableColumns.length ? tableColumns : ['']).map((c, idx) => (
+                          <th key={`${c}-${idx}`} className="text-left font-medium px-3 py-2 whitespace-nowrap">
+                            {c}
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                    {!previewLoading && tableRows.length === 0 && (
-                      <tr>
-                        <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
-                          Нет данных
-                        </td>
-                      </tr>
-                    )}
-                    {previewLoading && (
-                      <tr>
-                        <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
-                          Загрузка…
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {tableRows.map((r, i) => (
+                        <tr key={i} className="border-t border-border">
+                          {(r.length ? r : ['']).map((v, j) => (
+                            <td key={j} className="px-3 py-2 align-top whitespace-normal break-words max-w-[520px]">
+                              {v || '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                      {!previewLoading && tableRows.length === 0 && (
+                        <tr>
+                          <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
+                            Нет данных
+                          </td>
+                        </tr>
+                      )}
+                      {previewLoading && (
+                        <tr>
+                          <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
+                            Загрузка…
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </ScrollArea>
           </div>

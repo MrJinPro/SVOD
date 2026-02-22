@@ -38,7 +38,7 @@ import type { DateRange } from 'react-day-picker';
 import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type CreateReportKind = 'daily' | 'objectsByCode' | 'gbrRaportXlsx' | 'pcnLedger';
+type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'pcnLedger';
 
 function formatLocalYYYYMMDD(d: Date): string {
   const yyyy = d.getFullYear();
@@ -118,65 +118,67 @@ function EventCodeCombobox({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-[520px] justify-between"
+          className="w-full sm:w-[520px] justify-between"
         >
           <span className="truncate text-left">{buttonLabel}</span>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[520px] p-0" align="start">
+      <PopoverContent className="w-[520px] max-w-[calc(100vw-2rem)] p-0" align="start">
         <Command>
           <CommandInput
             placeholder="Поиск по коду или расшифровке…"
             value={query}
             onValueChange={setQuery}
           />
-          <CommandList>
-            <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
-            <CommandGroup>
-              {canUseTyped ? (
-                <CommandItem
-                  key={`typed:${query.trim()}`}
-                  value={query.trim()}
-                  onSelect={() => {
-                    onChange(query.trim());
-                    setOpen(false);
-                  }}
-                >
-                  <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
-                  <div className="min-w-0">
-                    <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
-                    <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
-                  </div>
-                </CommandItem>
-              ) : null}
-              {(items || []).map((it) => (
-                <CommandItem
-                  key={it.code}
-                  value={`${it.code} ${it.codeText || ''}`}
-                  onSelect={() => {
-                    onChange(it.code);
-                    setOpen(false);
-                  }}
-                >
-                  <Check
-                    className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
-                  />
-                  <div className="flex w-full items-center justify-between gap-3">
+          <ScrollArea className="h-[300px]">
+            <CommandList className="max-h-none overflow-visible">
+              <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
+              <CommandGroup>
+                {canUseTyped ? (
+                  <CommandItem
+                    key={`typed:${query.trim()}`}
+                    value={query.trim()}
+                    onSelect={() => {
+                      onChange(query.trim());
+                      setOpen(false);
+                    }}
+                  >
+                    <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
                     <div className="min-w-0">
-                      <div className="font-mono text-sm text-foreground">{it.code}</div>
-                      {it.codeText ? (
-                        <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
+                      <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
+                      <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
+                    </div>
+                  </CommandItem>
+                ) : null}
+                {(items || []).map((it) => (
+                  <CommandItem
+                    key={it.code}
+                    value={`${it.code} ${it.codeText || ''}`}
+                    onSelect={() => {
+                      onChange(it.code);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
+                    />
+                    <div className="flex w-full items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-mono text-sm text-foreground">{it.code}</div>
+                        {it.codeText ? (
+                          <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
+                        ) : null}
+                      </div>
+                      {typeof it.count === 'number' ? (
+                        <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
                       ) : null}
                     </div>
-                    {typeof it.count === 'number' ? (
-                      <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
-                    ) : null}
-                  </div>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </ScrollArea>
         </Command>
       </PopoverContent>
     </Popover>
@@ -199,8 +201,6 @@ export default function Reports() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createKind, setCreateKind] = useState<CreateReportKind>('objectsByCode');
-
-  const [dailyDate, setDailyDate] = useState(() => formatLocalYYYYMMDD(new Date()));
 
   const [pcnOperatorQuery, setPcnOperatorQuery] = useState('');
   const [pcnPay0, setPcnPay0] = useState('0');
@@ -343,9 +343,7 @@ export default function Reports() {
 
   const createReportInHistory = async () => {
     try {
-      if (createKind === 'daily') {
-        await apiPost(`/reports/generate/daily?date=${encodeURIComponent(dailyDate)}`);
-      } else if (createKind === 'objectsByCode') {
+      if (createKind === 'objectsByCode') {
         if (!eventCode.trim()) {
           toast({ title: 'Отчёт', description: 'Выберите код события.', variant: 'destructive' });
           return;
@@ -419,6 +417,8 @@ export default function Reports() {
 
   const filteredReports = useMemo(() => {
     return (reports || []).filter((r: any) => {
+      // Defensive: hide legacy daily reports even if backend still returns them
+      if (r?.type === 'daily') return false;
       if (typeFilter !== 'all' && r.type !== typeFilter) return false;
       if (statusFilter !== 'all' && r.status !== statusFilter) return false;
       return true;
@@ -440,7 +440,6 @@ export default function Reports() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Все типы</SelectItem>
-                <SelectItem value="daily">Суточные</SelectItem>
                 <SelectItem value="objectsByCode">Объекты по коду</SelectItem>
                 <SelectItem value="gbrRaportXlsx">Рапорт (ГБР)</SelectItem>
                 <SelectItem value="pcnLedger">Ведомость (ПЦН)</SelectItem>
@@ -480,7 +479,7 @@ export default function Reports() {
         </div>
 
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent className="sm:max-w-[760px]">
+          <DialogContent className="sm:max-w-[760px] max-w-[calc(100vw-2rem)] overflow-hidden">
             <DialogHeader>
               <DialogTitle>Создать отчёт</DialogTitle>
               <DialogDescription>
@@ -492,31 +491,16 @@ export default function Reports() {
             <div className="space-y-4">
               <div className="flex flex-wrap items-center gap-3">
                 <Select value={createKind} onValueChange={(v) => setCreateKind(v as CreateReportKind)}>
-                  <SelectTrigger className="w-[360px]">
+                  <SelectTrigger className="w-full sm:w-[360px]">
                     <SelectValue placeholder="Тип отчёта" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="objectsByCode">Объекты по коду события (XLSX)</SelectItem>
                     <SelectItem value="gbrRaportXlsx">Рапорт (ГБР) по шаблону (XLSX)</SelectItem>
                     <SelectItem value="pcnLedger">Ведомость по тревогам (ПЦН) (XLSX)</SelectItem>
-                    <SelectItem value="daily">Суточный журнал событий (XLSX)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-
-              {createKind === 'daily' ? (
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="space-y-1">
-                    <div className="text-sm text-muted-foreground">Дата</div>
-                    <Input
-                      type="date"
-                      className="w-[200px] bg-background"
-                      value={dailyDate}
-                      onChange={(e) => setDailyDate(e.target.value)}
-                    />
-                  </div>
-                </div>
-              ) : null}
 
               {createKind === 'objectsByCode' ? (
                 <div className="space-y-3">
@@ -582,7 +566,7 @@ export default function Reports() {
 
                         <Popover>
                           <PopoverTrigger asChild>
-                            <Button variant="outline" className="w-[280px] justify-start font-normal">
+                            <Button variant="outline" className="w-full sm:w-[280px] justify-start font-normal">
                               {dateRange?.from && dateRange?.to
                                 ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
                                 : 'Выберите период'}
@@ -612,7 +596,7 @@ export default function Reports() {
                     <div className="space-y-1">
                       <div className="text-sm text-muted-foreground">Контрагент (опционально)</div>
                       <Input
-                        className="w-[320px] bg-background"
+                        className="w-full sm:w-[320px] bg-background"
                         placeholder='Например: ООО "Альбион 2002"'
                         value={clientName}
                         onChange={(e) => setClientName(e.target.value)}
@@ -631,7 +615,7 @@ export default function Reports() {
                     <div className="space-y-1">
                       <div className="text-sm text-muted-foreground">Поиск по объекту (опционально)</div>
                       <Input
-                        className="w-[520px] bg-background"
+                        className="w-full sm:w-[520px] bg-background"
                         placeholder="Название / адрес / ID"
                         value={objectQuery}
                         onChange={(e) => setObjectQuery(e.target.value)}

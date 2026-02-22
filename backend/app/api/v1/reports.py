@@ -303,6 +303,7 @@ async def list_reports(
     stored = (
         await session.execute(
             select(Report)
+            .where(Report.type != "daily")
             .order_by(Report.generated_at.desc())
             .limit(200)
         )
@@ -310,50 +311,23 @@ async def list_reports(
 
     out: list[dict] = [_as_report_out_dict(r) for r in stored]
 
-    # 2) Derived "daily" reports from real events (last 30 days)
-    rows = (
-        await session.execute(
-            select(
-                func.date(Event.timestamp).label("day"),
-                func.count().label("events_count"),
-                func.sum(case((Event.severity == "critical", 1), else_=0)).label("critical_count"),
-            )
-            .group_by(func.date(Event.timestamp))
-            .order_by(func.date(Event.timestamp).desc())
-            .limit(30)
-        )
-    ).all()
-
-    for day, events_count, critical_count in rows:
-        if isinstance(day, date_type):
-            day_str = day.isoformat()
-        else:
-            day_str = str(day)
-        out.append(
-            {
-                "id": day_str,
-                "type": "daily",
-                "title": "Суточный отчёт",
-                "periodStart": day_str,
-                "periodEnd": day_str,
-                "generatedAt": "",
-                "status": "generated",
-                "eventsCount": int(events_count or 0),
-                "criticalCount": int(critical_count or 0),
-                "downloadUrl": f"/reports/export/daily/xlsx?date={day_str}",
-                "fileName": f"daily-report-{day_str}.xlsx",
-                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            }
-        )
     return out
 
 
-@router.post("/generate/daily")
+@router.post("/generate/daily", include_in_schema=False)
 async def generate_daily_report(
     date: str = Query(default_factory=today_str, description="YYYY-MM-DD"),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "DISABLED",
+            "message": "Суточный отчёт отключён. Формируйте отчёты только по согласованным событиям/объектам.",
+        },
+    )
+
     # Generate now, but return a record and keep it in history.
     day = _parse_date(date)
     if not day:
@@ -1274,11 +1248,19 @@ async def preview_report(
     raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Preview not supported"})
 
 
-@router.get("/export/daily")
+@router.get("/export/daily", include_in_schema=False)
 async def export_daily(
     date: str = Query(default_factory=today_str, description="YYYY-MM-DD"),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "DISABLED",
+            "message": "Суточный отчёт отключён. Формируйте отчёты только по согласованным событиям/объектам.",
+        },
+    )
+
     content = await export_daily_report_csv(session=session, date=date)
     xlsx = _csv_bytes_to_xlsx_bytes(content)
     filename = f"daily-report-{date}.xlsx"
@@ -1289,7 +1271,7 @@ async def export_daily(
     )
 
 
-@router.get("/export/daily/xlsx")
+@router.get("/export/daily/xlsx", include_in_schema=False)
 async def export_daily_xlsx(
     date: str = Query(default_factory=today_str, description="YYYY-MM-DD"),
     session: AsyncSession = Depends(get_session),
