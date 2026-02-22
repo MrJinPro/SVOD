@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import and_, case, extract, func, or_, select
 from sqlalchemy.sql import desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,11 @@ from starlette.responses import Response
 from app.api.v1.deps import require_permissions
 from app.core.config import settings
 from app.db.session import get_session
+from app.integrations.agency_mssql import fetch_gbr_archive_trips as fetch_gbr_archive_trips_mssql
+from app.integrations.agency_sqlite import (
+    fetch_gbr_archive_trips as fetch_gbr_archive_trips_sqlite,
+    fetch_gbr_group_statuses,
+)
 from app.models.event import Event
 from app.models.event_action import EventAction
 from app.models.object import Responsible
@@ -73,6 +79,98 @@ def _format_seconds_hhmmss(seconds: float | int | None) -> str:
     m = (total % 3600) // 60
     s = total % 60
     return f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
+
+
+@router.get("/gbr/statuses")
+async def gbr_statuses(
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> dict[str, Any]:
+    """Текущие статусы ГБР (живой статус группы, не статус выезда).
+
+    Источник: агентский SQLite-слепок (AGENCY_DATABASE_URL=sqlite:///.../agency_raw.db),
+    таблицы GroupResponse + StatusGroupResponse.
+    """
+
+    url = (settings.agency_database_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="AGENCY_DATABASE_URL не задан (нужно sqlite:///.../agency_raw.db)")
+
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not scheme.startswith("sqlite"):
+        raise HTTPException(
+            status_code=400,
+            detail="Эндпоинт /analytics/gbr/statuses поддерживает только AGENCY_DATABASE_URL=sqlite:///...",
+        )
+
+    try:
+        return fetch_gbr_group_statuses(url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Keep message readable for UI; detailed trace is already logged by global handler.
+        raise HTTPException(status_code=500, detail=f"Не удалось прочитать статусы ГБР из agency DB: {e}")
+
+
+@router.get("/gbr/archive-trips")
+async def gbr_archive_trips(
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+    group_id: int | None = Query(default=None, ge=1, alias="groupId"),
+    panel_id: str | None = Query(default=None, alias="panelId"),
+    limit: int = Query(default=500, ge=1, le=5000),
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> dict[str, Any]:
+    """История выездов ГБР из ArchiveGroupResponse.
+
+    Работает только при AGENCY_DATABASE_URL=sqlite:///.../agency_raw.db
+    (слепок из дампов).
+    """
+
+    url = (settings.agency_database_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="AGENCY_DATABASE_URL не задан (нужно sqlite:///.../agency_raw.db)")
+
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not (scheme.startswith("sqlite") or scheme.startswith("mssql")):
+        raise HTTPException(
+            status_code=400,
+            detail="Эндпоинт /analytics/gbr/archive-trips поддерживает только AGENCY_DATABASE_URL=sqlite:///... или mssql+pyodbc://...",
+        )
+
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    if date_from and dt_from is None:
+        raise HTTPException(status_code=400, detail="Некорректный dateFrom (ожидается ISO дата/время)")
+    if date_to and dt_to is None:
+        raise HTTPException(status_code=400, detail="Некорректный dateTo (ожидается ISO дата/время)")
+
+    try:
+        if scheme.startswith("mssql"):
+            return await asyncio.to_thread(
+                fetch_gbr_archive_trips_mssql,
+                url,
+                date_from=dt_from,
+                date_to=dt_to,
+                group_id=group_id,
+                panel_id=panel_id,
+                limit=limit,
+            )
+
+        return await asyncio.to_thread(
+            fetch_gbr_archive_trips_sqlite,
+            url,
+            date_from=dt_from,
+            date_to=dt_to,
+            group_id=group_id,
+            panel_id=panel_id,
+            limit=limit,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Не удалось прочитать историю выездов ГБР: {e}")
 
 
 @router.get("/operators/live")

@@ -529,3 +529,103 @@ def fetch_eventservice_actions_for_event_pairs(
                         raise
 
     return out
+
+
+def fetch_gbr_archive_trips(
+        mssql_url: str,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        group_id: int | None = None,
+        panel_id: str | None = None,
+        limit: int = 500,
+) -> dict[str, Any]:
+        """История выездов ГБР из dbo.ArchiveGroupResponse.
+
+        Возвращает строки с:
+        - временем выезда/прибытия (StartTime/EndTime)
+        - объектом (Panel_id + CompanyName/address при наличии связей)
+        - статусом (Status_id + StatusGroupResponse.reason)
+        """
+
+        pyodbc = _require_pyodbc()
+        info = parse_mssql_url(mssql_url)
+        conn_str = _build_odbc_conn_str(info)
+
+        if limit <= 0:
+                limit = 1
+        limit = min(int(limit), 5000)
+
+        snapshot_at = datetime.utcnow()
+
+        where: list[str] = []
+        params: list[Any] = []
+        if date_from is not None:
+                where.append("agr.StartTime >= ?")
+                params.append(date_from)
+        if date_to is not None:
+                where.append("agr.StartTime < ?")
+                params.append(date_to)
+        if group_id is not None:
+                where.append("agr.Group_id = ?")
+                params.append(int(group_id))
+        if panel_id is not None and str(panel_id).strip():
+                where.append("agr.Panel_id = ?")
+                params.append(str(panel_id).strip())
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        sql = f"""
+        SELECT TOP ({int(limit)})
+            agr.id,
+            agr.Group_id,
+            gr.Description AS GroupName,
+            agr.StartTime,
+            agr.EndTime,
+            agr.Status_id,
+            sgr.reason AS StatusReason,
+            agr.Panel_id,
+            agr.Group_ AS GroupNo,
+            c.CompanyName AS ObjectName,
+            c.[address] AS ObjectAddress
+        FROM dbo.ArchiveGroupResponse agr
+        LEFT JOIN dbo.StatusGroupResponse sgr
+            ON sgr.status_id = agr.Status_id
+        LEFT JOIN dbo.GroupResponse gr
+            ON gr.Group_id = agr.Group_id
+        LEFT JOIN (
+            SELECT Panel_id, MAX(CompanyID) AS CompanyID
+            FROM dbo.Groups
+            GROUP BY Panel_id
+        ) g
+            ON g.Panel_id = agr.Panel_id
+        LEFT JOIN dbo.Company c
+            ON c.ID = g.CompanyID
+        {where_sql}
+        ORDER BY agr.StartTime DESC, agr.id DESC
+        """
+
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+                conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+                conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+                conn.setencoding(encoding="utf-8")
+
+                with conn.cursor() as cur:
+                        cur.execute(sql, params)
+                        rows = _rows_to_dicts(cur)
+
+        for r in rows:
+                try:
+                        st = r.get("StartTime")
+                        et = r.get("EndTime")
+                        if isinstance(st, datetime) and isinstance(et, datetime):
+                                r["DurationSeconds"] = int((et - st).total_seconds())
+                        else:
+                                r["DurationSeconds"] = None
+                except Exception:
+                        r["DurationSeconds"] = None
+
+        return {
+                "snapshotAt": snapshot_at.isoformat(),
+                "rows": rows,
+        }

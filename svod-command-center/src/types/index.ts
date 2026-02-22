@@ -238,6 +238,52 @@ export interface GbrTripsResponse {
   offset: number;
 }
 
+export interface GbrGroupStatusRow {
+  Group_id: number;
+  Description: string | null;
+  Status_id: number | null;
+  StatusReason: string | null;
+  Event_id: number | null;
+  Panel_id: string | null;
+  Group_: number | null;
+  Engine: number | null;
+  Track: number | null;
+  Mphone_id: string | null;
+  Disabled: number | null;
+  Category: number | null;
+  callsign: string | null;
+  DislocationPointLat: number | null;
+  DislocationPointLon: number | null;
+  TimeArriveToObject: string | null;
+  StartTime: string | null;
+  EndTime: string | null;
+}
+
+export interface GbrGroupStatusesResponse {
+  snapshotAt: string;
+  rows: GbrGroupStatusRow[];
+}
+
+export interface GbrArchiveTripRow {
+  id: number;
+  Group_id: number | null;
+  GroupName: string | null;
+  StartTime: string | null;
+  EndTime: string | null;
+  Status_id: number | null;
+  StatusReason: string | null;
+  Panel_id: string | null;
+  GroupNo: number | null;
+  ObjectName?: string | null;
+  ObjectAddress?: string | null;
+  DurationSeconds: number | null;
+}
+
+export interface GbrArchiveTripsResponse {
+  snapshotAt: string;
+  rows: GbrArchiveTripRow[];
+}
+
 export interface ObjectEventsSummaryResponse {
   objectId: string;
   total: number;

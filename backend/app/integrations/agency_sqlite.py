@@ -292,6 +292,209 @@ def fetch_archive_events_since(
     return out
 
 
+def fetch_gbr_group_statuses(sqlite_url: str) -> dict[str, Any]:
+    """Возвращает текущие статусы групп реагирования (ГБР) из SQLite-слепка.
+
+    Источник:
+    - GroupResponse: текущий Status_id по каждой группе
+    - StatusGroupResponse: справочник статусов (Reason)
+
+    Ожидается база, полученная из дампов через backend/scripts/import_agency_sql.py.
+    """
+
+    info = parse_sqlite_url(sqlite_url)
+    if not info.path.exists():
+        raise FileNotFoundError(f"Agency SQLite DB not found: {info.path}")
+
+    snapshot_at = datetime.utcnow()
+
+    with _connect(info.path) as conn:
+        # Fail fast with a clear message if the dump doesn't include required tables.
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('GroupResponse','StatusGroupResponse')"
+            ).fetchall()
+        }
+        if "GroupResponse" not in tables:
+            raise RuntimeError("Table GroupResponse not found in agency SQLite DB")
+        if "StatusGroupResponse" not in tables:
+            raise RuntimeError("Table StatusGroupResponse not found in agency SQLite DB")
+
+        rows = _rows_to_dicts(
+            conn.execute(
+                """
+                SELECT
+                  gr.Group_id,
+                  gr.Description,
+                  gr.Status_id,
+                  sgr.Reason AS StatusReason,
+                  gr.Event_id,
+                  gr.Panel_id,
+                  gr.Group_,
+                  gr.Engine,
+                  gr.Track,
+                  gr.Mphone_id,
+                  gr.Disabled,
+                  gr.Category,
+                  gr.callsign,
+                  gr.DislocationPointLat,
+                  gr.DislocationPointLon,
+                  gr.TimeArriveToObject,
+                  gr.StartTime,
+                  gr.EndTime
+                FROM GroupResponse gr
+                LEFT JOIN StatusGroupResponse sgr
+                  ON sgr.status_id = gr.Status_id
+                ORDER BY COALESCE(gr.Description, ''), gr.Group_id
+                """
+            )
+        )
+
+    # Coerce some timestamps when present.
+    for r in rows:
+        r["StartTime"] = _parse_dt(r.get("StartTime"))
+        r["EndTime"] = _parse_dt(r.get("EndTime"))
+        r["TimeArriveToObject"] = _parse_dt(r.get("TimeArriveToObject"))
+
+    return {
+        "snapshotAt": snapshot_at.isoformat(),
+        "rows": rows,
+    }
+
+
+def fetch_gbr_archive_trips(
+    sqlite_url: str,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    group_id: int | None = None,
+    panel_id: str | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """История выездов ГБР из ArchiveGroupResponse.
+
+    Полезно для показа:
+    - когда группа выехала/прибыла (StartTime/EndTime)
+    - на какой объект (Panel_id)
+    - какой статус был выставлен (Status_id -> StatusGroupResponse.Reason)
+    """
+
+    info = parse_sqlite_url(sqlite_url)
+    if not info.path.exists():
+        raise FileNotFoundError(f"Agency SQLite DB not found: {info.path}")
+
+    if limit <= 0:
+        limit = 1
+    limit = min(int(limit), 5000)
+
+    snapshot_at = datetime.utcnow()
+
+    def _fmt(dt: datetime) -> str:
+        # SQLite stores MSSQL datetimes as TEXT; lexicographic compare works for ISO-ish format.
+        return dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+    where: list[str] = []
+    params: list[Any] = []
+    if date_from is not None:
+        where.append("agr.StartTime >= ?")
+        params.append(_fmt(date_from))
+    if date_to is not None:
+        where.append("agr.StartTime < ?")
+        params.append(_fmt(date_to))
+    if group_id is not None:
+        where.append("agr.Group_id = ?")
+        params.append(int(group_id))
+    if panel_id is not None and str(panel_id).strip():
+        where.append("agr.Panel_id = ?")
+        params.append(str(panel_id).strip())
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    with _connect(info.path) as conn:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type='table'
+                  AND name IN ('ArchiveGroupResponse','StatusGroupResponse','GroupResponse','Panel','Groups','Company')
+                """
+            ).fetchall()
+        }
+        if "ArchiveGroupResponse" not in tables:
+            raise RuntimeError("Table ArchiveGroupResponse not found in agency SQLite DB")
+        if "StatusGroupResponse" not in tables:
+            raise RuntimeError("Table StatusGroupResponse not found in agency SQLite DB")
+
+        # Optional object enrichment if Panel/Groups/Company are present.
+        join_object_sql = ""
+        select_object_sql = ""
+        if {"Panel", "Groups", "Company"}.issubset(tables):
+            join_object_sql = """
+            LEFT JOIN Panel p
+              ON p.Panel_id = agr.Panel_id
+            LEFT JOIN (
+              SELECT Panel_id, MAX(CompanyID) AS CompanyID
+              FROM Groups
+              GROUP BY Panel_id
+            ) g
+              ON g.Panel_id = agr.Panel_id
+            LEFT JOIN Company c
+              ON c.ID = g.CompanyID
+            """
+            select_object_sql = ",\n                  c.CompanyName AS ObjectName,\n                  c.address AS ObjectAddress"
+
+        rows = _rows_to_dicts(
+            conn.execute(
+                f"""
+                SELECT
+                  agr.id,
+                  agr.Group_id,
+                  gr.Description AS GroupName,
+                  agr.StartTime,
+                  agr.EndTime,
+                  agr.Status_id,
+                  sgr.Reason AS StatusReason,
+                  agr.Panel_id,
+                  agr.Group_ AS GroupNo
+                  {select_object_sql}
+                FROM ArchiveGroupResponse agr
+                LEFT JOIN StatusGroupResponse sgr
+                  ON sgr.status_id = agr.Status_id
+                LEFT JOIN GroupResponse gr
+                  ON gr.Group_id = agr.Group_id
+                {join_object_sql}
+                {where_sql}
+                ORDER BY agr.StartTime DESC, agr.id DESC
+                LIMIT {int(limit)}
+                """,
+                params,
+            )
+        )
+
+    for r in rows:
+        r["StartTime"] = _parse_dt(r.get("StartTime"))
+        r["EndTime"] = _parse_dt(r.get("EndTime"))
+
+        # Duration in seconds (if both timestamps are present)
+        try:
+            st = r.get("StartTime")
+            et = r.get("EndTime")
+            if isinstance(st, datetime) and isinstance(et, datetime):
+                r["DurationSeconds"] = int((et - st).total_seconds())
+            else:
+                r["DurationSeconds"] = None
+        except Exception:
+            r["DurationSeconds"] = None
+
+    return {
+        "snapshotAt": snapshot_at.isoformat(),
+        "rows": rows,
+    }
+
+
 def _suffix_from_date_key(date_key: int) -> str:
     s = str(int(date_key))
     if len(s) != 8:

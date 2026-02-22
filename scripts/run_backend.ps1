@@ -46,6 +46,13 @@ try {
 # Dev defaults (can be overridden by environment or backend/.env if you run without this script)
 $env:DATABASE_URL = 'sqlite+aiosqlite:///d:/alarm/SVOD_SOFT/backend/svod.db'
 
+# По умолчанию для dev-режима используем SQLite-слепок агентской БД, если он есть.
+# Это также отключает попытки синка из MSSQL (которые требуют pyodbc/ODBC).
+$agencyDb = Join-Path $backendDir 'agency_raw.db'
+if (Test-Path $agencyDb) {
+  $env:AGENCY_DATABASE_URL = 'sqlite:///d:/alarm/SVOD_SOFT/backend/agency_raw.db'
+}
+
 # Allow Vite dev/preview from LAN. Regex is the most robust here because
 # the UI may be opened by IP/hostname, not only localhost.
 $env:CORS_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost'
