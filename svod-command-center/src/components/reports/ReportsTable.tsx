@@ -14,7 +14,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Download, FileText, Eye, MoreHorizontal } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useState } from 'react';
 import type { GbrTripRow, GbrTripsResponse } from '@/types';
 import {
@@ -236,13 +235,13 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
             <DialogTitle>{previewTitle}</DialogTitle>
           </DialogHeader>
           <div className="rounded-md border border-border">
-            <ScrollArea className="h-[420px] w-full">
+            <div className="max-h-[420px] w-full overflow-auto">
               {previewMode === 'none' ? (
                 <div className="p-4 text-sm text-muted-foreground">
                   {previewLoading ? 'Загрузка…' : 'Предпросмотр недоступен для этого отчёта. Скачайте XLSX.'}
                 </div>
               ) : previewMode === 'gbr' ? (
-                <div className="w-full overflow-x-auto">
+                <div className="w-full">
                   <table className="w-full min-w-max text-sm">
                     <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                       <tr>
@@ -286,7 +285,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                   </table>
                 </div>
               ) : (
-                <div className="w-full overflow-x-auto">
+                <div className="w-full">
                   <table className="w-full min-w-max text-sm">
                     <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                       <tr>
@@ -325,7 +324,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                   </table>
                 </div>
               )}
-            </ScrollArea>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
