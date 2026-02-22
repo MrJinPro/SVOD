@@ -11,6 +11,19 @@ function getDefaultApiBaseUrl(): string {
 export const API_BASE_URL: string = (import.meta as any).env?.VITE_API_BASE_URL || getDefaultApiBaseUrl();
 const API_TOKEN: string | undefined = (import.meta as any).env?.VITE_API_TOKEN;
 
+function extractErrorMessage(body: any, fallback: string): string {
+  if (!body) return fallback;
+  if (typeof body === 'string' && body.trim()) return body;
+
+  if (typeof body?.message === 'string' && body.message.trim()) return body.message;
+
+  const detail = body?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (typeof detail?.message === 'string' && detail.message.trim()) return detail.message;
+
+  return fallback;
+}
+
 function handleUnauthorized() {
   try {
     localStorage.removeItem('svod_access_token');
@@ -71,7 +84,7 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
     } catch {
       // ignore
     }
-    const message = body?.message || body?.detail?.message || res.statusText;
+    const message = extractErrorMessage(body, res.statusText);
     throw new Error(message);
   }
 
@@ -102,7 +115,7 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // ignore
     }
-    const message = body?.message || body?.detail?.message || res.statusText;
+    const message = extractErrorMessage(body, res.statusText);
     throw new Error(message);
   }
 
@@ -134,7 +147,7 @@ export async function apiPost<T>(path: string, body?: unknown, init?: RequestIni
     } catch {
       // ignore
     }
-    const message = body?.message || body?.detail?.message || res.statusText;
+    const message = extractErrorMessage(body, res.statusText);
     throw new Error(message);
   }
 
@@ -166,7 +179,7 @@ export async function apiPatch<T>(path: string, body?: unknown, init?: RequestIn
     } catch {
       // ignore
     }
-    const message = body?.message || body?.detail?.message || res.statusText;
+    const message = extractErrorMessage(body, res.statusText);
     throw new Error(message);
   }
 
@@ -197,7 +210,7 @@ export async function apiDelete<T>(path: string, init?: RequestInit): Promise<T>
     } catch {
       // ignore
     }
-    const message = body?.message || body?.detail?.message || res.statusText;
+    const message = extractErrorMessage(body, res.statusText);
     throw new Error(message);
   }
 

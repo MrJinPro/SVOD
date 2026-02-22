@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Безопасный дефолт для Windows/NSSM: SQLite в папке backend.
     # Для Postgres/MSSQL окружений задайте DATABASE_URL в backend/.env.
-    database_url: str = "sqlite+aiosqlite:///./svod.db"
+    database_url: str = f"sqlite+aiosqlite:///{(_BACKEND_DIR / 'svod.db').as_posix()}"
     agency_database_url: str | None = None
 
     # MSSQL: имя базы с архивными таблицами archiveYYYYMM01/eventserviceYYYYMM01
@@ -85,6 +85,24 @@ class Settings(BaseSettings):
         if not self.cors_origins.strip():
             return []
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @field_validator("agency_database_url", mode="before")
+    @classmethod
+    def _default_agency_database_url(cls, v):
+        # If env doesn't provide it, use local SQLite agency snapshot when present.
+        if v is None:
+            path = _BACKEND_DIR / "agency_raw.db"
+            if path.exists():
+                return f"sqlite:///{path.as_posix()}"
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                path = _BACKEND_DIR / "agency_raw.db"
+                if path.exists():
+                    return f"sqlite:///{path.as_posix()}"
+                return None
+        return v
 
     @field_validator(
         "agency_mssql_archive_start_date_key",
