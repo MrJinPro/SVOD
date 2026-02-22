@@ -400,7 +400,7 @@ async def generate_objects_by_code_report(
     _current: dict = Depends(get_current_user),
 ) -> dict:
     # Generate XLSX now and store (CSV is not generated as an artifact).
-    # We still reuse CSV-building logic and convert to XLSX.
+    # Build XLSX directly so headers are human-friendly and we can include more columns.
     dt_from: datetime | None = None
     dt_to: datetime | None = None
 
@@ -447,52 +447,138 @@ async def generate_objects_by_code_report(
             )
         )
 
-    obj_name = func.coalesce(Object.name, Event.object_name)
-    obj_addr = func.coalesce(Object.address, Event.location)
+    from io import BytesIO
 
-    stmt = (
-        select(
-            Event.object_id.label("object_id"),
-            obj_name.label("object_name"),
-            obj_addr.label("address"),
-            func.count().label("events"),
-        )
-        .select_from(Event)
-        .outerjoin(Object, Object.id == Event.object_id)
-        .where(and_(*filters))
-        .group_by(Event.object_id, Object.name, Event.object_name, Object.address, Event.location)
-        .order_by(func.count().desc())
-        .limit(200000)
-    )
-
-    rows = (await session.execute(stmt)).all()
-
-    import csv
-    import io
-
-    buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";")
-    writer.writerow(["object_id", "object_name", "address", "events", "event_code", "event_code_text"])
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
 
     # best-effort: take one code_text for code
     code_text = (
         await session.execute(select(func.max(Event.code_text)).where(Event.code == eventCode.strip()))
     ).scalar_one_or_none()
 
-    for object_id, object_name, address, c in rows:
-        writer.writerow(
+    obj_name = func.coalesce(Object.name, Event.object_name)
+    obj_addr = func.coalesce(Object.address, Event.location)
+
+    where = and_(*filters)
+
+    base_stmt = (
+        select(
+            Event.object_id.label("object_id"),
+            obj_name.label("object_name"),
+            obj_addr.label("address"),
+            Event.timestamp.label("timestamp"),
+            Event.result_text.label("result_text"),
+        )
+        .select_from(Event)
+        .outerjoin(Object, Object.id == Event.object_id)
+        .where(where)
+    )
+    base = base_stmt.subquery("base")
+
+    agg_stmt = (
+        select(
+            base.c.object_id,
+            base.c.object_name,
+            base.c.address,
+            func.count().label("events_count"),
+            func.min(base.c.timestamp).label("first_time"),
+            func.max(base.c.timestamp).label("last_time"),
+        )
+        .group_by(base.c.object_id, base.c.object_name, base.c.address)
+        .order_by(func.count().desc())
+        .limit(200000)
+    )
+    agg = agg_stmt.subquery("agg")
+
+    rn_stmt = select(
+        base.c.object_id.label("object_id"),
+        base.c.result_text.label("result_text"),
+        base.c.timestamp.label("timestamp"),
+        func.row_number().over(partition_by=base.c.object_id, order_by=base.c.timestamp.desc()).label("rn"),
+    )
+    rn = rn_stmt.subquery("rn")
+    last_note = (
+        select(
+            rn.c.object_id.label("object_id"),
+            rn.c.result_text.label("last_result_text"),
+        )
+        .where(rn.c.rn == 1)
+        .subquery("last_note")
+    )
+
+    stmt = (
+        select(
+            agg.c.object_id,
+            agg.c.object_name,
+            agg.c.address,
+            agg.c.events_count,
+            agg.c.first_time,
+            agg.c.last_time,
+            last_note.c.last_result_text,
+        )
+        .select_from(agg)
+        .outerjoin(last_note, last_note.c.object_id == agg.c.object_id)
+        .order_by(agg.c.events_count.desc())
+    )
+
+    rows = (await session.execute(stmt)).all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Объекты"
+
+    headers = [
+        "Номер объекта",
+        "Название объекта",
+        "Адрес",
+        "Количество событий",
+        "Код события",
+        "Событие",
+        "Первое срабатывание",
+        "Последнее срабатывание",
+        "Пометка оператора",
+    ]
+    ws.append(headers)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def fmt_ts(dt: datetime | None) -> str:
+        if not dt:
+            return ""
+        return dt.isoformat(sep=" ", timespec="seconds")
+
+    for object_id, object_name, address, events_count, first_time, last_time, last_result_text in rows:
+        ws.append(
             [
                 object_id or "",
                 object_name or "",
                 address or "",
-                int(c or 0),
+                int(events_count or 0),
                 eventCode.strip(),
                 code_text or "",
+                fmt_ts(first_time),
+                fmt_ts(last_time),
+                last_result_text or "",
             ]
         )
 
-    csv_bytes = buf.getvalue().encode("utf-8-sig")
-    xlsx = _csv_bytes_to_xlsx_bytes(csv_bytes)
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 40
+    ws.column_dimensions["C"].width = 55
+    ws.column_dimensions["D"].width = 20
+    ws.column_dimensions["E"].width = 12
+    ws.column_dimensions["F"].width = 40
+    ws.column_dimensions["G"].width = 22
+    ws.column_dimensions["H"].width = 22
+    ws.column_dimensions["I"].width = 35
+
+    out = BytesIO()
+    wb.save(out)
+    xlsx = out.getvalue()
 
     # Determine period strings for list
     ps = (dt_from.date().isoformat() if dt_from else (str(year) if year else ""))
@@ -1516,21 +1602,64 @@ async def export_objects_by_code(
     obj_name = func.coalesce(Object.name, Event.object_name)
     obj_addr = func.coalesce(Object.address, Event.location)
 
-    stmt = (
+    base_stmt = (
         select(
             Event.object_id.label("object_id"),
             obj_name.label("object_name"),
             obj_addr.label("address"),
-            func.count().label("events_count"),
-            func.min(Event.timestamp).label("first_time"),
-            func.max(Event.timestamp).label("last_time"),
+            Event.timestamp.label("timestamp"),
+            Event.result_text.label("result_text"),
         )
         .select_from(Event)
         .outerjoin(Object, Object.id == Event.object_id)
         .where(where)
-        .group_by(Event.object_id, Object.name, Event.object_name, Object.address, Event.location)
-        .order_by(obj_name.asc())
+    )
+    base = base_stmt.subquery("base")
+
+    agg_stmt = (
+        select(
+            base.c.object_id,
+            base.c.object_name,
+            base.c.address,
+            func.count().label("events_count"),
+            func.min(base.c.timestamp).label("first_time"),
+            func.max(base.c.timestamp).label("last_time"),
+        )
+        .group_by(base.c.object_id, base.c.object_name, base.c.address)
+        .order_by(base.c.object_name.asc())
         .limit(limit)
+    )
+    agg = agg_stmt.subquery("agg")
+
+    rn_stmt = select(
+        base.c.object_id.label("object_id"),
+        base.c.result_text.label("result_text"),
+        base.c.timestamp.label("timestamp"),
+        func.row_number().over(partition_by=base.c.object_id, order_by=base.c.timestamp.desc()).label("rn"),
+    )
+    rn = rn_stmt.subquery("rn")
+    last_note = (
+        select(
+            rn.c.object_id.label("object_id"),
+            rn.c.result_text.label("last_result_text"),
+        )
+        .where(rn.c.rn == 1)
+        .subquery("last_note")
+    )
+
+    stmt = (
+        select(
+            agg.c.object_id,
+            agg.c.object_name,
+            agg.c.address,
+            agg.c.events_count,
+            agg.c.first_time,
+            agg.c.last_time,
+            last_note.c.last_result_text,
+        )
+        .select_from(agg)
+        .outerjoin(last_note, last_note.c.object_id == agg.c.object_id)
+        .order_by(agg.c.object_name.asc())
     )
 
     rows = (await session.execute(stmt)).all()
@@ -1552,7 +1681,7 @@ async def export_objects_by_code(
         "Количество событий",
         "Первое срабатывание",
         "Последнее срабатывание",
-        "Примечание",
+        "Пометка оператора",
     ]
     ws.append(headers)
     for c in range(1, len(headers) + 1):
@@ -1560,7 +1689,7 @@ async def export_objects_by_code(
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
 
-    for object_id, object_name, address, events_count, first_time, last_time in rows:
+    for object_id, object_name, address, events_count, first_time, last_time, last_result_text in rows:
         ws.append(
             [
                 eventCode,
@@ -1570,7 +1699,7 @@ async def export_objects_by_code(
                 int(events_count or 0),
                 first_time.isoformat() if first_time else "",
                 last_time.isoformat() if last_time else "",
-                "",
+                last_result_text or "",
             ]
         )
 
@@ -1582,7 +1711,7 @@ async def export_objects_by_code(
     ws.column_dimensions["E"].width = 20
     ws.column_dimensions["F"].width = 22
     ws.column_dimensions["G"].width = 22
-    ws.column_dimensions["H"].width = 20
+    ws.column_dimensions["H"].width = 35
 
     out = BytesIO()
     wb.save(out)

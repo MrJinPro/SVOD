@@ -63,6 +63,9 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     const s = String(c || '').trim();
     if (!s) return s;
     const map: Record<string, string> = {
+      object_no: 'Номер объекта',
+      object_number: 'Номер объекта',
+      object: 'Номер объекта',
       Panel_ID: 'Номер объекта',
       Panel_id: 'Номер объекта',
       panel_id: 'Номер объекта',
@@ -74,8 +77,37 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
       objectName: 'Название объекта',
       'Object name': 'Название объекта',
 
+      client: 'Контрагент',
       client_name: 'Контрагент',
       clientName: 'Контрагент',
+
+      addr: 'Адрес',
+      location: 'Адрес',
+      address: 'Адрес',
+
+      events: 'Количество событий',
+      events_count: 'Количество событий',
+      eventsCount: 'Количество событий',
+
+      event_code: 'Код события',
+      eventCode: 'Код события',
+      code: 'Код события',
+
+      event_code_text: 'Событие',
+      eventCodeText: 'Событие',
+      code_text: 'Событие',
+      codeText: 'Событие',
+
+      first_time: 'Первое срабатывание',
+      firstTime: 'Первое срабатывание',
+      last_time: 'Последнее срабатывание',
+      lastTime: 'Последнее срабатывание',
+
+      result_text: 'Пометка оператора',
+      resultText: 'Пометка оператора',
+      note: 'Пометка оператора',
+      operator_note: 'Пометка оператора',
+      operatorNote: 'Пометка оператора',
 
       timestamp: 'Дата/время',
       TimeEvent: 'Дата/время',
@@ -83,8 +115,6 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
       severity: 'Важность',
       status: 'Статус',
       description: 'Описание',
-      location: 'Адрес',
-      address: 'Адрес',
     };
     return map[s] || s;
   };
@@ -235,7 +265,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
             <DialogTitle>{previewTitle}</DialogTitle>
           </DialogHeader>
           <div className="rounded-md border border-border">
-            <div className="max-h-[420px] w-full overflow-auto">
+            <div className="max-h-[420px] w-full overflow-x-auto overflow-y-auto">
               {previewMode === 'none' ? (
                 <div className="p-4 text-sm text-muted-foreground">
                   {previewLoading ? 'Загрузка…' : 'Предпросмотр недоступен для этого отчёта. Скачайте XLSX.'}
@@ -286,7 +316,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                 </div>
               ) : (
                 <div className="w-full">
-                  <table className="w-full min-w-max text-sm">
+                  <table className="min-w-max text-sm">
                     <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                       <tr>
                         {(tableColumns.length ? tableColumns : ['']).map((c, idx) => (
@@ -300,7 +330,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                       {tableRows.map((r, i) => (
                         <tr key={i} className="border-t border-border">
                           {(r.length ? r : ['']).map((v, j) => (
-                            <td key={j} className="px-3 py-2 align-top whitespace-normal break-words max-w-[520px]">
+                            <td key={j} className="px-3 py-2 align-top whitespace-nowrap">
                               {v || '—'}
                             </td>
                           ))}
