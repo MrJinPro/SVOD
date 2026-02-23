@@ -265,6 +265,10 @@ export interface AlarmStandRow {
   address: string | null;
   eventsCount: number;
   lastEventAt: string | null;
+  topCode?: string | null;
+  topCodeGroup?: number | null;
+  topCodeText?: string | null;
+  topCodeCount?: number;
   timeBegin?: string | null;
   timeEnd?: string | null;
 }

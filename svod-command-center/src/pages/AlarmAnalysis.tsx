@@ -129,6 +129,8 @@ export default function AlarmAnalysis() {
               <TableRow>
                 <TableHead className="whitespace-nowrap">Panel_id</TableHead>
                 <TableHead>Объект / адрес</TableHead>
+                <TableHead className="whitespace-nowrap">Долбит (код)</TableHead>
+                <TableHead className="whitespace-nowrap text-right">Раз</TableHead>
                 <TableHead className="whitespace-nowrap text-right">Событий</TableHead>
                 <TableHead className="whitespace-nowrap">Последнее</TableHead>
               </TableRow>
@@ -141,20 +143,29 @@ export default function AlarmAnalysis() {
                     <div className="text-foreground">{r.objectName || '—'}</div>
                     <div className="text-xs text-muted-foreground">{r.address || ''}</div>
                   </TableCell>
+                  <TableCell className="max-w-[420px]">
+                    <div className="space-y-0.5">
+                      <div className="font-mono text-xs text-muted-foreground">{r.topCode || '—'}</div>
+                      <div className="text-sm text-foreground truncate" title={r.topCodeText || ''}>
+                        {r.topCodeText || '—'}
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{(r.topCodeCount ?? 0).toLocaleString('ru-RU')}</TableCell>
                   <TableCell className="text-right tabular-nums">{(r.eventsCount ?? 0).toLocaleString('ru-RU')}</TableCell>
                   <TableCell className="whitespace-nowrap">{fmtDateTime(r.lastEventAt)}</TableCell>
                 </TableRow>
               ))}
               {!isLoading && (data?.rows || []).length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-6 text-sm text-muted-foreground">
+                  <TableCell colSpan={6} className="py-6 text-sm text-muted-foreground">
                     Нет данных. Проверьте доступ к MSSQL и наличие активных записей в dbo.Stands.
                   </TableCell>
                 </TableRow>
               ) : null}
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-6 text-sm text-muted-foreground">
+                  <TableCell colSpan={6} className="py-6 text-sm text-muted-foreground">
                     Загрузка…
                   </TableCell>
                 </TableRow>

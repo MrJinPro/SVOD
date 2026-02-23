@@ -501,12 +501,16 @@ def fetch_alarm_stands_analysis(
 
         counts: dict[str, int] = {}
         last_at: dict[str, datetime] = {}
+        code_counts: dict[str, dict[tuple[str, int | None], int]] = {}
+        code_last_at: dict[str, dict[tuple[str, int | None], datetime]] = {}
 
         if panel_ids:
             chunk_size = 200
             for m in months:
                 suffix = _month_table_suffix(m)
                 archive_table = f"{archives_db_name}.dbo.archive{suffix}"
+
+                month_missing = False
 
                 for i in range(0, len(panel_ids), chunk_size):
                     chunk = panel_ids[i : i + chunk_size]
@@ -529,6 +533,7 @@ def fetch_alarm_stands_analysis(
                     except Exception as e:
                         msg = str(e)
                         if "Invalid object name" in msg or "42S02" in msg:
+                            month_missing = True
                             break
                         raise
 
@@ -544,11 +549,140 @@ def fetch_alarm_stands_analysis(
                             if prev is None or la > prev:
                                 last_at[pid] = la
 
+                if month_missing:
+                    continue
+
+                # Per-code aggregation to find top noisy code per Panel_id.
+                month_missing = False
+                for i in range(0, len(panel_ids), chunk_size):
+                    chunk = panel_ids[i : i + chunk_size]
+                    placeholders = ", ".join(["?"] * len(chunk))
+                    sql = f"""
+                    SELECT
+                      a.Panel_id AS Panel_id,
+                      a.Code AS Code,
+                      a.CodeGroup AS CodeGroup,
+                      COUNT(1) AS CodeCount,
+                      MAX(a.TimeEvent) AS LastEventAt
+                    FROM {archive_table} a
+                    WHERE a.Date_Key BETWEEN ? AND ?
+                      AND a.Panel_id IN ({placeholders})
+                    GROUP BY a.Panel_id, a.Code, a.CodeGroup
+                    """
+                    params = [int(date_from_key), int(date_to_key), *chunk]
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, params)
+                            rows = _rows_to_dicts(cur)
+                    except Exception as e:
+                        msg = str(e)
+                        if "Invalid object name" in msg or "42S02" in msg:
+                            month_missing = True
+                            break
+                        raise
+
+                    for r in rows:
+                        pid = str(r.get("Panel_id") or "").strip()
+                        code = str(r.get("Code") or "").strip()
+                        if not pid or not code:
+                            continue
+                        code_group = r.get("CodeGroup")
+                        try:
+                            code_group_int = int(code_group) if code_group is not None else None
+                        except Exception:
+                            code_group_int = None
+
+                        key = (code, code_group_int)
+                        per_panel = code_counts.setdefault(pid, {})
+                        per_panel[key] = per_panel.get(key, 0) + int(r.get("CodeCount") or 0)
+
+                        la = r.get("LastEventAt")
+                        if isinstance(la, datetime):
+                            per_panel_last = code_last_at.setdefault(pid, {})
+                            prev = per_panel_last.get(key)
+                            if prev is None or la > prev:
+                                per_panel_last[key] = la
+
+                if month_missing:
+                    continue
+
+        # Resolve top code per panel.
+        top_code: dict[str, tuple[str, int | None] | None] = {}
+        top_code_count: dict[str, int] = {}
+        for pid, per_panel in code_counts.items():
+            best_key: tuple[str, int | None] | None = None
+            best_count = -1
+            for key, c in per_panel.items():
+                if c > best_count:
+                    best_key = key
+                    best_count = c
+                elif c == best_count and best_key is not None:
+                    # Tie-breaker: prefer the code with more recent event.
+                    prev_last = (code_last_at.get(pid) or {}).get(best_key)
+                    curr_last = (code_last_at.get(pid) or {}).get(key)
+                    if isinstance(curr_last, datetime) and isinstance(prev_last, datetime) and curr_last > prev_last:
+                        best_key = key
+                        best_count = c
+            if best_key is not None and best_count >= 0:
+                top_code[pid] = best_key
+                top_code_count[pid] = best_count
+
+        # Fetch code texts for top codes.
+        code_text_by_key: dict[tuple[str, int | None], str] = {}
+        top_keys = [k for k in top_code.values() if k is not None]
+        top_keys = list(dict.fromkeys(top_keys))
+        if top_keys:
+            code_table = f"{info.database}.dbo.Code_T"
+            # Build OR conditions, because (Code, CodeGroup) IN (...) is clunky in pyodbc.
+            conditions: list[str] = []
+            params: list[Any] = []
+            for (code, code_group) in top_keys:
+                if code_group is None:
+                    conditions.append("(Code = ?)")
+                    params.append(code)
+                else:
+                    conditions.append("(Code = ? AND CodeGroup = ?)")
+                    params.extend([code, int(code_group)])
+
+            where = " OR ".join(conditions)
+            sql = f"""
+            SELECT Code, CodeGroup, COALESCE(CodeMes_RU, Message) AS CodeText
+            FROM {code_table}
+            WHERE {where}
+            """
+            try:
+                with pyodbc.connect(conn_str, timeout=10) as conn:
+                    conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+                    conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+                    conn.setencoding(encoding="utf-8")
+                    with conn.cursor() as cur:
+                        cur.execute(sql, params)
+                        rows = _rows_to_dicts(cur)
+                        for r in rows:
+                            c = str(r.get("Code") or "").strip()
+                            if not c:
+                                continue
+                            cg = r.get("CodeGroup")
+                            try:
+                                cg_int = int(cg) if cg is not None else None
+                            except Exception:
+                                cg_int = None
+                            text = r.get("CodeText")
+                            if isinstance(text, str) and text.strip():
+                                code_text_by_key[(c, cg_int)] = text.strip()
+            except Exception:
+                # Code texts are optional for this endpoint.
+                code_text_by_key = code_text_by_key
+
     # Build final rows and sort by volume.
     out_rows: list[dict[str, Any]] = []
     for r in stands_rows:
         pid = str(r.get("Panel_id") or "").strip()
         la = last_at.get(pid)
+        best_key = top_code.get(pid)
+        best_code = best_key[0] if best_key else None
+        best_group = best_key[1] if best_key else None
+        best_text = code_text_by_key.get(best_key) if best_key else None
         out_rows.append(
             {
                 "panelId": pid,
@@ -556,6 +690,10 @@ def fetch_alarm_stands_analysis(
                 "address": r.get("CompanyAddress"),
                 "eventsCount": int(counts.get(pid, 0)),
                 "lastEventAt": la.isoformat() if isinstance(la, datetime) else None,
+                "topCode": best_code,
+                "topCodeGroup": best_group,
+                "topCodeText": best_text,
+                "topCodeCount": int(top_code_count.get(pid, 0)),
                 "timeBegin": r.get("TimeBegin").isoformat() if isinstance(r.get("TimeBegin"), datetime) else r.get("TimeBegin"),
                 "timeEnd": r.get("TimeEnd").isoformat() if isinstance(r.get("TimeEnd"), datetime) else r.get("TimeEnd"),
             }
