@@ -62,8 +62,7 @@ const statusStyles: Record<EventStatus, string> = {
 export function EventsTable({ events, onViewEvent }: EventsTableProps) {
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const tableRef = useRef<HTMLTableElement | null>(null);
-  const syncingRef = useRef(false);
+  const ignoreNextScrollRef = useRef({ top: false, bottom: false });
   const [contentWidth, setContentWidth] = useState<number>(0);
   const dragRef = useRef({
     active: false,
@@ -130,58 +129,69 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
     dragRef.current.moved = false;
   };
 
-  const releaseSyncLock = () => {
-    // rAF exists everywhere we run (browser). Avoid queueMicrotask compatibility issues.
-    window.requestAnimationFrame(() => {
-      syncingRef.current = false;
-    });
-  };
-
-  const syncScroll = (source: 'top' | 'bottom') => {
-    if (syncingRef.current) return;
-    const top = topScrollRef.current;
-    const bottom = scrollRef.current;
-    if (!top || !bottom) return;
-
-    syncingRef.current = true;
-    if (source === 'top') {
-      bottom.scrollLeft = top.scrollLeft;
-    } else {
-      top.scrollLeft = bottom.scrollLeft;
-    }
-    releaseSyncLock();
-  };
-
   useEffect(() => {
     const updateWidth = () => {
-      const w = tableRef.current?.scrollWidth || 0;
+      const bottom = scrollRef.current;
+      if (!bottom) return;
+      const w = bottom.scrollWidth || 0;
       setContentWidth(w);
 
       // Keep top scrollbar aligned after width/layout changes.
       const top = topScrollRef.current;
-      const bottom = scrollRef.current;
-      if (top && bottom) {
-        top.scrollLeft = bottom.scrollLeft;
-      }
+      if (top) top.scrollLeft = bottom.scrollLeft;
     };
 
     // Next frame to ensure layout is ready.
     const raf = window.requestAnimationFrame(updateWidth);
 
     let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && tableRef.current) {
+    if (typeof ResizeObserver !== 'undefined') {
       ro = new ResizeObserver(() => updateWidth());
-      ro.observe(tableRef.current);
-    } else {
-      window.addEventListener('resize', updateWidth);
+      if (scrollRef.current) ro.observe(scrollRef.current);
     }
+    window.addEventListener('resize', updateWidth);
 
     return () => {
       window.cancelAnimationFrame(raf);
       if (ro) ro.disconnect();
-      else window.removeEventListener('resize', updateWidth);
+      window.removeEventListener('resize', updateWidth);
     };
   }, [events.length]);
+
+  useEffect(() => {
+    const top = topScrollRef.current;
+    const bottom = scrollRef.current;
+    if (!top || !bottom) return;
+
+    // Initial sync.
+    top.scrollLeft = bottom.scrollLeft;
+
+    const onTop = () => {
+      if (ignoreNextScrollRef.current.top) {
+        ignoreNextScrollRef.current.top = false;
+        return;
+      }
+      ignoreNextScrollRef.current.bottom = true;
+      bottom.scrollLeft = top.scrollLeft;
+    };
+
+    const onBottom = () => {
+      if (ignoreNextScrollRef.current.bottom) {
+        ignoreNextScrollRef.current.bottom = false;
+        return;
+      }
+      ignoreNextScrollRef.current.top = true;
+      top.scrollLeft = bottom.scrollLeft;
+    };
+
+    top.addEventListener('scroll', onTop, { passive: true });
+    bottom.addEventListener('scroll', onBottom, { passive: true });
+
+    return () => {
+      top.removeEventListener('scroll', onTop as any);
+      bottom.removeEventListener('scroll', onBottom as any);
+    };
+  }, []);
 
   const formatDateTime = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -204,7 +214,6 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
       <div
         ref={topScrollRef}
         className="overflow-x-auto"
-        onScroll={() => syncScroll('top')}
       >
         <div className="h-px" style={{ width: contentWidth ? `${contentWidth}px` : undefined }} />
       </div>
@@ -217,9 +226,8 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
         onPointerCancel={stopDragging}
         onPointerLeave={stopDragging}
         onClickCapture={onClickCapture}
-        onScroll={() => syncScroll('bottom')}
       >
-        <Table ref={tableRef as any} className="min-w-[1200px] whitespace-nowrap">
+        <Table className="min-w-[1200px] whitespace-nowrap">
           <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
