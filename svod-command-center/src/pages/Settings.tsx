@@ -4,51 +4,27 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Save, Server, Bell, Shield, Database } from 'lucide-react';
+import { Save, Server, Bell, Shield, Database, Clock } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from '@/hooks/use-toast';
-
-const SETTINGS_KEY = 'svod_settings_v1';
-
-type UiSettings = {
-  apiUrl: string;
-  apiTimeoutSec: number;
-  pushEnabled: boolean;
-  soundEnabled: boolean;
-  emailEnabled: boolean;
-  sessionTimeoutMin: number;
-  autoLogout: boolean;
-  refreshIntervalSec: number;
-  autoRefresh: boolean;
-};
-
-const defaultSettings: UiSettings = {
-  apiUrl: 'http://localhost:8000/api/v1',
-  apiTimeoutSec: 30,
-  pushEnabled: true,
-  soundEnabled: true,
-  emailEnabled: false,
-  sessionTimeoutMin: 60,
-  autoLogout: true,
-  refreshIntervalSec: 30,
-  autoRefresh: true,
-};
+import { defaultUiSettings, loadUiSettings, saveUiSettings, type UiSettings } from '@/lib/uiSettings';
 
 export default function Settings() {
-  const [settings, setSettings] = useState<UiSettings>(defaultSettings);
+  const [settings, setSettings] = useState<UiSettings>(defaultUiSettings);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      if (raw) setSettings({ ...defaultSettings, ...(JSON.parse(raw) as Partial<UiSettings>) });
-    } catch {
-      // ignore
-    }
+    setSettings(loadUiSettings());
   }, []);
 
   const save = () => {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+      const normalized: UiSettings = {
+        ...settings,
+        shiftDayStart: settings.shiftDayStart || defaultUiSettings.shiftDayStart,
+        shiftNightStart: settings.shiftNightStart || defaultUiSettings.shiftNightStart,
+      };
+      setSettings(normalized);
+      saveUiSettings(normalized);
       toast({ title: 'Настройки', description: 'Сохранено.' });
     } catch {
       toast({ title: 'Настройки', description: 'Не удалось сохранить.', variant: 'destructive' });
@@ -196,6 +172,46 @@ export default function Settings() {
               </div>
               <Switch checked={settings.autoRefresh} onCheckedChange={(v) => setSettings((s) => ({ ...s, autoRefresh: v }))} />
             </div>
+          </div>
+        </div>
+
+        {/* Shifts */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="rounded-lg bg-muted/50 p-2">
+              <Clock className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">Смены</h3>
+              <p className="text-sm text-muted-foreground">Границы смен для отчётов</p>
+            </div>
+          </div>
+          <Separator className="mb-4" />
+          <div className="space-y-4">
+            <div className="grid gap-2">
+              <Label htmlFor="shift-day-start">Начало дневной смены</Label>
+              <Input
+                id="shift-day-start"
+                type="time"
+                value={settings.shiftDayStart}
+                onChange={(e) => setSettings((s) => ({ ...s, shiftDayStart: e.target.value }))}
+                className="w-40"
+              />
+              <p className="text-sm text-muted-foreground">Дневная смена: {settings.shiftDayStart || defaultUiSettings.shiftDayStart}—{settings.shiftNightStart || defaultUiSettings.shiftNightStart}</p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="shift-night-start">Начало ночной смены</Label>
+              <Input
+                id="shift-night-start"
+                type="time"
+                value={settings.shiftNightStart}
+                onChange={(e) => setSettings((s) => ({ ...s, shiftNightStart: e.target.value }))}
+                className="w-40"
+              />
+              <p className="text-sm text-muted-foreground">Ночная смена: {settings.shiftNightStart || defaultUiSettings.shiftNightStart}—{settings.shiftDayStart || defaultUiSettings.shiftDayStart}</p>
+            </div>
+
+            <p className="text-sm text-muted-foreground">Используется в отчёте «Ведомость по тревогам (ПЦН)».</p>
           </div>
         </div>
 

@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/select';
 import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
 import { API_BASE_URL, apiFetchRaw, apiGet, apiPost } from '@/lib/api';
+import { loadUiSettings } from '@/lib/uiSettings';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -413,6 +414,11 @@ export default function Reports() {
         params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
         params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
+
+        // Shifts: configurable boundaries (Settings -> localStorage)
+        const ui = loadUiSettings();
+        if (ui.shiftDayStart) params.set('dayStart', ui.shiftDayStart);
+        if (ui.shiftNightStart) params.set('nightStart', ui.shiftNightStart);
 
         // Configurable payouts/thresholds (will be printed in XLSX header)
         if (pcnPay0.trim()) params.set('pay0', pcnPay0.trim());
