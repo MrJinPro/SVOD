@@ -10,7 +10,6 @@ const Login = lazy(() => import("./pages/Login"));
 const Events = lazy(() => import("./pages/Events"));
 const SearchPage = lazy(() => import("./pages/SearchPage"));
 const Reports = lazy(() => import("./pages/Reports"));
-const Notifications = lazy(() => import("./pages/Notifications"));
 const Users = lazy(() => import("./pages/Users"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Integration = lazy(() => import("./pages/Integration"));
@@ -49,7 +48,6 @@ const App = () => (
             <Route path="/events" element={<RequireAuth><Events /></RequireAuth>} />
             <Route path="/search" element={<RequireAuth><SearchPage /></RequireAuth>} />
             <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
-            <Route path="/notifications" element={<RequireAuth><Notifications /></RequireAuth>} />
             <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
             <Route path="/analytics" element={<RequireAuth><Analytics /></RequireAuth>} />
             <Route path="/gbr-statuses" element={<RequireAuth><GbrStatuses /></RequireAuth>} />

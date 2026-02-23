@@ -1,10 +1,8 @@
-import { Bell, Search, Clock } from 'lucide-react';
+import { Search, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { useApiGet } from '@/hooks/useApiGet';
+import { useNavigate } from 'react-router-dom';
 
 interface HeaderProps {
   title: string;
@@ -15,8 +13,6 @@ export function Header({ title, subtitle }: HeaderProps) {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [quickQuery, setQuickQuery] = useState('');
   const navigate = useNavigate();
-  const { data: notifications } = useApiGet('/notifications', [] as Array<{ id: string; read: boolean }>);
-  const unreadCount = notifications.filter((n) => !n.read).length;
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -76,17 +72,6 @@ export function Header({ title, subtitle }: HeaderProps) {
           </div>
         </div>
 
-        {/* Notifications */}
-        <Link to="/notifications">
-          <Button variant="ghost" size="icon" className="relative">
-            <Bell className="h-5 w-5" />
-            {unreadCount > 0 && (
-              <Badge className="absolute -top-1 -right-1 h-5 w-5 rounded-full p-0 flex items-center justify-center bg-severity-critical text-white text-xs border-2 border-background">
-                {unreadCount}
-              </Badge>
-            )}
-          </Button>
-        </Link>
       </div>
     </header>
   );

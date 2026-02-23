@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   Search,
   FileText,
-  Bell,
   Users,
   BarChart3,
   Activity,
@@ -27,7 +26,6 @@ const navigation = [
   { name: 'События', href: '/events', icon: AlertTriangle },
   { name: 'Поиск', href: '/search', icon: Search },
   { name: 'Отчёты', href: '/reports', icon: FileText },
-  { name: 'Уведомления', href: '/notifications', icon: Bell },
   { name: 'Аналитика', href: '/analytics', icon: BarChart3 },
   { name: 'Статусы ГБР', href: '/gbr-statuses', icon: Activity },
   { name: 'Отчёт ГБР', href: '/gbr-reports', icon: BarChart3 },
@@ -49,8 +47,6 @@ export function Sidebar({
   const location = useLocation();
   const navigate = useNavigate();
   const { data: me } = useApiGet('/auth/me', { username: '', role: 'operator', email: null } as any);
-  const { data: notifications } = useApiGet('/notifications', [] as Array<{ id: string; read: boolean }>);
-  const unreadCount = notifications.filter((n) => !n.read).length;
 
   const canSeeAnalytics = (() => {
     const role = String((me as any)?.role || '').trim();
@@ -112,7 +108,7 @@ export function Sidebar({
             })
             .map((item) => {
             const isActive = location.pathname === item.href;
-            const badge = item.href === '/notifications' ? unreadCount : undefined;
+            const badge = undefined;
             return (
               <NavLink
                 key={item.name}
@@ -128,17 +124,7 @@ export function Sidebar({
                 {!collapsed && (
                   <>
                     <span className="flex-1">{item.name}</span>
-                    {badge ? (
-                      <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-severity-critical px-1.5 text-xs font-semibold text-white">
-                        {badge}
-                      </span>
-                    ) : null}
                   </>
-                )}
-                {collapsed && !!badge && (
-                  <span className="absolute left-10 top-0 flex h-4 w-4 items-center justify-center rounded-full bg-severity-critical text-[10px] font-semibold text-white">
-                    {badge}
-                  </span>
                 )}
               </NavLink>
             );
