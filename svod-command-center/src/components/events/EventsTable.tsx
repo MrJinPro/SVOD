@@ -227,8 +227,9 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
             <TableHead className="w-[150px] text-muted-foreground font-medium">ID события</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Код / сообщение</TableHead>
+            <TableHead className="w-[110px] text-muted-foreground font-medium">Код</TableHead>
             <TableHead className="text-muted-foreground font-medium">№ / Объект / Адрес</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Комментарий</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус</TableHead>
           </TableRow>
           </TableHeader>
@@ -267,18 +268,8 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                   {agencyEventId || '—'}
                 </TableCell>
 
-                <TableCell className="max-w-[420px]">
-                  <div className="space-y-0.5">
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {event.code ? event.code : '—'}
-                    </div>
-                    <div
-                      className="text-sm text-foreground truncate"
-                      title={event.codeText || event.description || ''}
-                    >
-                      {event.codeText || '—'}
-                    </div>
-                  </div>
+                <TableCell className="font-mono text-sm text-muted-foreground">
+                  {event.code ? event.code : '—'}
                 </TableCell>
                 <TableCell>
                   <div className="space-y-0.5">
@@ -287,6 +278,11 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                     {event.location && (
                       <div className="text-xs text-muted-foreground">{event.location}</div>
                     )}
+                  </div>
+                </TableCell>
+                <TableCell className="max-w-[340px]">
+                  <div className="text-sm text-foreground truncate" title={event.resultText || ''}>
+                    {event.resultText || '—'}
                   </div>
                 </TableCell>
                 <TableCell>
