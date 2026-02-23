@@ -14,6 +14,7 @@ from app.api.v1.deps import require_permissions
 from app.core.config import settings
 from app.db.session import get_session
 from app.integrations.agency_mssql import (
+    fetch_alarm_stands_analysis as fetch_alarm_stands_analysis_mssql,
     fetch_gbr_archive_trips as fetch_gbr_archive_trips_mssql,
     fetch_gbr_group_statuses as fetch_gbr_group_statuses_mssql,
 )
@@ -176,6 +177,58 @@ async def gbr_archive_trips(
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Не удалось прочитать историю выездов ГБР: {e}")
+
+
+@router.get("/alarms/stands")
+async def alarms_stands(
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> dict[str, Any]:
+    """Анализ тревог по объектам из dbo.Stands (MSSQL агентства).
+
+    Возвращает активные записи Stands (standorkey=0, TimeEnd is null/active)
+    и статистику по архиву событий за период.
+    """
+
+    url = (settings.agency_database_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="AGENCY_DATABASE_URL не задан (нужно mssql+pyodbc://...)")
+
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not scheme.startswith("mssql"):
+        raise HTTPException(
+            status_code=400,
+            detail="Эндпоинт /analytics/alarms/stands поддерживает только AGENCY_DATABASE_URL=mssql+pyodbc://...",
+        )
+
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    if date_from and dt_from is None:
+        raise HTTPException(status_code=400, detail="Некорректный dateFrom (ожидается ISO дата/время)")
+    if date_to and dt_to is None:
+        raise HTTPException(status_code=400, detail="Некорректный dateTo (ожидается ISO дата/время)")
+
+    now = datetime.utcnow()
+    if dt_to is None:
+        dt_to = now
+    if dt_from is None:
+        dt_from = now - timedelta(hours=24)
+
+    try:
+        return await asyncio.to_thread(
+            fetch_alarm_stands_analysis_mssql,
+            url,
+            archives_db_name=settings.agency_archives_db_name,
+            date_from=dt_from,
+            date_to=dt_to,
+            limit=limit,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Не удалось выполнить анализ стендов: {e}")
 
 
 @router.get("/operators/live")

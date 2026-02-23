@@ -16,6 +16,7 @@ const Integration = lazy(() => import("./pages/Integration"));
 const Objects = lazy(() => import("./pages/Objects"));
 const ObjectDetails = lazy(() => import("./pages/objects/ObjectDetails"));
 const Analytics = lazy(() => import("./pages/Analytics"));
+const AlarmAnalysis = lazy(() => import("./pages/AlarmAnalysis"));
 const GbrReports = lazy(() => import("./pages/GbrReports"));
 const GbrStatuses = lazy(() => import("./pages/GbrStatuses"));
 const StaffEfficiency = lazy(() => import("./pages/StaffEfficiency"));
@@ -50,6 +51,7 @@ const App = () => (
             <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
             <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
             <Route path="/analytics" element={<RequireAuth><Analytics /></RequireAuth>} />
+            <Route path="/alarm-analysis" element={<RequireAuth><AlarmAnalysis /></RequireAuth>} />
             <Route path="/gbr-statuses" element={<RequireAuth><GbrStatuses /></RequireAuth>} />
             <Route path="/gbr-reports" element={<RequireAuth><GbrReports /></RequireAuth>} />
             <Route path="/staff" element={<RequireAuth><StaffEfficiency /></RequireAuth>} />

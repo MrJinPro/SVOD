@@ -6,6 +6,19 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 
 
+def _months_between(start_date: date, end_date: date) -> list[date]:
+    months: list[date] = []
+    d = date(start_date.year, start_date.month, 1)
+    end_month = date(end_date.year, end_date.month, 1)
+    while d <= end_month:
+        months.append(d)
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+    return months
+
+
 @dataclass(frozen=True)
 class MSSQLConnInfo:
     host: str
@@ -295,15 +308,7 @@ def fetch_archive_events_since(
     start_date = datetime.strptime(str(cursor_date_key), "%Y%m%d").date()
     end_date = datetime.strptime(str(until_date_key), "%Y%m%d").date()
 
-    months: list[date] = []
-    d = date(start_date.year, start_date.month, 1)
-    end_month = date(end_date.year, end_date.month, 1)
-    while d <= end_month:
-        months.append(d)
-        if d.month == 12:
-            d = date(d.year + 1, 1, 1)
-        else:
-            d = date(d.year, d.month + 1, 1)
+    months = _months_between(start_date, end_date)
 
     out: list[dict[str, Any]] = []
 
@@ -413,15 +418,153 @@ def fetch_archive_events_recent(
     start_date = datetime.strptime(str(int(date_from_key)), "%Y%m%d").date()
     end_date = datetime.strptime(str(int(date_to_key)), "%Y%m%d").date()
 
-    months: list[date] = []
-    d = date(start_date.year, start_date.month, 1)
-    end_month = date(end_date.year, end_date.month, 1)
-    while d <= end_month:
-        months.append(d)
-        if d.month == 12:
-            d = date(d.year + 1, 1, 1)
-        else:
-            d = date(d.year, d.month + 1, 1)
+    months = _months_between(start_date, end_date)
+
+
+def fetch_alarm_stands_analysis(
+    mssql_url: str,
+    *,
+    archives_db_name: str,
+    date_from: datetime,
+    date_to: datetime,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Анализ объектов из dbo.Stands по архиву событий.
+
+    - Источник стендов: основная БД (dbo.Stands)
+    - Архив событий: {archives_db_name}.dbo.archiveYYYYMM01
+
+    Возвращает строки:
+      Panel_id, CompanyName/Address (если есть), EventsCount, LastEventAt, TimeBegin/TimeEnd
+    """
+
+    pyodbc = _require_pyodbc()
+    info = parse_mssql_url(mssql_url)
+    conn_str = _build_odbc_conn_str(info)
+
+    snapshot_at = datetime.utcnow()
+
+    # Normalize range.
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+
+    date_from_key = _date_key(date_from.date())
+    date_to_key = _date_key(date_to.date())
+
+    # Cap for safety: a huge Stands table would make archive aggregation too slow.
+    hard_cap = max(int(limit) * 10, 1000)
+
+    stands_rows: list[dict[str, Any]] = []
+    with pyodbc.connect(conn_str, timeout=10) as conn:
+        conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+        conn.setencoding(encoding="utf-8")
+
+        # Active stands: only stand objects (standorkey=0).
+        # Join basic object meta (CompanyName/Address) via Groups -> Company.
+        sql_stands = f"""
+        ;WITH g AS (
+          SELECT Panel_id, MAX(CompanyID) AS CompanyID
+          FROM {info.database}.dbo.Groups
+          GROUP BY Panel_id
+        )
+        SELECT TOP ({int(hard_cap)})
+          s.Panel_id AS Panel_id,
+          s.Group_ AS GroupNo,
+          s.Zone AS Zone,
+          s.TimeBegin AS TimeBegin,
+          s.TimeEnd AS TimeEnd,
+          s.Type_Stand AS TypeStand,
+          s.standorkey AS StandOrKey,
+          c.CompanyName AS CompanyName,
+          c.[address] AS CompanyAddress
+        FROM {info.database}.dbo.Stands s
+        LEFT JOIN g ON g.Panel_id = s.Panel_id
+        LEFT JOIN {info.database}.dbo.Company c ON c.ID = g.CompanyID
+        WHERE (s.TimeEnd IS NULL OR s.TimeEnd >= GETDATE())
+          AND s.standorkey = 0
+        ORDER BY s.TimeBegin DESC, s.id DESC
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql_stands)
+            stands_rows = _rows_to_dicts(cur)
+
+        panel_ids = [str(r.get("Panel_id") or "").strip() for r in stands_rows]
+        panel_ids = [p for p in panel_ids if p]
+        panel_ids = list(dict.fromkeys(panel_ids))
+
+        # Aggregate events per stand object from archive tables.
+        start_date = datetime.strptime(str(int(date_from_key)), "%Y%m%d").date()
+        end_date = datetime.strptime(str(int(date_to_key)), "%Y%m%d").date()
+        months = _months_between(start_date, end_date)
+
+        counts: dict[str, int] = {}
+        last_at: dict[str, datetime] = {}
+
+        if panel_ids:
+            chunk_size = 200
+            for m in months:
+                suffix = _month_table_suffix(m)
+                archive_table = f"{archives_db_name}.dbo.archive{suffix}"
+
+                for i in range(0, len(panel_ids), chunk_size):
+                    chunk = panel_ids[i : i + chunk_size]
+                    placeholders = ", ".join(["?"] * len(chunk))
+                    sql = f"""
+                    SELECT
+                      a.Panel_id AS Panel_id,
+                      COUNT(1) AS EventsCount,
+                      MAX(a.TimeEvent) AS LastEventAt
+                    FROM {archive_table} a
+                    WHERE a.Date_Key BETWEEN ? AND ?
+                      AND a.Panel_id IN ({placeholders})
+                    GROUP BY a.Panel_id
+                    """
+                    params: list[Any] = [int(date_from_key), int(date_to_key), *chunk]
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, params)
+                            rows = _rows_to_dicts(cur)
+                    except Exception as e:
+                        msg = str(e)
+                        if "Invalid object name" in msg or "42S02" in msg:
+                            break
+                        raise
+
+                    for r in rows:
+                        pid = str(r.get("Panel_id") or "").strip()
+                        if not pid:
+                            continue
+                        c = int(r.get("EventsCount") or 0)
+                        counts[pid] = counts.get(pid, 0) + c
+                        la = r.get("LastEventAt")
+                        if isinstance(la, datetime):
+                            prev = last_at.get(pid)
+                            if prev is None or la > prev:
+                                last_at[pid] = la
+
+    # Build final rows and sort by volume.
+    out_rows: list[dict[str, Any]] = []
+    for r in stands_rows:
+        pid = str(r.get("Panel_id") or "").strip()
+        la = last_at.get(pid)
+        out_rows.append(
+            {
+                "panelId": pid,
+                "objectName": r.get("CompanyName"),
+                "address": r.get("CompanyAddress"),
+                "eventsCount": int(counts.get(pid, 0)),
+                "lastEventAt": la.isoformat() if isinstance(la, datetime) else None,
+                "timeBegin": r.get("TimeBegin").isoformat() if isinstance(r.get("TimeBegin"), datetime) else r.get("TimeBegin"),
+                "timeEnd": r.get("TimeEnd").isoformat() if isinstance(r.get("TimeEnd"), datetime) else r.get("TimeEnd"),
+            }
+        )
+
+    out_rows.sort(key=lambda x: (int(x.get("eventsCount") or 0), x.get("lastEventAt") or ""), reverse=True)
+    out_rows = out_rows[: int(limit)]
+
+    return {"snapshotAt": snapshot_at.isoformat(), "rows": out_rows}
 
     out: list[dict[str, Any]] = []
 

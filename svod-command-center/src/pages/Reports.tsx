@@ -76,20 +76,34 @@ function EventCodeCombobox({
   useEffect(() => {
     if (!open) return;
 
-    const root = scrollAreaRef.current;
-    if (!root) return;
-    const viewport = root.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
-    if (!viewport) return;
-
-    const onWheel = (e: WheelEvent) => {
-      if (viewport.scrollHeight <= viewport.clientHeight) return;
-      viewport.scrollTop += e.deltaY;
-      e.preventDefault();
+    const getViewport = () => {
+      const root = scrollAreaRef.current;
+      if (!root) return null;
+      return root.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
     };
 
-    viewport.addEventListener('wheel', onWheel, { passive: false });
+    const onWheelCapture = (e: WheelEvent) => {
+      const root = scrollAreaRef.current;
+      if (!root) return;
+      const target = e.target as Node | null;
+      if (!target || !root.contains(target)) return;
+
+      const viewport = getViewport();
+      if (!viewport) return;
+      if (viewport.scrollHeight <= viewport.clientHeight) return;
+
+      let delta = e.deltaY;
+      if (e.deltaMode === 1) delta *= 16; // lines -> px (approx)
+      else if (e.deltaMode === 2) delta *= viewport.clientHeight; // pages -> px
+
+      viewport.scrollTop += delta;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    document.addEventListener('wheel', onWheelCapture, { capture: true, passive: false });
     return () => {
-      viewport.removeEventListener('wheel', onWheel as any);
+      document.removeEventListener('wheel', onWheelCapture as any, { capture: true } as any);
     };
   }, [open]);
 

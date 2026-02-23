@@ -76,8 +76,9 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
   };
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <Table>
+        <div className="rounded-xl border border-border bg-card">
+      <div className="overflow-x-auto">
+        <Table className="min-w-[1200px] whitespace-nowrap">
         <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
@@ -206,7 +207,8 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
             );
           })}
         </TableBody>
-      </Table>
+              </Table>
+      </div>
     </div>
   );
 }

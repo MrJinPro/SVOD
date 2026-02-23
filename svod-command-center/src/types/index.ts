@@ -259,6 +259,21 @@ export interface GbrGroupStatusRow {
   EndTime: string | null;
 }
 
+export interface AlarmStandRow {
+  panelId: string;
+  objectName: string | null;
+  address: string | null;
+  eventsCount: number;
+  lastEventAt: string | null;
+  timeBegin?: string | null;
+  timeEnd?: string | null;
+}
+
+export interface AlarmStandsResponse {
+  snapshotAt: string | null;
+  rows: AlarmStandRow[];
+}
+
 export interface GbrGroupStatusesResponse {
   snapshotAt: string;
   rows: GbrGroupStatusRow[];

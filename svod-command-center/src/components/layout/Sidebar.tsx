@@ -27,6 +27,7 @@ const navigation = [
   { name: 'Поиск', href: '/search', icon: Search },
   { name: 'Отчёты', href: '/reports', icon: FileText },
   { name: 'Аналитика', href: '/analytics', icon: BarChart3 },
+  { name: 'Анализ тревог', href: '/alarm-analysis', icon: AlertTriangle },
   { name: 'Статусы ГБР', href: '/gbr-statuses', icon: Activity },
   { name: 'Отчёт ГБР', href: '/gbr-reports', icon: BarChart3 },
   { name: 'Эффективность', href: '/staff', icon: Activity },
@@ -102,7 +103,7 @@ export function Sidebar({
         <nav className="flex-1 space-y-1 px-2 py-4">
           {navigation
             .filter((item) => {
-              if (item.href === '/analytics' || item.href === '/gbr-statuses' || item.href === '/gbr-reports' || item.href === '/staff') return canSeeAnalytics;
+              if (item.href === '/analytics' || item.href === '/alarm-analysis' || item.href === '/gbr-statuses' || item.href === '/gbr-reports' || item.href === '/staff') return canSeeAnalytics;
               if (item.href === '/users') return canSeeUsers;
               return true;
             })
