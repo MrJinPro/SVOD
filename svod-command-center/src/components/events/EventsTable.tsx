@@ -130,10 +130,39 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
     dragRef.current.moved = false;
   };
 
+  const releaseSyncLock = () => {
+    // rAF exists everywhere we run (browser). Avoid queueMicrotask compatibility issues.
+    window.requestAnimationFrame(() => {
+      syncingRef.current = false;
+    });
+  };
+
+  const syncScroll = (source: 'top' | 'bottom') => {
+    if (syncingRef.current) return;
+    const top = topScrollRef.current;
+    const bottom = scrollRef.current;
+    if (!top || !bottom) return;
+
+    syncingRef.current = true;
+    if (source === 'top') {
+      bottom.scrollLeft = top.scrollLeft;
+    } else {
+      top.scrollLeft = bottom.scrollLeft;
+    }
+    releaseSyncLock();
+  };
+
   useEffect(() => {
     const updateWidth = () => {
       const w = tableRef.current?.scrollWidth || 0;
       setContentWidth(w);
+
+      // Keep top scrollbar aligned after width/layout changes.
+      const top = topScrollRef.current;
+      const bottom = scrollRef.current;
+      if (top && bottom) {
+        top.scrollLeft = bottom.scrollLeft;
+      }
     };
 
     // Next frame to ensure layout is ready.
@@ -153,24 +182,6 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
       else window.removeEventListener('resize', updateWidth);
     };
   }, [events.length]);
-
-  const syncScroll = (source: 'top' | 'bottom') => {
-    if (syncingRef.current) return;
-    const top = topScrollRef.current;
-    const bottom = scrollRef.current;
-    if (!top || !bottom) return;
-
-    syncingRef.current = true;
-    if (source === 'top') {
-      bottom.scrollLeft = top.scrollLeft;
-    } else {
-      top.scrollLeft = bottom.scrollLeft;
-    }
-    // Release in microtask to avoid feedback loops.
-    queueMicrotask(() => {
-      syncingRef.current = false;
-    });
-  };
 
   const formatDateTime = (timestamp: string) => {
     const date = new Date(timestamp);
