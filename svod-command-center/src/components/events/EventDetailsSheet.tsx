@@ -6,6 +6,57 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
+const severityLabels: Record<string, string> = {
+  critical: 'Критический',
+  warning: 'Внимание',
+  info: 'Информация',
+  success: 'Норма',
+};
+
+const statusLabels: Record<string, string> = {
+  active: 'Активно',
+  pending: 'В обработке',
+  resolved: 'Завершено',
+};
+
+const typeLabels: Record<string, string> = {
+  intrusion: 'Проникновение',
+  alarm: 'Тревога',
+  access: 'Доступ',
+  patrol: 'Обход',
+  incident: 'Инцидент',
+  maintenance: 'ТО',
+};
+
+function normalizeEnum(value: unknown): string {
+  const s = String(value ?? '').trim();
+  if (!s) return '';
+  return s.split('.', 1)[0] || s;
+}
+
+function getAgencyEventId(id: string): string | null {
+  const parts = String(id || '').split(':');
+  if (parts.length >= 3) return parts[parts.length - 1] || null;
+  return null;
+}
+
+function humanizeDescription(text: string): string {
+  if (!text) return text;
+  const map: Array<[RegExp, string]> = [
+    [/^\s*Event_id\s*:/i, 'ID события:'],
+    [/^\s*Panel_id\s*:/i, '№ объекта:'],
+    [/^\s*Date_Key\s*:/i, 'Дата (ключ):'],
+  ];
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      let out = line;
+      for (const [re, repl] of map) out = out.replace(re, repl);
+      return out;
+    })
+    .join('\n');
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -53,6 +104,14 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
     return event.objectName ? `Событие — ${event.objectName}` : 'Событие';
   }, [event]);
 
+  const typeKey = normalizeEnum(event?.type);
+  const statusKey = normalizeEnum(event?.status);
+  const severityKey = normalizeEnum(event?.severity);
+  const typeLabel = typeLabels[typeKey] || (typeKey ? typeKey : '—');
+  const statusLabel = statusLabels[statusKey] || (statusKey ? statusKey : '—');
+  const severityLabel = severityLabels[severityKey] || (severityKey ? severityKey : '—');
+  const agencyEventId = event?.id ? getAgencyEventId(event.id) : null;
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-[520px] sm:w-[640px] overflow-y-auto">
@@ -66,7 +125,10 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
 
         {event && (
           <div className="mt-4 space-y-3">
-            <div className="text-sm text-muted-foreground">ID: <span className="text-foreground font-mono">{event.id}</span></div>
+            <div className="text-sm text-muted-foreground">
+              ID события:{' '}
+              <span className="text-foreground font-mono">{agencyEventId || event.id}</span>
+            </div>
             <div className="text-sm">Время: <span className="text-foreground">{fmtTs(event.timestamp)}</span></div>
             <div className="text-sm">Клиент: <span className="text-foreground">{event.clientName}</span></div>
             <div className="text-sm">Объект: <span className="text-foreground">{event.objectName}</span></div>
@@ -74,27 +136,27 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
               <div className="text-sm">Адрес: <span className="text-foreground">{event.location}</span></div>
             )}
             <div className="flex flex-wrap gap-2 pt-1">
-              <Badge variant="outline">{event.type}</Badge>
+              <Badge variant="outline">{typeLabel}</Badge>
               <Badge
                 className={cn(
                   'border',
-                  event.status === 'active' && 'bg-status-active/10 text-status-active border-status-active/30',
-                  event.status === 'pending' && 'bg-status-pending/10 text-status-pending border-status-pending/30',
-                  event.status === 'resolved' && 'bg-muted text-muted-foreground border-muted',
+                  statusKey === 'active' && 'bg-status-active/10 text-status-active border-status-active/30',
+                  statusKey === 'pending' && 'bg-status-pending/10 text-status-pending border-status-pending/30',
+                  statusKey === 'resolved' && 'bg-muted text-muted-foreground border-muted',
                 )}
               >
-                {event.status}
+                {statusLabel}
               </Badge>
               <Badge
                 className={cn(
                   'border',
-                  event.severity === 'critical' && 'badge-critical',
-                  event.severity === 'warning' && 'badge-warning',
-                  event.severity === 'info' && 'badge-info',
-                  event.severity === 'success' && 'badge-success',
+                  severityKey === 'critical' && 'badge-critical',
+                  severityKey === 'warning' && 'badge-warning',
+                  severityKey === 'info' && 'badge-info',
+                  severityKey === 'success' && 'badge-success',
                 )}
               >
-                {event.severity}
+                {severityLabel}
               </Badge>
               {event.code && (
                 <Badge variant="outline" className="font-mono">{event.code}</Badge>
@@ -107,7 +169,7 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
             {event.description && (
               <div className="rounded-md border border-border bg-card p-3">
                 <div className="text-xs text-muted-foreground mb-1">Описание</div>
-                <div className="text-sm whitespace-pre-wrap">{event.description}</div>
+                <div className="text-sm whitespace-pre-wrap">{humanizeDescription(event.description)}</div>
               </div>
             )}
           </div>

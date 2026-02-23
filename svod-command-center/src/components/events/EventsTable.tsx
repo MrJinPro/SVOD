@@ -9,15 +9,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Eye, MoreHorizontal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 
 interface EventsTableProps {
   events: Event[];
@@ -94,7 +86,6 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
     } catch {
       // ignore
     }
-    e.preventDefault();
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -104,6 +95,10 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
 
     const delta = e.clientX - dragRef.current.startX;
     if (Math.abs(delta) > 3) dragRef.current.moved = true;
+    if (dragRef.current.moved) {
+      // Prevent text selection only once the user actually drags.
+      e.preventDefault();
+    }
     node.scrollLeft = dragRef.current.startLeft - delta;
   };
 
@@ -227,21 +222,14 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
         onPointerLeave={stopDragging}
         onClickCapture={onClickCapture}
       >
-        <Table className="min-w-[1200px] whitespace-nowrap">
+        <Table className="min-w-[900px] whitespace-nowrap">
           <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
             <TableHead className="w-[150px] text-muted-foreground font-medium">ID события</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Тип</TableHead>
             <TableHead className="text-muted-foreground font-medium">Код / сообщение</TableHead>
             <TableHead className="text-muted-foreground font-medium">№ / Объект / Адрес</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Серьёзность</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Статус агентства</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Параметр</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Пометка оператора</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Оператор</TableHead>
-            <TableHead className="w-[80px]"></TableHead>
           </TableRow>
           </TableHeader>
           <TableBody>
@@ -254,8 +242,19 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                 title={event.description || ''}
                 className={cn(
                   'table-row-hover border-border',
+                  onViewEvent && 'cursor-pointer',
                   event.severity === 'critical' && 'bg-severity-critical/5'
                 )}
+                role={onViewEvent ? 'button' : undefined}
+                tabIndex={onViewEvent ? 0 : undefined}
+                onClick={() => onViewEvent?.(event)}
+                onKeyDown={(e) => {
+                  if (!onViewEvent) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onViewEvent(event);
+                  }
+                }}
               >
                 <TableCell className="font-mono text-sm">
                   <div className="space-y-0.5">
@@ -266,13 +265,6 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
 
                 <TableCell className="font-mono text-sm text-muted-foreground">
                   {agencyEventId || '—'}
-                </TableCell>
-                <TableCell>
-                  <div className="space-y-1">
-                    <Badge variant="outline" className="font-medium">
-                      {typeLabels[event.type]}
-                    </Badge>
-                  </div>
                 </TableCell>
 
                 <TableCell className="max-w-[420px]">
@@ -298,59 +290,9 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge className={cn('font-medium border', severityStyles[event.severity])}>
-                    {severityLabels[event.severity]}
-                  </Badge>
-                </TableCell>
-                <TableCell>
                   <Badge className={cn('font-medium border', statusStyles[event.status])}>
                     {statusLabels[event.status]}
                   </Badge>
-                </TableCell>
-
-                <TableCell className="text-muted-foreground">
-                  {event.stateName || '—'}
-                </TableCell>
-
-                <TableCell className="max-w-[220px]">
-                  <div className="text-sm text-foreground truncate" title={event.meterCount || ''}>
-                    {event.meterCount || '—'}
-                  </div>
-                </TableCell>
-
-                <TableCell className="max-w-[280px]">
-                  <div className="text-sm text-foreground truncate" title={event.resultText || ''}>
-                    {event.resultText || '—'}
-                  </div>
-                </TableCell>
-
-                <TableCell className="text-muted-foreground">
-                  {event.operatorId || '—'}
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1">
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-8 w-8"
-                      onClick={() => onViewEvent?.(event)}
-                    >
-                      <Eye className="h-4 w-4" />
-                    </Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => onViewEvent?.(event)}>Просмотреть детали</DropdownMenuItem>
-                        <DropdownMenuItem>Изменить статус</DropdownMenuItem>
-                        <DropdownMenuItem>Назначить оператора</DropdownMenuItem>
-                        <DropdownMenuItem>Экспортировать</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
                 </TableCell>
               </TableRow>
             );
