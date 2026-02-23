@@ -32,7 +32,7 @@ import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
 import { API_BASE_URL, apiFetchRaw, apiGet, apiPost } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReportStatus, ReportType } from '@/types';
 import type { DateRange } from 'react-day-picker';
 import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
@@ -71,6 +71,7 @@ function EventCodeCombobox({
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<EventCodeItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,52 +132,66 @@ function EventCodeCombobox({
             value={query}
             onValueChange={setQuery}
           />
-          <CommandList className="max-h-[300px] overflow-y-auto overscroll-contain">
-            <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
-            <CommandGroup>
-              {canUseTyped ? (
-                <CommandItem
-                  key={`typed:${query.trim()}`}
-                  value={query.trim()}
-                  onSelect={() => {
-                    onChange(query.trim());
-                    setOpen(false);
-                  }}
-                >
-                  <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
-                  <div className="min-w-0">
-                    <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
-                    <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
-                  </div>
-                </CommandItem>
-              ) : null}
-              {(items || []).map((it) => (
-                <CommandItem
-                  key={it.code}
-                  value={`${it.code} ${it.codeText || ''}`}
-                  onSelect={() => {
-                    onChange(it.code);
-                    setOpen(false);
-                  }}
-                >
-                  <Check
-                    className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
-                  />
-                  <div className="flex w-full items-center justify-between gap-3">
+          <ScrollArea
+            ref={scrollAreaRef}
+            className="h-[300px]"
+            onWheelCapture={(e) => {
+              const root = scrollAreaRef.current;
+              if (!root) return;
+              const viewport = root.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+              if (!viewport) return;
+              if (viewport.scrollHeight <= viewport.clientHeight) return;
+              viewport.scrollTop += e.deltaY;
+              e.preventDefault();
+            }}
+          >
+            <CommandList className="max-h-none overflow-visible">
+              <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
+              <CommandGroup>
+                {canUseTyped ? (
+                  <CommandItem
+                    key={`typed:${query.trim()}`}
+                    value={query.trim()}
+                    onSelect={() => {
+                      onChange(query.trim());
+                      setOpen(false);
+                    }}
+                  >
+                    <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
                     <div className="min-w-0">
-                      <div className="font-mono text-sm text-foreground">{it.code}</div>
-                      {it.codeText ? (
-                        <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
+                      <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
+                      <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
+                    </div>
+                  </CommandItem>
+                ) : null}
+                {(items || []).map((it) => (
+                  <CommandItem
+                    key={it.code}
+                    value={`${it.code} ${it.codeText || ''}`}
+                    onSelect={() => {
+                      onChange(it.code);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
+                    />
+                    <div className="flex w-full items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-mono text-sm text-foreground">{it.code}</div>
+                        {it.codeText ? (
+                          <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
+                        ) : null}
+                      </div>
+                      {typeof it.count === 'number' ? (
+                        <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
                       ) : null}
                     </div>
-                    {typeof it.count === 'number' ? (
-                      <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
-                    ) : null}
-                  </div>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </ScrollArea>
         </Command>
       </PopoverContent>
     </Popover>
