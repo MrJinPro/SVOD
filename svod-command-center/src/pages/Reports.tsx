@@ -74,6 +74,26 @@ function EventCodeCombobox({
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (!open) return;
+
+    const root = scrollAreaRef.current;
+    if (!root) return;
+    const viewport = root.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+    if (!viewport) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (viewport.scrollHeight <= viewport.clientHeight) return;
+      viewport.scrollTop += e.deltaY;
+      e.preventDefault();
+    };
+
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener('wheel', onWheel as any);
+    };
+  }, [open]);
+
+  useEffect(() => {
     let cancelled = false;
     const q = query.trim();
     const t = window.setTimeout(async () => {
@@ -135,15 +155,6 @@ function EventCodeCombobox({
           <ScrollArea
             ref={scrollAreaRef}
             className="h-[300px]"
-            onWheelCapture={(e) => {
-              const root = scrollAreaRef.current;
-              if (!root) return;
-              const viewport = root.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
-              if (!viewport) return;
-              if (viewport.scrollHeight <= viewport.clientHeight) return;
-              viewport.scrollTop += e.deltaY;
-              e.preventDefault();
-            }}
           >
             <CommandList className="max-h-none overflow-visible">
               <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
