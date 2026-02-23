@@ -11,6 +11,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Eye, MoreHorizontal } from 'lucide-react';
+import { useRef } from 'react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -59,6 +60,72 @@ const statusStyles: Record<EventStatus, string> = {
 };
 
 export function EventsTable({ events, onViewEvent }: EventsTableProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef({
+    active: false,
+    startX: 0,
+    startLeft: 0,
+    moved: false,
+  });
+
+  const isInteractiveTarget = (target: EventTarget | null): boolean => {
+    const el = target as Element | null;
+    if (!el) return false;
+    return Boolean(el.closest('button,a,[role="button"],input,select,textarea'));
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    if (isInteractiveTarget(e.target)) return;
+
+    const node = scrollRef.current;
+    if (!node) return;
+
+    dragRef.current.active = true;
+    dragRef.current.moved = false;
+    dragRef.current.startX = e.clientX;
+    dragRef.current.startLeft = node.scrollLeft;
+
+    try {
+      node.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    e.preventDefault();
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return;
+    const node = scrollRef.current;
+    if (!node) return;
+
+    const delta = e.clientX - dragRef.current.startX;
+    if (Math.abs(delta) > 3) dragRef.current.moved = true;
+    node.scrollLeft = dragRef.current.startLeft - delta;
+  };
+
+  const stopDragging = (e?: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current.active = false;
+    if (e) {
+      const node = scrollRef.current;
+      if (node) {
+        try {
+          node.releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  };
+
+  const onClickCapture = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragRef.current.moved) return;
+    // If user dragged to scroll, suppress click to avoid accidental actions.
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current.moved = false;
+  };
+
   const formatDateTime = (timestamp: string) => {
     const date = new Date(timestamp);
     return {
@@ -76,10 +143,19 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
   };
 
   return (
-        <div className="rounded-xl border border-border bg-card">
-      <div className="overflow-x-auto">
+    <div className="rounded-xl border border-border bg-card">
+      <div
+        ref={scrollRef}
+        className="overflow-x-auto cursor-grab active:cursor-grabbing"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={stopDragging}
+        onPointerCancel={stopDragging}
+        onPointerLeave={stopDragging}
+        onClickCapture={onClickCapture}
+      >
         <Table className="min-w-[1200px] whitespace-nowrap">
-        <TableHeader>
+          <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
             <TableHead className="w-[150px] text-muted-foreground font-medium">ID события</TableHead>
@@ -94,8 +170,8 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
             <TableHead className="text-muted-foreground font-medium">Оператор</TableHead>
             <TableHead className="w-[80px]"></TableHead>
           </TableRow>
-        </TableHeader>
-        <TableBody>
+          </TableHeader>
+          <TableBody>
           {events.map((event) => {
             const { date, time } = formatDateTime(event.timestamp);
             const agencyEventId = getAgencyEventId(event.id);
@@ -206,8 +282,8 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
               </TableRow>
             );
           })}
-        </TableBody>
-              </Table>
+          </TableBody>
+        </Table>
       </div>
     </div>
   );
