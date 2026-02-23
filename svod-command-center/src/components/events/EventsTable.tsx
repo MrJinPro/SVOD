@@ -11,7 +11,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Eye, MoreHorizontal } from 'lucide-react';
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -60,7 +60,11 @@ const statusStyles: Record<EventStatus, string> = {
 };
 
 export function EventsTable({ events, onViewEvent }: EventsTableProps) {
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const syncingRef = useRef(false);
+  const [contentWidth, setContentWidth] = useState<number>(0);
   const dragRef = useRef({
     active: false,
     startX: 0,
@@ -126,6 +130,48 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
     dragRef.current.moved = false;
   };
 
+  useEffect(() => {
+    const updateWidth = () => {
+      const w = tableRef.current?.scrollWidth || 0;
+      setContentWidth(w);
+    };
+
+    // Next frame to ensure layout is ready.
+    const raf = window.requestAnimationFrame(updateWidth);
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && tableRef.current) {
+      ro = new ResizeObserver(() => updateWidth());
+      ro.observe(tableRef.current);
+    } else {
+      window.addEventListener('resize', updateWidth);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      if (ro) ro.disconnect();
+      else window.removeEventListener('resize', updateWidth);
+    };
+  }, [events.length]);
+
+  const syncScroll = (source: 'top' | 'bottom') => {
+    if (syncingRef.current) return;
+    const top = topScrollRef.current;
+    const bottom = scrollRef.current;
+    if (!top || !bottom) return;
+
+    syncingRef.current = true;
+    if (source === 'top') {
+      bottom.scrollLeft = top.scrollLeft;
+    } else {
+      top.scrollLeft = bottom.scrollLeft;
+    }
+    // Release in microtask to avoid feedback loops.
+    queueMicrotask(() => {
+      syncingRef.current = false;
+    });
+  };
+
   const formatDateTime = (timestamp: string) => {
     const date = new Date(timestamp);
     return {
@@ -145,6 +191,13 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
   return (
     <div className="rounded-xl border border-border bg-card">
       <div
+        ref={topScrollRef}
+        className="overflow-x-auto"
+        onScroll={() => syncScroll('top')}
+      >
+        <div className="h-px" style={{ width: contentWidth ? `${contentWidth}px` : undefined }} />
+      </div>
+      <div
         ref={scrollRef}
         className="overflow-x-auto cursor-grab active:cursor-grabbing"
         onPointerDown={onPointerDown}
@@ -153,8 +206,9 @@ export function EventsTable({ events, onViewEvent }: EventsTableProps) {
         onPointerCancel={stopDragging}
         onPointerLeave={stopDragging}
         onClickCapture={onClickCapture}
+        onScroll={() => syncScroll('bottom')}
       >
-        <Table className="min-w-[1200px] whitespace-nowrap">
+        <Table ref={tableRef as any} className="min-w-[1200px] whitespace-nowrap">
           <TableHeader>
           <TableRow className="hover:bg-transparent border-border">
             <TableHead className="w-[140px] text-muted-foreground font-medium">Время</TableHead>
