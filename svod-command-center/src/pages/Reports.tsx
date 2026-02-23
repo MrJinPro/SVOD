@@ -131,54 +131,52 @@ function EventCodeCombobox({
             value={query}
             onValueChange={setQuery}
           />
-          <ScrollArea className="h-[300px]">
-            <CommandList className="max-h-none overflow-visible">
-              <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
-              <CommandGroup>
-                {canUseTyped ? (
-                  <CommandItem
-                    key={`typed:${query.trim()}`}
-                    value={query.trim()}
-                    onSelect={() => {
-                      onChange(query.trim());
-                      setOpen(false);
-                    }}
-                  >
-                    <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
+          <CommandList className="max-h-[300px] overflow-y-auto overscroll-contain">
+            <CommandEmpty>{loading ? 'Загрузка…' : 'Ничего не найдено'}</CommandEmpty>
+            <CommandGroup>
+              {canUseTyped ? (
+                <CommandItem
+                  key={`typed:${query.trim()}`}
+                  value={query.trim()}
+                  onSelect={() => {
+                    onChange(query.trim());
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn('mr-2 h-4 w-4', value === query.trim() ? 'opacity-100' : 'opacity-0')} />
+                  <div className="min-w-0">
+                    <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
+                    <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
+                  </div>
+                </CommandItem>
+              ) : null}
+              {(items || []).map((it) => (
+                <CommandItem
+                  key={it.code}
+                  value={`${it.code} ${it.codeText || ''}`}
+                  onSelect={() => {
+                    onChange(it.code);
+                    setOpen(false);
+                  }}
+                >
+                  <Check
+                    className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
+                  />
+                  <div className="flex w-full items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-sm text-foreground">Использовать код: <span className="font-mono">{query.trim()}</span></div>
-                      <div className="text-xs text-muted-foreground">Ввод вручную (если нет в справочнике)</div>
-                    </div>
-                  </CommandItem>
-                ) : null}
-                {(items || []).map((it) => (
-                  <CommandItem
-                    key={it.code}
-                    value={`${it.code} ${it.codeText || ''}`}
-                    onSelect={() => {
-                      onChange(it.code);
-                      setOpen(false);
-                    }}
-                  >
-                    <Check
-                      className={cn('mr-2 h-4 w-4', value === it.code ? 'opacity-100' : 'opacity-0')}
-                    />
-                    <div className="flex w-full items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-mono text-sm text-foreground">{it.code}</div>
-                        {it.codeText ? (
-                          <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
-                        ) : null}
-                      </div>
-                      {typeof it.count === 'number' ? (
-                        <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
+                      <div className="font-mono text-sm text-foreground">{it.code}</div>
+                      {it.codeText ? (
+                        <div className="truncate text-xs text-muted-foreground">{it.codeText}</div>
                       ) : null}
                     </div>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
-          </ScrollArea>
+                    {typeof it.count === 'number' ? (
+                      <div className="text-xs text-muted-foreground">{it.count.toLocaleString('ru-RU')}</div>
+                    ) : null}
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
         </Command>
       </PopoverContent>
     </Popover>
