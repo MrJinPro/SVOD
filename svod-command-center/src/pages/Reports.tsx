@@ -3,7 +3,7 @@ import { ReportsTable } from '@/components/reports/ReportsTable';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Calendar } from '@/components/ui/calendar';
+import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Dialog,
@@ -227,8 +227,6 @@ export default function Reports() {
     return { from, to: now };
   });
 
-  const [rangeYear, setRangeYear] = useState(() => String(new Date().getFullYear()));
-  const [rangeMonth, setRangeMonth] = useState<'all' | string>('all');
   const [timeFrom, setTimeFrom] = useState('00:00');
   const [timeTo, setTimeTo] = useState('23:59');
   const [clientName, setClientName] = useState('');
@@ -241,14 +239,10 @@ export default function Reports() {
   const [gbrPreviewLoading, setGbrPreviewLoading] = useState(false);
 
   const setRangeToYear = (year: number) => {
-    setRangeYear(String(year));
-    setRangeMonth('all');
     setDateRange({ from: new Date(year, 0, 1), to: new Date(year, 11, 31) });
   };
 
   const setRangeToMonth = (year: number, month1to12: number) => {
-    setRangeYear(String(year));
-    setRangeMonth(String(month1to12));
     setDateRange({ from: new Date(year, month1to12 - 1, 1), to: new Date(year, month1to12, 0) });
   };
 
@@ -509,78 +503,13 @@ export default function Reports() {
                       <div className="text-sm text-muted-foreground">Период</div>
                       <QuickRangeButtons />
                       <div className="flex flex-wrap items-end gap-2">
-                        <Select
-                          value={rangeYear}
-                          onValueChange={(v) => {
-                            setRangeYear(v);
-                            const y = Number(v);
-                            const m = rangeMonth === 'all' ? null : Number(rangeMonth);
-                            const from = m == null ? new Date(y, 0, 1) : new Date(y, m - 1, 1);
-                            const to = m == null ? new Date(y, 11, 31) : new Date(y, m, 0);
-                            setDateRange({ from, to });
-                          }}
-                        >
-                          <SelectTrigger className="w-[120px] bg-background">
-                            <SelectValue placeholder="Год" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {Array.from({ length: 8 }).map((_, i) => {
-                              const y = new Date().getFullYear() - (6 - i);
-                              return (
-                                <SelectItem key={y} value={String(y)}>
-                                  {y}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-
-                        <Select
-                          value={rangeMonth}
-                          onValueChange={(v) => {
-                            setRangeMonth(v as any);
-                            const y = Number(rangeYear);
-                            if (v === 'all') {
-                              setDateRange({ from: new Date(y, 0, 1), to: new Date(y, 11, 31) });
-                              return;
-                            }
-                            const m = Number(v);
-                            setDateRange({ from: new Date(y, m - 1, 1), to: new Date(y, m, 0) });
-                          }}
-                        >
-                          <SelectTrigger className="w-[160px] bg-background">
-                            <SelectValue placeholder="Месяц" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">Весь год</SelectItem>
-                            {Array.from({ length: 12 }).map((_, i) => {
-                              const m = i + 1;
-                              return (
-                                <SelectItem key={m} value={String(m)}>
-                                  {String(m).padStart(2, '0')}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <Button variant="outline" className="w-full sm:w-[280px] justify-start font-normal">
-                              {dateRange?.from && dateRange?.to
-                                ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
-                                : 'Выберите период'}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar
-                              mode="range"
-                              numberOfMonths={2}
-                              selected={dateRange}
-                              onSelect={setDateRange}
-                            />
-                          </PopoverContent>
-                        </Popover>
+                        <DateRangePicker
+                          value={dateRange}
+                          onChange={setDateRange}
+                          placeholder="Выберите период"
+                          triggerClassName="w-full sm:w-[280px]"
+                          numberOfMonths={2}
+                        />
                       </div>
                     </div>
 
@@ -632,78 +561,13 @@ export default function Reports() {
                       <div className="text-sm text-muted-foreground">Период</div>
                       <QuickRangeButtons />
                       <div className="flex flex-wrap items-end gap-2">
-                        <Select
-                          value={rangeYear}
-                          onValueChange={(v) => {
-                            setRangeYear(v);
-                            const y = Number(v);
-                            const m = rangeMonth === 'all' ? null : Number(rangeMonth);
-                            const from = m == null ? new Date(y, 0, 1) : new Date(y, m - 1, 1);
-                            const to = m == null ? new Date(y, 11, 31) : new Date(y, m, 0);
-                            setDateRange({ from, to });
-                          }}
-                        >
-                          <SelectTrigger className="w-[120px] bg-background">
-                            <SelectValue placeholder="Год" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {Array.from({ length: 8 }).map((_, i) => {
-                              const y = new Date().getFullYear() - (6 - i);
-                              return (
-                                <SelectItem key={y} value={String(y)}>
-                                  {y}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-
-                        <Select
-                          value={rangeMonth}
-                          onValueChange={(v) => {
-                            setRangeMonth(v as any);
-                            const y = Number(rangeYear);
-                            if (v === 'all') {
-                              setDateRange({ from: new Date(y, 0, 1), to: new Date(y, 11, 31) });
-                              return;
-                            }
-                            const m = Number(v);
-                            setDateRange({ from: new Date(y, m - 1, 1), to: new Date(y, m, 0) });
-                          }}
-                        >
-                          <SelectTrigger className="w-[160px] bg-background">
-                            <SelectValue placeholder="Месяц" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">Весь год</SelectItem>
-                            {Array.from({ length: 12 }).map((_, i) => {
-                              const m = i + 1;
-                              return (
-                                <SelectItem key={m} value={String(m)}>
-                                  {String(m).padStart(2, '0')}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <Button variant="outline" className="w-[280px] justify-start font-normal">
-                              {dateRange?.from && dateRange?.to
-                                ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
-                                : 'Выберите период'}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar
-                              mode="range"
-                              numberOfMonths={2}
-                              selected={dateRange}
-                              onSelect={setDateRange}
-                            />
-                          </PopoverContent>
-                        </Popover>
+                        <DateRangePicker
+                          value={dateRange}
+                          onChange={setDateRange}
+                          placeholder="Выберите период"
+                          triggerClassName="w-[280px]"
+                          numberOfMonths={2}
+                        />
                       </div>
                     </div>
 
@@ -801,78 +665,13 @@ export default function Reports() {
                       <div className="text-sm text-muted-foreground">Период</div>
                       <QuickRangeButtons />
                       <div className="flex flex-wrap items-end gap-2">
-                        <Select
-                          value={rangeYear}
-                          onValueChange={(v) => {
-                            setRangeYear(v);
-                            const y = Number(v);
-                            const m = rangeMonth === 'all' ? null : Number(rangeMonth);
-                            const from = m == null ? new Date(y, 0, 1) : new Date(y, m - 1, 1);
-                            const to = m == null ? new Date(y, 11, 31) : new Date(y, m, 0);
-                            setDateRange({ from, to });
-                          }}
-                        >
-                          <SelectTrigger className="w-[120px] bg-background">
-                            <SelectValue placeholder="Год" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {Array.from({ length: 8 }).map((_, i) => {
-                              const y = new Date().getFullYear() - (6 - i);
-                              return (
-                                <SelectItem key={y} value={String(y)}>
-                                  {y}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-
-                        <Select
-                          value={rangeMonth}
-                          onValueChange={(v) => {
-                            setRangeMonth(v as any);
-                            const y = Number(rangeYear);
-                            if (v === 'all') {
-                              setDateRange({ from: new Date(y, 0, 1), to: new Date(y, 11, 31) });
-                              return;
-                            }
-                            const m = Number(v);
-                            setDateRange({ from: new Date(y, m - 1, 1), to: new Date(y, m, 0) });
-                          }}
-                        >
-                          <SelectTrigger className="w-[160px] bg-background">
-                            <SelectValue placeholder="Месяц" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">Весь год</SelectItem>
-                            {Array.from({ length: 12 }).map((_, i) => {
-                              const m = i + 1;
-                              return (
-                                <SelectItem key={m} value={String(m)}>
-                                  {String(m).padStart(2, '0')}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <Button variant="outline" className="w-[280px] justify-start font-normal">
-                              {dateRange?.from && dateRange?.to
-                                ? `${dateRange.from.toLocaleDateString('ru-RU')} — ${dateRange.to.toLocaleDateString('ru-RU')}`
-                                : 'Выберите период'}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar
-                              mode="range"
-                              numberOfMonths={2}
-                              selected={dateRange}
-                              onSelect={setDateRange}
-                            />
-                          </PopoverContent>
-                        </Popover>
+                        <DateRangePicker
+                          value={dateRange}
+                          onChange={setDateRange}
+                          placeholder="Выберите период"
+                          triggerClassName="w-[280px]"
+                          numberOfMonths={2}
+                        />
                       </div>
                     </div>
 

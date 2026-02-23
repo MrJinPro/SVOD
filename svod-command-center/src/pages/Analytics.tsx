@@ -2,6 +2,7 @@ import { MainLayout } from '@/components/layout/MainLayout';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { DateRangePicker } from '@/components/ui/date-range-picker';
 import {
   Select,
   SelectContent,
@@ -22,6 +23,7 @@ import {
   Tooltip,
 } from 'recharts';
 import type { AnalyticsFiltersResponse, OperatorActivityRow, OperatorHandlingRow } from '@/types';
+import type { DateRange } from 'react-day-picker';
 
 type DraftFilters = {
   dateFrom: string; // YYYY-MM-DD
@@ -38,6 +40,25 @@ const defaultFilters: DraftFilters = {
   gbrName: 'all',
   bucket: 'day',
 };
+
+function formatLocalYYYYMMDD(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseLocalYYYYMMDD(s: string): Date | undefined {
+  const trimmed = (s || '').trim();
+  if (!trimmed) return undefined;
+  const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(trimmed);
+  if (!m) return undefined;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return undefined;
+  return new Date(y, mo - 1, d);
+}
 
 function toStartOfDayIso(date: string): string {
   const d = new Date(`${date}T00:00:00`);
@@ -162,18 +183,23 @@ export default function Analytics() {
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">Период:</span>
-              <Input
-                type="date"
-                className="w-[160px] bg-background"
-                value={draft.dateFrom}
-                onChange={(e) => setDraft((v) => ({ ...v, dateFrom: e.target.value }))}
-              />
-              <span className="text-sm text-muted-foreground">—</span>
-              <Input
-                type="date"
-                className="w-[160px] bg-background"
-                value={draft.dateTo}
-                onChange={(e) => setDraft((v) => ({ ...v, dateTo: e.target.value }))}
+              <DateRangePicker
+                value={(() => {
+                  const from = parseLocalYYYYMMDD(draft.dateFrom);
+                  const to = parseLocalYYYYMMDD(draft.dateTo);
+                  if (!from && !to) return undefined;
+                  return { from, to } as DateRange;
+                })()}
+                onChange={(range) => {
+                  setDraft((v) => ({
+                    ...v,
+                    dateFrom: range?.from ? formatLocalYYYYMMDD(range.from) : '',
+                    dateTo: range?.to ? formatLocalYYYYMMDD(range.to) : '',
+                  }));
+                }}
+                placeholder="Период"
+                triggerClassName="w-[340px]"
+                numberOfMonths={2}
               />
             </div>
 
