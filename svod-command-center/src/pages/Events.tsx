@@ -34,6 +34,7 @@ export default function Events() {
   const [pageNumber, setPageNumber] = useState(1);
   const [live, setLive] = useState(false);
   const [pendingNew, setPendingNew] = useState(0);
+  const [showSystem, setShowSystem] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -81,6 +82,8 @@ export default function Events() {
     params.set('page', String(pageNumber));
     params.set('pageSize', '50');
 
+    if (showSystem) params.set('includeSystem', 'true');
+
     if (appliedFilters.search.trim()) params.set('search', appliedFilters.search.trim());
     if (appliedFilters.type !== 'all') params.set('type', appliedFilters.type);
     if (appliedFilters.severity !== 'all') params.set('severity', appliedFilters.severity);
@@ -104,7 +107,7 @@ export default function Events() {
     }
 
     return `/events?${params.toString()}`;
-  }, [appliedFilters, pageNumber]);
+  }, [appliedFilters, pageNumber, showSystem]);
 
   const { data: page, refetch, error, isLoading } = useApiGet(path, {
     data: [],
@@ -123,8 +126,10 @@ export default function Events() {
     const params = new URLSearchParams();
     if (newestTimestamp) params.set('since', newestTimestamp);
     params.set('pollSeconds', '1.0');
+
+    if (showSystem) params.set('includeSystem', 'true');
     return `/events/stream?${params.toString()}`;
-  }, [newestTimestamp]);
+  }, [newestTimestamp, showSystem]);
 
   useEventStream({
     enabled: live,
@@ -158,6 +163,19 @@ export default function Events() {
             >
               {live ? 'Live: ON' : 'Live: OFF'}
             </Button>
+
+            <Button
+              variant={showSystem ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={() => {
+                setShowSystem((v) => !v);
+                setPageNumber(1);
+              }}
+              title="Системные события — без оператора"
+            >
+              {showSystem ? 'Системные: ON' : 'Системные: OFF'}
+            </Button>
+
             <Button variant="outline" size="sm" className="gap-2" onClick={refetch}>
               <RefreshCw className="h-4 w-4" />
               Обновить

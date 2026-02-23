@@ -121,6 +121,7 @@ async def list_events(
     status: str | None = None,
     search: str | None = None,
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
+    includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
@@ -129,6 +130,12 @@ async def list_events(
     # These are classified as type=access during agency archive sync.
     if not includeNoise:
         filters.append(Event.type != "access")
+
+    # UI requirement: hide system-handled events by default.
+    # Convention: operator_id is NULL/empty => system.
+    if not includeSystem:
+        filters.append(Event.operator_id.is_not(None))
+        filters.append(Event.operator_id != "")
 
     if type:
         filters.append(Event.type == type)
@@ -209,6 +216,7 @@ async def export_events_export(
     status: str | None = None,
     search: str | None = None,
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
+    includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -216,6 +224,10 @@ async def export_events_export(
 
     if not includeNoise:
         filters.append(Event.type != "access")
+
+    if not includeSystem:
+        filters.append(Event.operator_id.is_not(None))
+        filters.append(Event.operator_id != "")
 
     if type:
         filters.append(Event.type == type)
@@ -361,6 +373,7 @@ async def export_events_xlsx(
     status: str | None = None,
     search: str | None = None,
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
+    includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -373,6 +386,7 @@ async def export_events_xlsx(
         status=status,
         search=search,
         includeNoise=includeNoise,
+        includeSystem=includeSystem,
         limit=limit,
         session=session,
     )
@@ -383,6 +397,7 @@ async def stream_events(
     since: str | None = Query(None, description="ISO timestamp; stream events newer than this"),
     pollSeconds: float = Query(1.0, ge=0.2, le=10.0),
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
+    includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ):
@@ -408,6 +423,8 @@ async def stream_events(
             stmt: Select[tuple[Event]] = select(Event).where(Event.timestamp > last_ts)
             if not includeNoise:
                 stmt = stmt.where(Event.type != "access")
+            if not includeSystem:
+                stmt = stmt.where(Event.operator_id.is_not(None)).where(Event.operator_id != "")
             stmt = stmt.order_by(Event.timestamp.asc()).limit(500)
             rows = (await session.execute(stmt)).scalars().all()
             for e in rows:
