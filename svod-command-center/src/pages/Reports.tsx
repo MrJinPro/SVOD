@@ -411,8 +411,8 @@ export default function Reports() {
           return;
         }
         const params = new URLSearchParams();
-        params.set('dateFrom', formatLocalYYYYMMDD(dateRange.from));
-        params.set('dateTo', formatLocalYYYYMMDD(dateRange.to));
+        params.set('dateFrom', setTimeOnDate(dateRange.from, timeFrom).toISOString());
+        params.set('dateTo', setTimeOnDate(dateRange.to, timeTo).toISOString());
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
 
         // Shifts: configurable boundaries (Settings -> localStorage)
@@ -716,6 +716,15 @@ export default function Reports() {
                           triggerClassName="w-[280px]"
                           numberOfMonths={2}
                         />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Время (от/до)</div>
+                      <div className="flex items-center gap-2">
+                        <Input type="time" className="w-[140px] bg-background" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} />
+                        <div className="text-muted-foreground">—</div>
+                        <Input type="time" className="w-[140px] bg-background" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} />
                       </div>
                     </div>
 

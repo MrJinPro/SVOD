@@ -10,7 +10,7 @@ import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user
@@ -20,6 +20,17 @@ from app.models.event import Event
 from app.models.event_action import EventAction
 
 router = APIRouter(prefix="/events")
+
+
+def _accept_action_predicate() -> Any:
+    """Best-effort match for operator action: accepted for processing."""
+
+    # In agency logs this can vary a bit; we match by substrings.
+    return or_(
+        EventAction.action_name == "Прием на обработку",
+        EventAction.action_name.ilike("%прин%в обработ%"),
+        EventAction.action_name.ilike("%прием%обработ%"),
+    )
 
 
 def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
@@ -122,6 +133,7 @@ async def list_events(
     search: str | None = None,
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
+    includeCancelled: bool = Query(False, description="Include cancelled events"),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
@@ -131,11 +143,23 @@ async def list_events(
     if not includeNoise:
         filters.append(Event.type != "access")
 
-    # UI requirement: hide system-handled events by default.
-    # Convention: operator_id is NULL/empty => system.
+    # UI requirement: hide cancelled by default.
+    if not includeCancelled:
+        filters.append(Event.status != "cancelled")
+
+    # UI requirement: hide system-handled alarms by default.
+    # Convention for "real handled alarms": there is an operator action
+    # "accepted for processing" with non-empty operator_name.
     if not includeSystem:
-        filters.append(Event.operator_id.is_not(None))
-        filters.append(Event.operator_id != "")
+        accepted_exists = exists(
+            select(1)
+            .select_from(EventAction)
+            .where(EventAction.event_id == Event.id)
+            .where(EventAction.operator_name.is_not(None))
+            .where(EventAction.operator_name != "")
+            .where(_accept_action_predicate())
+        )
+        filters.append(or_(Event.type != "alarm", accepted_exists))
 
     if type:
         filters.append(Event.type == type)
@@ -217,6 +241,7 @@ async def export_events_export(
     search: str | None = None,
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
+    includeCancelled: bool = Query(False, description="Include cancelled events"),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -225,9 +250,19 @@ async def export_events_export(
     if not includeNoise:
         filters.append(Event.type != "access")
 
+    if not includeCancelled:
+        filters.append(Event.status != "cancelled")
+
     if not includeSystem:
-        filters.append(Event.operator_id.is_not(None))
-        filters.append(Event.operator_id != "")
+        accepted_exists = exists(
+            select(1)
+            .select_from(EventAction)
+            .where(EventAction.event_id == Event.id)
+            .where(EventAction.operator_name.is_not(None))
+            .where(EventAction.operator_name != "")
+            .where(_accept_action_predicate())
+        )
+        filters.append(or_(Event.type != "alarm", accepted_exists))
 
     if type:
         filters.append(Event.type == type)
@@ -374,6 +409,7 @@ async def export_events_xlsx(
     search: str | None = None,
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
+    includeCancelled: bool = Query(False, description="Include cancelled events"),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -387,6 +423,7 @@ async def export_events_xlsx(
         search=search,
         includeNoise=includeNoise,
         includeSystem=includeSystem,
+        includeCancelled=includeCancelled,
         limit=limit,
         session=session,
     )
@@ -398,6 +435,7 @@ async def stream_events(
     pollSeconds: float = Query(1.0, ge=0.2, le=10.0),
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
+    includeCancelled: bool = Query(False, description="Include cancelled events"),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ):
@@ -423,8 +461,18 @@ async def stream_events(
             stmt: Select[tuple[Event]] = select(Event).where(Event.timestamp > last_ts)
             if not includeNoise:
                 stmt = stmt.where(Event.type != "access")
+            if not includeCancelled:
+                stmt = stmt.where(Event.status != "cancelled")
             if not includeSystem:
-                stmt = stmt.where(Event.operator_id.is_not(None)).where(Event.operator_id != "")
+                accepted_exists = exists(
+                    select(1)
+                    .select_from(EventAction)
+                    .where(EventAction.event_id == Event.id)
+                    .where(EventAction.operator_name.is_not(None))
+                    .where(EventAction.operator_name != "")
+                    .where(_accept_action_predicate())
+                )
+                stmt = stmt.where(or_(Event.type != "alarm", accepted_exists))
             stmt = stmt.order_by(Event.timestamp.asc()).limit(500)
             rows = (await session.execute(stmt)).scalars().all()
             for e in rows:

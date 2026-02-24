@@ -35,6 +35,7 @@ export default function Events() {
   const [live, setLive] = useState(false);
   const [pendingNew, setPendingNew] = useState(0);
   const [showSystem, setShowSystem] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -83,6 +84,7 @@ export default function Events() {
     params.set('pageSize', '50');
 
     if (showSystem) params.set('includeSystem', 'true');
+    if (showCancelled) params.set('includeCancelled', 'true');
 
     if (appliedFilters.search.trim()) params.set('search', appliedFilters.search.trim());
     if (appliedFilters.type !== 'all') params.set('type', appliedFilters.type);
@@ -107,7 +109,7 @@ export default function Events() {
     }
 
     return `/events?${params.toString()}`;
-  }, [appliedFilters, pageNumber, showSystem]);
+  }, [appliedFilters, pageNumber, showSystem, showCancelled]);
 
   const { data: page, refetch, error, isLoading } = useApiGet(path, {
     data: [],
@@ -128,8 +130,9 @@ export default function Events() {
     params.set('pollSeconds', '1.0');
 
     if (showSystem) params.set('includeSystem', 'true');
+    if (showCancelled) params.set('includeCancelled', 'true');
     return `/events/stream?${params.toString()}`;
-  }, [newestTimestamp, showSystem]);
+  }, [newestTimestamp, showSystem, showCancelled]);
 
   useEventStream({
     enabled: live,
@@ -174,6 +177,18 @@ export default function Events() {
               title="Системные события — без оператора"
             >
               {showSystem ? 'Системные: ON' : 'Системные: OFF'}
+            </Button>
+
+            <Button
+              variant={showCancelled ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={() => {
+                setShowCancelled((v) => !v);
+                setPageNumber(1);
+              }}
+              title="Показать отменённые события"
+            >
+              {showCancelled ? 'Отменённые: ON' : 'Отменённые: OFF'}
             </Button>
 
             <Button variant="outline" size="sm" className="gap-2" onClick={refetch}>

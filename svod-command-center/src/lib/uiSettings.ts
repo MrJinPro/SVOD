@@ -27,7 +27,7 @@ export const defaultUiSettings: UiSettings = {
   refreshIntervalSec: 30,
   autoRefresh: true,
 
-  shiftDayStart: '08:00',
+  shiftDayStart: '09:00',
   shiftNightStart: '20:00',
 };
 

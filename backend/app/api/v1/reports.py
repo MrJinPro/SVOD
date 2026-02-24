@@ -855,7 +855,7 @@ async def generate_gbr_raport_xlsx(
 async def generate_pcn_ledger_xlsx(
     dateFrom: str = Query(description="YYYY-MM-DD"),
     dateTo: str = Query(description="YYYY-MM-DD"),
-    dayStart: str | None = Query(default="08:00", description="HH:MM (start of day shift)"),
+    dayStart: str | None = Query(default="09:00", description="HH:MM (start of day shift)"),
     nightStart: str | None = Query(default="20:00", description="HH:MM (start of night shift)"),
     actionName: str | None = Query(default="Прием на обработку", description="EventAction.action_name match"),
     operatorQuery: str | None = Query(default=None, description="Filter by operator name (substring)"),
@@ -882,13 +882,34 @@ async def generate_pcn_ledger_xlsx(
 ) -> dict:
     # Stored XLSX report: "Ведомость учета работы операторов ПЦН".
 
-    d_from = _parse_date(dateFrom) or (_parse_dt(dateFrom).date() if _parse_dt(dateFrom) else None)
-    d_to = _parse_date(dateTo) or (_parse_dt(dateTo).date() if _parse_dt(dateTo) else None)
-    if not d_from or not d_to or d_to < d_from:
-        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+    def _has_time_component(v: str | None) -> bool:
+        return bool(re.search(r"\d{1,2}:\d{2}", (v or "")))
 
-    day_start = _parse_hhmm(dayStart or "", default=time_type(8, 0))
+    dt_from: datetime | None = _parse_dt(dateFrom) if _has_time_component(dateFrom) else None
+    dt_to: datetime | None = _parse_dt(dateTo) if _has_time_component(dateTo) else None
+
+    d_from: date_type | None = None
+    d_to: date_type | None = None
+    if dt_from is None:
+        d_from = _parse_date(dateFrom) or (_parse_dt(dateFrom).date() if _parse_dt(dateFrom) else None)
+    if dt_to is None:
+        d_to = _parse_date(dateTo) or (_parse_dt(dateTo).date() if _parse_dt(dateTo) else None)
+
+    day_start = _parse_hhmm(dayStart or "", default=time_type(9, 0))
     night_start = _parse_hhmm(nightStart or "", default=time_type(20, 0))
+
+    exact_window = dt_from is not None or dt_to is not None
+    if exact_window:
+        if dt_from is None or dt_to is None or dt_to < dt_from:
+            raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+        window_start = dt_from
+        window_end = dt_to
+    else:
+        if not d_from or not d_to or d_to < d_from:
+            raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+        # Build query window that covers the last night shift up to next day's dayStart.
+        window_start = datetime.combine(d_from, day_start)
+        window_end = datetime.combine(d_to + timedelta(days=1), day_start)
 
     payouts: tuple[int, int, int, int] = (int(pay0), int(pay1), int(pay2), int(pay3))
     thresholds: dict[int, tuple[int, int, int]] = {
@@ -908,10 +929,6 @@ async def generate_pcn_ledger_xlsx(
     _validate_thresholds("3 dispatchers", thresholds[3])
     _validate_thresholds("4 dispatchers", thresholds[4])
     _validate_thresholds("5 dispatchers", thresholds[5])
-
-    # Build query window that covers the last night shift up to next day's dayStart.
-    window_start = datetime.combine(d_from, day_start)
-    window_end = datetime.combine(d_to + timedelta(days=1), day_start)
 
     # Bonus overrides parsing
     overrides: dict[str, int] = {}
@@ -943,9 +960,13 @@ async def generate_pcn_ledger_xlsx(
         .where(Event.type == "alarm")
         .where(EventAction.operator_name.is_not(None))
         .where(EventAction.action_time >= window_start)
-        .where(EventAction.action_time < window_end)
         .group_by(EventAction.event_id, EventAction.operator_name)
     )
+
+    if exact_window:
+        stmt = stmt.where(EventAction.action_time <= window_end)
+    else:
+        stmt = stmt.where(EventAction.action_time < window_end)
 
     if act:
         # Prefer exact match but allow substring match for robustness.
@@ -963,8 +984,9 @@ async def generate_pcn_ledger_xlsx(
         if not isinstance(ts, datetime) or not op:
             continue
         shift_date, shift_name = _shift_bucket(ts, day_start=day_start, night_start=night_start)
-        if shift_date < d_from or shift_date > d_to:
-            continue
+        if d_from is not None and d_to is not None:
+            if shift_date < d_from or shift_date > d_to:
+                continue
         key = (shift_date, shift_name, str(op))
         counts[key] = counts.get(key, 0) + 1
 
