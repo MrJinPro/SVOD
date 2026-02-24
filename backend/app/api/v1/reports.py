@@ -26,6 +26,20 @@ from app.models.report import Report
 router = APIRouter(prefix="/reports")
 
 
+def _agency_event_id(event_id: str | None) -> str | None:
+    """Extract agency numeric event id from stored local id.
+
+    For MSSQL imports we store ids like: 'mssql:{date_key}:{event_id}'.
+    """
+
+    if not event_id:
+        return None
+    parts = str(event_id).split(":")
+    if len(parts) >= 3:
+        return parts[-1] or None
+    return None
+
+
 def _ensure_reports_manage_perm(current: dict) -> None:
     role = str(current.get("role") or "")
     if role in {"admin", "analyst"}:
@@ -452,22 +466,6 @@ async def generate_objects_by_code_report(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
-    def _agency_event_id(event_id: str | None) -> str | None:
-        if not event_id:
-            return None
-        parts = str(event_id).split(":")
-        if len(parts) >= 3:
-            return parts[-1] or None
-        return None
-
-    def _agency_event_id(event_id: str | None) -> str | None:
-        if not event_id:
-            return None
-        parts = str(event_id).split(":")
-        if len(parts) >= 3:
-            return parts[-1] or None
-        return None
-
     # best-effort: take one code_text for code
     code_text = (
         await session.execute(select(func.max(Event.code_text)).where(Event.code == eventCode.strip()))
@@ -563,7 +561,7 @@ async def generate_objects_by_code_report(
         "Последнее срабатывание",
         "ID события (аг.)",
         "Параметр (MeterCount)",
-        "Пометка оператора",
+        "Комментарий оператора (Result_Text)",
     ]
     ws.append(headers)
     for c in range(1, len(headers) + 1):
@@ -1729,7 +1727,7 @@ async def export_objects_by_code(
         "Последнее срабатывание",
         "ID события (аг.)",
         "Параметр (MeterCount)",
-        "Пометка оператора",
+        "Комментарий оператора (Result_Text)",
     ]
     ws.append(headers)
     for c in range(1, len(headers) + 1):
