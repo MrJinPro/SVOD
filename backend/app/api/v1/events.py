@@ -10,7 +10,7 @@ import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import Select, and_, exists, func, or_, select
+from sqlalchemy import Integer, Select, and_, case, cast, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user
@@ -62,12 +62,31 @@ def _accepted_action_exists() -> Any:
 def _operator_action_exists() -> Any:
     """Any operator action exists for the event (best-effort)."""
 
+    # Some deployments store Event.id as "mssql:{date_key}:{event_id}", while others
+    # store a numeric Event_id string. Support both ways of linking to EventAction.
+    raw_id_expr = case(
+        (Event.id.op("~")(r"^\d+$"), cast(Event.id, Integer)),
+        else_=None,
+    )
+    date_key_expr = cast(func.to_char(Event.timestamp, "YYYYMMDD"), Integer)
+
     return exists(
         select(1)
         .select_from(EventAction)
-        .where(EventAction.event_id == Event.id)
-        .where(EventAction.operator_name.is_not(None))
-        .where(EventAction.operator_name != "")
+        .where(
+            and_(
+                EventAction.operator_name.is_not(None),
+                EventAction.operator_name != "",
+                or_(
+                    EventAction.event_id == Event.id,
+                    and_(
+                        raw_id_expr.is_not(None),
+                        EventAction.raw_event_id == raw_id_expr,
+                        EventAction.date_key == date_key_expr,
+                    ),
+                ),
+            )
+        )
     )
 
 
@@ -234,10 +253,37 @@ async def get_event_details(
         )
         actions = (await session.execute(stmt)).scalars().all()
 
+        # Fallback for numeric event IDs: link by (date_key, raw_event_id).
+        if not actions:
+            try:
+                raw_event_id = int(str(event_id))
+                date_key = int(e.timestamp.strftime("%Y%m%d"))
+            except Exception:
+                raw_event_id = None
+                date_key = None
+
+            if raw_event_id is not None and date_key is not None:
+                stmt2: Select[tuple[EventAction]] = (
+                    select(EventAction)
+                    .where(EventAction.raw_event_id == raw_event_id)
+                    .where(EventAction.date_key == date_key)
+                    .order_by(EventAction.action_time.asc())
+                    .limit(actionsLimit)
+                )
+                actions = (await session.execute(stmt2)).scalars().all()
+
     # Best-effort fallback: if actions are not synced into SVOD DB yet,
     # try to fetch them directly from the agency DB by (Date_Key, Event_id).
     if actionsLimit > 0 and not actions and settings.agency_database_url:
         key = _parse_agency_event_key(event_id)
+        if key is None:
+            # Numeric event IDs: use timestamp day as Date_Key.
+            try:
+                raw_event_id = int(str(event_id))
+                date_key = int(e.timestamp.strftime("%Y%m%d"))
+                key = (date_key, raw_event_id)
+            except Exception:
+                key = None
         if key is not None:
             url = settings.agency_database_url
             scheme = (url.split(":", 1)[0] or "").lower()
