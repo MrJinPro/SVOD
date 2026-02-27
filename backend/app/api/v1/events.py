@@ -59,13 +59,23 @@ def _accepted_action_exists() -> Any:
     )
 
 
-def _operator_action_exists() -> Any:
+def _numeric_event_id_predicate(dialect_name: str | None) -> Any:
+    if (dialect_name or "").lower() == "postgresql":
+        return Event.id.op("~")(r"^\d+$")
+
+    # SQLite: emulate "all digits" via GLOB
+    # - starts with a digit
+    # - and does NOT contain any non-digit
+    return and_(Event.id.op("GLOB")("[0-9]*"), ~Event.id.op("GLOB")("*[^0-9]*"))
+
+
+def _operator_action_exists(*, dialect_name: str | None) -> Any:
     """Any operator action exists for the event (best-effort)."""
 
     # Some deployments store Event.id as "mssql:{date_key}:{event_id}", while others
     # store a numeric Event_id string. Support both ways of linking to EventAction.
     raw_id_expr = case(
-        (Event.id.op("~")(r"^\d+$"), cast(Event.id, Integer)),
+        (_numeric_event_id_predicate(dialect_name), cast(Event.id, Integer)),
         else_=None,
     )
     date_key_expr = cast(func.to_char(Event.timestamp, "YYYYMMDD"), Integer)
@@ -244,6 +254,15 @@ async def get_event_details(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Event not found"})
 
     actions: list[EventAction] = []
+    actions_meta: dict[str, Any] = {
+        "eventId": event_id,
+        "eventTimestamp": e.timestamp.isoformat(),
+        "foundInDb": False,
+        "attemptedKey": None,
+        "attemptedKeys": [],
+        "fallback": None,
+        "fallbackError": None,
+    }
     if actionsLimit > 0:
         stmt: Select[tuple[EventAction]] = (
             select(EventAction)
@@ -257,20 +276,40 @@ async def get_event_details(
         if not actions:
             try:
                 raw_event_id = int(str(event_id))
-                date_key = int(e.timestamp.strftime("%Y%m%d"))
             except Exception:
                 raw_event_id = None
-                date_key = None
 
-            if raw_event_id is not None and date_key is not None:
-                stmt2: Select[tuple[EventAction]] = (
-                    select(EventAction)
-                    .where(EventAction.raw_event_id == raw_event_id)
-                    .where(EventAction.date_key == date_key)
-                    .order_by(EventAction.action_time.asc())
-                    .limit(actionsLimit)
-                )
-                actions = (await session.execute(stmt2)).scalars().all()
+            if raw_event_id is not None:
+                from datetime import timedelta
+
+                base = e.timestamp.date()
+                date_keys = [
+                    int(base.strftime("%Y%m%d")),
+                    int((base - timedelta(days=1)).strftime("%Y%m%d")),
+                    int((base + timedelta(days=1)).strftime("%Y%m%d")),
+                ]
+                actions_meta["attemptedKeys"] = [(dk, raw_event_id) for dk in date_keys]
+
+                for dk in date_keys:
+                    stmt2: Select[tuple[EventAction]] = (
+                        select(EventAction)
+                        .where(EventAction.raw_event_id == raw_event_id)
+                        .where(EventAction.date_key == dk)
+                        .order_by(EventAction.action_time.asc())
+                        .limit(actionsLimit)
+                    )
+                    actions = (await session.execute(stmt2)).scalars().all()
+                    if actions:
+                        actions_meta["attemptedKey"] = (dk, raw_event_id)
+                        actions_meta["foundInDb"] = True
+                        break
+
+        if actions:
+            return {
+                "event": _event_to_out(e),
+                "actions": [_action_to_out(a) for a in actions],
+                "actionsMeta": actions_meta,
+            }
 
     # Best-effort fallback: if actions are not synced into SVOD DB yet,
     # try to fetch them directly from the agency DB by (Date_Key, Event_id).
@@ -280,31 +319,60 @@ async def get_event_details(
             # Numeric event IDs: use timestamp day as Date_Key.
             try:
                 raw_event_id = int(str(event_id))
-                date_key = int(e.timestamp.strftime("%Y%m%d"))
-                key = (date_key, raw_event_id)
+                from datetime import timedelta
+
+                base = e.timestamp.date()
+                date_keys = [
+                    int(base.strftime("%Y%m%d")),
+                    int((base - timedelta(days=1)).strftime("%Y%m%d")),
+                    int((base + timedelta(days=1)).strftime("%Y%m%d")),
+                ]
+                keys = [(dk, raw_event_id) for dk in date_keys]
             except Exception:
-                key = None
-        if key is not None:
+                keys = []
+
+            if key is not None:
+                keys = [key]
+
+            actions_meta["attemptedKeys"] = keys
+
             url = settings.agency_database_url
             scheme = (url.split(":", 1)[0] or "").lower()
-            try:
-                if scheme.startswith("sqlite"):
-                    rows = await asyncio.to_thread(
-                        fetch_eventservice_actions_for_event_pairs_sqlite,
-                        url,
-                        event_pairs=[key],
-                    )
-                elif scheme.startswith("mssql"):
-                    rows = await asyncio.to_thread(
-                        fetch_eventservice_actions_for_event_pairs_mssql,
-                        url,
-                        archives_db_name=settings.agency_archives_db_name,
-                        event_pairs=[key],
-                    )
-                else:
+            actions_meta["fallback"] = {
+                "scheme": scheme,
+                "archivesDb": settings.agency_archives_db_name,
+                "agencyUrlHost": (url.split("@", 1)[1].split("/", 1)[0] if "@" in url else None),
+            }
+
+            rows: list[dict[str, Any]] = []
+            last_error: str | None = None
+            for k in keys:
+                try:
+                    if scheme.startswith("sqlite"):
+                        rows = await asyncio.to_thread(
+                            fetch_eventservice_actions_for_event_pairs_sqlite,
+                            url,
+                            event_pairs=[k],
+                        )
+                    elif scheme.startswith("mssql"):
+                        rows = await asyncio.to_thread(
+                            fetch_eventservice_actions_for_event_pairs_mssql,
+                            url,
+                            archives_db_name=settings.agency_archives_db_name,
+                            event_pairs=[k],
+                        )
+                    else:
+                        rows = []
+                except Exception as ex:
+                    last_error = str(ex)
                     rows = []
-            except Exception:
-                rows = []
+
+                if rows:
+                    actions_meta["attemptedKey"] = k
+                    break
+
+            if last_error:
+                actions_meta["fallbackError"] = last_error
 
             out_rows: list[dict[str, Any]] = []
             for r in rows[:actionsLimit]:
@@ -313,9 +381,9 @@ async def get_event_details(
                     out_rows.append(mapped)
 
             if out_rows:
-                return {"event": _event_to_out(e), "actions": out_rows}
+                return {"event": _event_to_out(e), "actions": out_rows, "actionsMeta": actions_meta}
 
-    return {"event": _event_to_out(e), "actions": [_action_to_out(a) for a in actions]}
+    return {"event": _event_to_out(e), "actions": [], "actionsMeta": actions_meta}
 
 
 @router.get("")
@@ -336,6 +404,11 @@ async def list_events(
 ) -> dict[str, Any]:
     filters: list[Any] = []
 
+    try:
+        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+    except Exception:
+        dialect_name = None
+
     # UI requirement: hide operator-irrelevant noise (e.g., постановка/снятие).
     # These are classified as type=access during agency archive sync.
     if not includeNoise:
@@ -351,7 +424,10 @@ async def list_events(
     if not includeSystem:
         actions_linked = await _actions_linked_present(session)
         if actions_linked:
-            handled_alarm = or_(_is_operator_handled_predicate(), _operator_action_exists())
+            handled_alarm = or_(
+                _is_operator_handled_predicate(),
+                _operator_action_exists(dialect_name=dialect_name),
+            )
             filters.append(or_(Event.type != "alarm", handled_alarm))
         # else: fail-open (actions not synced) -> don't hide alarms
 
@@ -441,6 +517,11 @@ async def export_events_export(
 ) -> Response:
     filters: list[Any] = []
 
+    try:
+        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+    except Exception:
+        dialect_name = None
+
     if not includeNoise:
         filters.append(Event.type != "access")
 
@@ -450,7 +531,10 @@ async def export_events_export(
     if not includeSystem:
         actions_linked = await _actions_linked_present(session)
         if actions_linked:
-            handled_alarm = or_(_is_operator_handled_predicate(), _operator_action_exists())
+            handled_alarm = or_(
+                _is_operator_handled_predicate(),
+                _operator_action_exists(dialect_name=dialect_name),
+            )
             filters.append(or_(Event.type != "alarm", handled_alarm))
 
     if type:
@@ -644,6 +728,11 @@ async def stream_events(
         except Exception:
             actions_linked = True
 
+    try:
+        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+    except Exception:
+        dialect_name = None
+
     async def gen():
         nonlocal last_ts
         last_keepalive = asyncio.get_event_loop().time()
@@ -661,7 +750,10 @@ async def stream_events(
                 stmt = stmt.where(Event.status != "cancelled")
             if not includeSystem:
                 if actions_linked:
-                    handled_alarm = or_(_is_operator_handled_predicate(), _operator_action_exists())
+                    handled_alarm = or_(
+                        _is_operator_handled_predicate(),
+                        _operator_action_exists(dialect_name=dialect_name),
+                    )
                     stmt = stmt.where(or_(Event.type != "alarm", handled_alarm))
             stmt = stmt.order_by(Event.timestamp.asc()).limit(500)
             rows = (await session.execute(stmt)).scalars().all()
