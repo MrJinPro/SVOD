@@ -59,6 +59,36 @@ def _accepted_action_exists() -> Any:
     )
 
 
+def _operator_action_exists() -> Any:
+    """Any operator action exists for the event (best-effort)."""
+
+    return exists(
+        select(1)
+        .select_from(EventAction)
+        .where(EventAction.event_id == Event.id)
+        .where(EventAction.operator_name.is_not(None))
+        .where(EventAction.operator_name != "")
+    )
+
+
+async def _actions_linked_present(session: AsyncSession) -> bool:
+    """True if there is at least one EventAction that actually joins to an Event."""
+
+    try:
+        any_join = (
+            await session.execute(
+                select(EventAction.id)
+                .select_from(EventAction)
+                .join(Event, EventAction.event_id == Event.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return any_join is not None
+    except Exception:
+        # If diagnostics query fails, don't over-filter.
+        return True
+
+
 def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
     from openpyxl import Workbook
 
@@ -273,11 +303,9 @@ async def list_events(
     # Convention for "real handled alarms": there is an operator action
     # "accepted for processing" (eventservice) OR Event.operator_id is set.
     if not includeSystem:
-        actions_present = (
-            (await session.execute(select(EventAction.id).limit(1))).scalar_one_or_none() is not None
-        )
-        if actions_present:
-            handled_alarm = or_(_is_operator_handled_predicate(), _accepted_action_exists())
+        actions_linked = await _actions_linked_present(session)
+        if actions_linked:
+            handled_alarm = or_(_is_operator_handled_predicate(), _operator_action_exists())
             filters.append(or_(Event.type != "alarm", handled_alarm))
         # else: fail-open (actions not synced) -> don't hide alarms
 
@@ -374,11 +402,9 @@ async def export_events_export(
         filters.append(Event.status != "cancelled")
 
     if not includeSystem:
-        actions_present = (
-            (await session.execute(select(EventAction.id).limit(1))).scalar_one_or_none() is not None
-        )
-        if actions_present:
-            handled_alarm = or_(_is_operator_handled_predicate(), _accepted_action_exists())
+        actions_linked = await _actions_linked_present(session)
+        if actions_linked:
+            handled_alarm = or_(_is_operator_handled_predicate(), _operator_action_exists())
             filters.append(or_(Event.type != "alarm", handled_alarm))
 
     if type:
@@ -565,14 +591,12 @@ async def stream_events(
     last_ts = _parse_dt(since) if since else datetime.utcnow()
     keepalive_every = 15.0
 
-    actions_present = True
+    actions_linked = True
     if not includeSystem:
         try:
-            actions_present = (
-                (await session.execute(select(EventAction.id).limit(1))).scalar_one_or_none() is not None
-            )
+            actions_linked = await _actions_linked_present(session)
         except Exception:
-            actions_present = True
+            actions_linked = True
 
     async def gen():
         nonlocal last_ts
@@ -590,8 +614,8 @@ async def stream_events(
             if not includeCancelled:
                 stmt = stmt.where(Event.status != "cancelled")
             if not includeSystem:
-                if actions_present:
-                    handled_alarm = or_(_is_operator_handled_predicate(), _accepted_action_exists())
+                if actions_linked:
+                    handled_alarm = or_(_is_operator_handled_predicate(), _operator_action_exists())
                     stmt = stmt.where(or_(Event.type != "alarm", handled_alarm))
             stmt = stmt.order_by(Event.timestamp.asc()).limit(500)
             rows = (await session.execute(stmt)).scalars().all()
