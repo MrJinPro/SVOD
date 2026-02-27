@@ -77,7 +77,9 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
       try {
         setLoading(true);
         setError(null);
-        const res = await apiGet<EventDetailsResponse>(`/events/${encodeURIComponent(eventId)}?actionsLimit=500`);
+        const res = await apiGet<EventDetailsResponse>(
+          `/events/details?eventId=${encodeURIComponent(eventId)}&actionsLimit=500`
+        );
         if (!cancelled) setDetails(res);
       } catch (e: any) {
         if (!cancelled) setError(e?.message || 'Ошибка загрузки деталей');

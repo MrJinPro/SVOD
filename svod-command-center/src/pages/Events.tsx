@@ -51,7 +51,7 @@ export default function Events() {
 
       try {
         const res = await apiGet<EventDetailsResponse>(
-          `/events/${encodeURIComponent(openEventId)}?actionsLimit=500`
+          `/events/details?eventId=${encodeURIComponent(openEventId)}&actionsLimit=500`
         );
         if (cancelled) return;
 

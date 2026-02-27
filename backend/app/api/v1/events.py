@@ -246,6 +246,16 @@ def _action_row_to_out(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+@router.get("/details")
+async def get_event_details_by_query(
+    eventId: str = Query(..., min_length=1),
+    actionsLimit: int = Query(500, ge=0, le=5000),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    # Use query param to avoid putting IDs like "mssql:YYYYMMDD:NNN" into the URL path.
+    return await get_event_details(event_id=eventId, actionsLimit=actionsLimit, session=session)
+
+
 @router.get("/{event_id}")
 async def get_event_details(
     event_id: str,
@@ -800,8 +810,8 @@ async def stream_events(
     )
 
 
-@router.get("/{event_id}")
-async def get_event(
+@router.get("/plain/{event_id}")
+async def get_event_plain(
     event_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
