@@ -16,10 +16,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.deps import get_current_user
 from app.core.config import settings
 from app.db.session import get_session
+from app.integrations.agency_mssql import (
+    fetch_eventservice_actions_for_event_pairs as fetch_eventservice_actions_for_event_pairs_mssql,
+)
+from app.integrations.agency_sqlite import (
+    fetch_eventservice_actions_for_event_pairs as fetch_eventservice_actions_for_event_pairs_sqlite,
+)
 from app.models.event import Event
 from app.models.event_action import EventAction
 
 router = APIRouter(prefix="/events")
+
+
+def _is_operator_handled_predicate() -> Any:
+    """Heuristic: event is handled by an operator (not purely system)."""
+
+    # Historically we relied on Event.operator_id being filled for operator-handled alarms.
+    # This is more robust than joining actions: some deployments may not have event_actions
+    # synced yet, or IDs may not match during migration.
+    return and_(Event.operator_id.is_not(None), Event.operator_id != "")
 
 
 def _accept_action_predicate() -> Any:
@@ -30,6 +45,17 @@ def _accept_action_predicate() -> Any:
         EventAction.action_name == "Прием на обработку",
         EventAction.action_name.ilike("%прин%в обработ%"),
         EventAction.action_name.ilike("%прием%обработ%"),
+    )
+
+
+def _accepted_action_exists() -> Any:
+    return exists(
+        select(1)
+        .select_from(EventAction)
+        .where(EventAction.event_id == Event.id)
+        .where(EventAction.operator_name.is_not(None))
+        .where(EventAction.operator_name != "")
+        .where(_accept_action_predicate())
     )
 
 
@@ -97,6 +123,67 @@ def _action_to_out(a: EventAction) -> dict[str, Any]:
     }
 
 
+def _parse_agency_event_key(event_id: str) -> tuple[int, int] | None:
+    parts = str(event_id).split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        date_key = int(parts[-2])
+        raw_event_id = int(parts[-1])
+    except Exception:
+        return None
+    return (date_key, raw_event_id)
+
+
+def _eventservice_source_table(date_key: int) -> str:
+    s = str(int(date_key))
+    if len(s) != 8:
+        suffix = s[:6] + "01"
+    else:
+        suffix = s[:6] + "01"
+    return f"eventservice{suffix}"
+
+
+def _coerce_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+    return None
+
+
+def _action_row_to_out(row: dict[str, Any]) -> dict[str, Any] | None:
+    action_name = str(row.get("NameState") or "").strip()
+    if not action_name:
+        return None
+
+    action_time = _coerce_dt(row.get("OperationTime"))
+    if action_time is None:
+        return None
+
+    try:
+        date_key = int(row.get("Date_Key"))
+        raw_event_id = int(row.get("Event_id"))
+        source_pk = int(row.get("Service_id"))
+    except Exception:
+        return None
+
+    return {
+        "actionName": action_name,
+        "actionTime": action_time.isoformat(),
+        "operatorName": str(row.get("PersonName") or "").strip() or None,
+        "computer": str(row.get("Computer") or "").strip() or None,
+        "gbrName": str(row.get("GrResponseName") or "").strip() or None,
+        "dateKey": date_key,
+        "rawEventId": raw_event_id,
+        "sourceTable": _eventservice_source_table(date_key),
+        "sourcePk": source_pk,
+    }
+
+
 @router.get("/{event_id}")
 async def get_event_details(
     event_id: str,
@@ -116,6 +203,41 @@ async def get_event_details(
             .limit(actionsLimit)
         )
         actions = (await session.execute(stmt)).scalars().all()
+
+    # Best-effort fallback: if actions are not synced into SVOD DB yet,
+    # try to fetch them directly from the agency DB by (Date_Key, Event_id).
+    if actionsLimit > 0 and not actions and settings.agency_database_url:
+        key = _parse_agency_event_key(event_id)
+        if key is not None:
+            url = settings.agency_database_url
+            scheme = (url.split(":", 1)[0] or "").lower()
+            try:
+                if scheme.startswith("sqlite"):
+                    rows = await asyncio.to_thread(
+                        fetch_eventservice_actions_for_event_pairs_sqlite,
+                        url,
+                        event_pairs=[key],
+                    )
+                elif scheme.startswith("mssql"):
+                    rows = await asyncio.to_thread(
+                        fetch_eventservice_actions_for_event_pairs_mssql,
+                        url,
+                        archives_db_name=settings.agency_archives_db_name,
+                        event_pairs=[key],
+                    )
+                else:
+                    rows = []
+            except Exception:
+                rows = []
+
+            out_rows: list[dict[str, Any]] = []
+            for r in rows[:actionsLimit]:
+                mapped = _action_row_to_out(r)
+                if mapped is not None:
+                    out_rows.append(mapped)
+
+            if out_rows:
+                return {"event": _event_to_out(e), "actions": out_rows}
 
     return {"event": _event_to_out(e), "actions": [_action_to_out(a) for a in actions]}
 
@@ -149,17 +271,15 @@ async def list_events(
 
     # UI requirement: hide system-handled alarms by default.
     # Convention for "real handled alarms": there is an operator action
-    # "accepted for processing" with non-empty operator_name.
+    # "accepted for processing" (eventservice) OR Event.operator_id is set.
     if not includeSystem:
-        accepted_exists = exists(
-            select(1)
-            .select_from(EventAction)
-            .where(EventAction.event_id == Event.id)
-            .where(EventAction.operator_name.is_not(None))
-            .where(EventAction.operator_name != "")
-            .where(_accept_action_predicate())
+        actions_present = (
+            (await session.execute(select(EventAction.id).limit(1))).scalar_one_or_none() is not None
         )
-        filters.append(or_(Event.type != "alarm", accepted_exists))
+        if actions_present:
+            handled_alarm = or_(_is_operator_handled_predicate(), _accepted_action_exists())
+            filters.append(or_(Event.type != "alarm", handled_alarm))
+        # else: fail-open (actions not synced) -> don't hide alarms
 
     if type:
         filters.append(Event.type == type)
@@ -254,15 +374,12 @@ async def export_events_export(
         filters.append(Event.status != "cancelled")
 
     if not includeSystem:
-        accepted_exists = exists(
-            select(1)
-            .select_from(EventAction)
-            .where(EventAction.event_id == Event.id)
-            .where(EventAction.operator_name.is_not(None))
-            .where(EventAction.operator_name != "")
-            .where(_accept_action_predicate())
+        actions_present = (
+            (await session.execute(select(EventAction.id).limit(1))).scalar_one_or_none() is not None
         )
-        filters.append(or_(Event.type != "alarm", accepted_exists))
+        if actions_present:
+            handled_alarm = or_(_is_operator_handled_predicate(), _accepted_action_exists())
+            filters.append(or_(Event.type != "alarm", handled_alarm))
 
     if type:
         filters.append(Event.type == type)
@@ -448,6 +565,15 @@ async def stream_events(
     last_ts = _parse_dt(since) if since else datetime.utcnow()
     keepalive_every = 15.0
 
+    actions_present = True
+    if not includeSystem:
+        try:
+            actions_present = (
+                (await session.execute(select(EventAction.id).limit(1))).scalar_one_or_none() is not None
+            )
+        except Exception:
+            actions_present = True
+
     async def gen():
         nonlocal last_ts
         last_keepalive = asyncio.get_event_loop().time()
@@ -464,15 +590,9 @@ async def stream_events(
             if not includeCancelled:
                 stmt = stmt.where(Event.status != "cancelled")
             if not includeSystem:
-                accepted_exists = exists(
-                    select(1)
-                    .select_from(EventAction)
-                    .where(EventAction.event_id == Event.id)
-                    .where(EventAction.operator_name.is_not(None))
-                    .where(EventAction.operator_name != "")
-                    .where(_accept_action_predicate())
-                )
-                stmt = stmt.where(or_(Event.type != "alarm", accepted_exists))
+                if actions_present:
+                    handled_alarm = or_(_is_operator_handled_predicate(), _accepted_action_exists())
+                    stmt = stmt.where(or_(Event.type != "alarm", handled_alarm))
             stmt = stmt.order_by(Event.timestamp.asc()).limit(500)
             rows = (await session.execute(stmt)).scalars().all()
             for e in rows:
