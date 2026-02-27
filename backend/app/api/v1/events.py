@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -26,6 +27,8 @@ from app.models.event import Event
 from app.models.event_action import EventAction
 
 router = APIRouter(prefix="/events")
+
+logger = logging.getLogger(__name__)
 
 
 def _is_operator_handled_predicate() -> Any:
@@ -373,6 +376,22 @@ async def get_event_details(
 
             if last_error:
                 actions_meta["fallbackError"] = last_error
+                logger.warning(
+                    "event_actions fallback error: event_id=%s keys=%s scheme=%s archives_db=%s err=%s",
+                    event_id,
+                    keys,
+                    scheme,
+                    settings.agency_archives_db_name,
+                    last_error,
+                )
+            elif not rows:
+                logger.info(
+                    "event_actions fallback empty: event_id=%s keys=%s scheme=%s archives_db=%s",
+                    event_id,
+                    keys,
+                    scheme,
+                    settings.agency_archives_db_name,
+                )
 
             out_rows: list[dict[str, Any]] = []
             for r in rows[:actionsLimit]:
