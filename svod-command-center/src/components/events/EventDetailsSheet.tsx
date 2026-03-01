@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { Event, EventAction, EventDetailsResponse } from '@/types';
 import { apiGet } from '@/lib/api';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
@@ -100,6 +100,11 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
     return `${date} ${time}`;
   };
 
+  const fmtOptional = (value: string | null | undefined) => {
+    const v = String(value ?? '').trim();
+    return v ? v : '—';
+  };
+
   const actions: EventAction[] = details?.actions ?? [];
   const header = useMemo(() => {
     if (!event) return 'Событие';
@@ -115,11 +120,11 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
   const agencyEventId = event?.id ? getAgencyEventId(event.id) : null;
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[520px] sm:w-[640px] overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle>{header}</SheetTitle>
-        </SheetHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[95vw] max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{header}</DialogTitle>
+        </DialogHeader>
 
         {!event && (
           <div className="mt-4 text-sm text-muted-foreground">Событие не выбрано</div>
@@ -188,19 +193,30 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
             <div className="mt-2 space-y-2">
               {actions.map((a, idx) => (
                 <div key={`${a.actionTime}-${idx}`} className="rounded-md border border-border p-2">
-                  <div className="text-sm text-foreground">{a.actionName}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {a.actionTime ? fmtTs(a.actionTime) : '—'}
-                    {a.operatorName ? ` • ${a.operatorName}` : ''}
-                    {a.gbrName ? ` • ${a.gbrName}` : ''}
-                    {a.computer ? ` • ${a.computer}` : ''}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="text-sm font-medium text-foreground leading-snug">{a.actionName}</div>
+                    <div className="text-xs text-muted-foreground whitespace-nowrap">
+                      {a.actionTime ? fmtTs(a.actionTime) : '—'}
+                    </div>
+                  </div>
+
+                  <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                    <div className="text-muted-foreground">
+                      Оператор: <span className="text-foreground">{fmtOptional(a.operatorName)}</span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      ПК: <span className="text-foreground">{fmtOptional(a.computer)}</span>
+                    </div>
+                    <div className="text-muted-foreground sm:col-span-2">
+                      ГБР: <span className="text-foreground">{fmtOptional(a.gbrName)}</span>
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
           )}
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
