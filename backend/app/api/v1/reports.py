@@ -260,11 +260,40 @@ def _preview_table_from_xlsx_bytes(content: bytes, max_rows: int = 200, max_cols
         collected.append(["" if v is None else str(v) for v in row])
 
     if not collected:
-        return {"kind": "table", "columns": [], "rows": []}
+        return {"kind": "table", "columns": [], "rows": [], "titleLines": []}
 
-    columns = collected[0]
-    rows = collected[1:]
-    return {"kind": "table", "columns": columns, "rows": rows}
+    def _norm(v: str) -> str:
+        return (v or "").strip().lower()
+
+    def _non_empty_count(row: list[str]) -> int:
+        return sum(1 for x in row if (x or "").strip())
+
+    # Heuristic: find a header row (for Raport templates it's not row 1).
+    header_idx: int = 0
+    for i, r in enumerate(collected[: min(len(collected), 50)]):
+        low = [_norm(x) for x in r]
+        if any("№ объекта" in x or "номер объекта" in x for x in low):
+            header_idx = i
+            break
+        if _non_empty_count(r) >= 3 and any(x in {"адрес", "гбр", "вызов", "прибыл", "оператор"} for x in low):
+            header_idx = i
+            break
+
+    title_lines: list[str] = []
+    if header_idx > 0:
+        for r in collected[:header_idx]:
+            parts = [x.strip() for x in r if (x or "").strip()]
+            if parts:
+                title_lines.append(" ".join(parts))
+
+    columns = collected[header_idx]
+    rows = collected[header_idx + 1 :]
+
+    # Trim trailing completely empty rows for nicer preview.
+    while rows and _non_empty_count(rows[-1]) == 0:
+        rows.pop()
+
+    return {"kind": "table", "columns": columns, "rows": rows, "titleLines": title_lines}
 
 
 def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
@@ -1424,6 +1453,8 @@ async def delete_report(
 @router.get("/{report_id}/preview")
 async def preview_report(
     report_id: str,
+    maxRows: int = Query(200, ge=1, le=5000, description="Max rows for table preview"),
+    maxCols: int = Query(50, ge=1, le=200, description="Max cols for table preview"),
     session: AsyncSession = Depends(get_session),
     current: dict = Depends(get_current_user),
 ) -> dict:
@@ -1475,9 +1506,9 @@ async def preview_report(
     ext = _file_ext(r.file_name) or ("csv" if (r.mime_type or "").startswith("text/csv") else "")
 
     if ext == "csv":
-        return _preview_table_from_csv_bytes(content)
+        return _preview_table_from_csv_bytes(content, max_rows=int(maxRows))
     if ext == "xlsx":
-        return _preview_table_from_xlsx_bytes(content)
+        return _preview_table_from_xlsx_bytes(content, max_rows=int(maxRows), max_cols=int(maxCols))
 
     raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Preview not supported"})
 

@@ -12,9 +12,10 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Download, FileText, Eye, MoreHorizontal } from 'lucide-react';
+import { Slider } from '@/components/ui/slider';
+import { ArrowLeftRight, Columns2, Download, Eye, FileText, MoreHorizontal, ZoomIn, ZoomOut } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GbrTripRow, GbrTripsResponse } from '@/types';
 import {
   DropdownMenu,
@@ -22,6 +23,214 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function reorder<T>(arr: T[], from: number, to: number): T[] {
+  const out = arr.slice();
+  const [x] = out.splice(from, 1);
+  out.splice(to, 0, x);
+  return out;
+}
+
+function reorderRows(rows: string[][], from: number, to: number): string[][] {
+  return rows.map((r) => reorder(r, from, to));
+}
+
+function SheetViewer({
+  titleLines,
+  columns,
+  rows,
+  loading,
+}: {
+  titleLines: string[];
+  columns: string[];
+  rows: string[][];
+  loading: boolean;
+}) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [viewColumns, setViewColumns] = useState<string[]>([]);
+  const [viewRows, setViewRows] = useState<string[][]>([]);
+  const [colWidths, setColWidths] = useState<number[]>([]);
+  const [zoom, setZoom] = useState<number>(100);
+  const dragFromRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setViewColumns(columns || []);
+    setViewRows(rows || []);
+    const base = (columns || []).map((c) => clamp(Math.max(120, String(c || '').length * 10), 90, 420));
+    setColWidths(base);
+    setZoom(100);
+  }, [columns, rows]);
+
+  const totalWidth = useMemo(() => colWidths.reduce((a, b) => a + (b || 0), 0), [colWidths]);
+
+  const fitToWidth = () => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const w = el.clientWidth;
+    if (!w || !totalWidth) return;
+    const target = (w - 48) / totalWidth;
+    const pct = clamp(Math.round(target * 100), 30, 200);
+    setZoom(pct);
+  };
+
+  const onStartResize = (idx: number, e: any) => {
+    e.preventDefault?.();
+    e.stopPropagation?.();
+    const startX = Number(e.clientX || 0);
+    const startW = colWidths[idx] ?? 120;
+
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      setColWidths((prev) => {
+        const next = prev.slice();
+        next[idx] = clamp(startW + dx, 60, 900);
+        return next;
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const onDragStartHeader = (idx: number) => {
+    dragFromRef.current = idx;
+  };
+
+  const onDropHeader = (toIdx: number) => {
+    const fromIdx = dragFromRef.current;
+    dragFromRef.current = null;
+    if (fromIdx == null || fromIdx === toIdx) return;
+    setViewColumns((prev) => reorder(prev, fromIdx, toIdx));
+    setColWidths((prev) => reorder(prev, fromIdx, toIdx));
+    setViewRows((prev) => reorderRows(prev, fromIdx, toIdx));
+  };
+
+  const zoomStyle: any = useMemo(() => ({ zoom: zoom / 100 }), [zoom]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={() => setZoom((z) => clamp(z - 10, 30, 200))}
+          >
+            <ZoomOut className="h-4 w-4" />
+            −
+          </Button>
+          <div className="w-[160px]">
+            <Slider
+              value={[zoom]}
+              min={30}
+              max={200}
+              step={5}
+              onValueChange={(v) => setZoom(clamp(Number(v?.[0] ?? 100), 30, 200))}
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={() => setZoom((z) => clamp(z + 10, 30, 200))}
+          >
+            <ZoomIn className="h-4 w-4" />
+            +
+          </Button>
+          <div className="text-sm text-muted-foreground tabular-nums w-[64px] text-right">{zoom}%</div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="secondary" size="sm" className="gap-2" onClick={fitToWidth}>
+            <Columns2 className="h-4 w-4" />
+            Вписать
+          </Button>
+          <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-1">
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+            Перетаскивайте заголовки столбцов
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-md border border-border bg-muted/30">
+        <div ref={viewportRef} className="max-h-[70dvh] w-full overflow-auto p-6">
+          <div className="mx-auto w-fit" style={zoomStyle}>
+            <div className="rounded-md border border-border bg-background">
+              <div className="p-4 border-b border-border space-y-1">
+                {(titleLines || []).slice(0, 8).map((t, i) => (
+                  <div key={i} className={cn('text-sm', i === 0 ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
+                    {t}
+                  </div>
+                ))}
+              </div>
+
+              <div className="overflow-auto">
+                {loading ? (
+                  <div className="p-4 text-sm text-muted-foreground">Загрузка…</div>
+                ) : viewColumns.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">Нет данных</div>
+                ) : (
+                  <table className="text-sm">
+                    <colgroup>
+                      {viewColumns.map((_, i) => (
+                        <col key={i} style={{ width: colWidths[i] ?? 120 }} />
+                      ))}
+                    </colgroup>
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40">
+                        {viewColumns.map((c, idx) => (
+                          <th
+                            key={`${c}-${idx}`}
+                            className="relative text-left font-medium px-3 py-2 whitespace-nowrap select-none"
+                            draggable
+                            onDragStart={() => onDragStartHeader(idx)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => onDropHeader(idx)}
+                            title="Перетащите, чтобы поменять порядок"
+                          >
+                            {c || ''}
+                            <div
+                              className="absolute right-0 top-0 h-full w-2 cursor-col-resize"
+                              onPointerDown={(e) => onStartResize(idx, e)}
+                              title="Потяните, чтобы изменить ширину"
+                            />
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {viewRows.map((r, i) => (
+                        <tr key={i} className="border-b border-border last:border-b-0">
+                          {viewColumns.map((_, j) => (
+                            <td key={j} className="px-3 py-2 align-top whitespace-nowrap">
+                              {r?.[j] ? r[j] : '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface ReportsTableProps {
   reports: Report[];
@@ -58,6 +267,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [tableColumns, setTableColumns] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<string[][]>([]);
+  const [tableTitleLines, setTableTitleLines] = useState<string[]>([]);
   const [previewMode, setPreviewMode] = useState<'none' | 'gbr' | 'table'>('none');
 
   const humanizeColumn = (c: string) => {
@@ -178,10 +388,13 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     setPreviewRows([]);
     setTableColumns([]);
     setTableRows([]);
+    setTableTitleLines([]);
     setPreviewMode('none');
     try {
       if (isStoredReport(report)) {
-        const res = await apiFetchRaw(`/reports/${encodeURIComponent(report.id)}/preview`);
+        const res = await apiFetchRaw(
+          `/reports/${encodeURIComponent(report.id)}/preview?maxRows=1000&maxCols=80`,
+        );
         const json = (await res.json()) as any;
 
         if (json?.kind === 'gbr' || report.type === 'gbrRaportXlsx') {
@@ -194,6 +407,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
         setPreviewMode('table');
         setTableColumns(Array.isArray(json?.columns) ? json.columns.map(humanizeColumn) : []);
         setTableRows(Array.isArray(json?.rows) ? json.rows : []);
+        setTableTitleLines(Array.isArray(json?.titleLines) ? json.titleLines : []);
         return;
       }
 
@@ -266,13 +480,13 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
             <DialogTitle>{previewTitle}</DialogTitle>
           </DialogHeader>
           <div className="rounded-md border border-border">
-            <div className="max-h-[420px] w-full overflow-x-auto overflow-y-auto">
+            <div className="w-full">
               {previewMode === 'none' ? (
                 <div className="p-4 text-sm text-muted-foreground">
                   {previewLoading ? 'Загрузка…' : 'Предпросмотр недоступен для этого отчёта. Скачайте XLSX.'}
                 </div>
               ) : previewMode === 'gbr' ? (
-                <div className="w-full">
+                <div className="max-h-[70dvh] w-full overflow-x-auto overflow-y-auto">
                   <table className="w-full min-w-max text-sm">
                     <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                       <tr>
@@ -316,43 +530,13 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                   </table>
                 </div>
               ) : (
-                <div className="w-full">
-                  <table className="min-w-max text-sm">
-                    <thead className="bg-muted/50 text-muted-foreground sticky top-0">
-                      <tr>
-                        {(tableColumns.length ? tableColumns : ['']).map((c, idx) => (
-                          <th key={`${c}-${idx}`} className="text-left font-medium px-3 py-2 whitespace-nowrap">
-                            {c}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tableRows.map((r, i) => (
-                        <tr key={i} className="border-t border-border">
-                          {(r.length ? r : ['']).map((v, j) => (
-                            <td key={j} className="px-3 py-2 align-top whitespace-nowrap">
-                              {v || '—'}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                      {!previewLoading && tableRows.length === 0 && (
-                        <tr>
-                          <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
-                            Нет данных
-                          </td>
-                        </tr>
-                      )}
-                      {previewLoading && (
-                        <tr>
-                          <td className="px-3 py-6 text-muted-foreground" colSpan={Math.max(1, tableColumns.length || 1)}>
-                            Загрузка…
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                <div className="p-3">
+                  <SheetViewer
+                    titleLines={tableTitleLines}
+                    columns={tableColumns}
+                    rows={tableRows}
+                    loading={previewLoading}
+                  />
                 </div>
               )}
             </div>
