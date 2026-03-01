@@ -7,6 +7,7 @@ from app.models.user import User
 from app.models.notification import NotificationClear, NotificationRead
 from app.models.role import Role, Permission
 from app.models.refresh_token import RefreshToken
+from app.models.user_presence_session import UserPresenceSession
 
 __all__ = [
 	"Event",
@@ -21,4 +22,5 @@ __all__ = [
 	"Role",
 	"Permission",
 	"RefreshToken",
+	"UserPresenceSession",
 ]

@@ -57,6 +57,7 @@ async def get_current_user(
 
     return {
         "id": user.id,
+        "username": user.username,
         "role": primary_role,
         "roles": roles,
         "permissions": sorted(perm_codes),

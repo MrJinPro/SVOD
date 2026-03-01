@@ -2,6 +2,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { presencePing } from '@/lib/presence';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -25,6 +26,30 @@ export function MainLayout({ children, title, subtitle }: MainLayoutProps) {
       // ignore
     }
   }, [collapsed]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        await presencePing();
+      } catch {
+        // ignore: presence is best-effort
+      }
+    };
+
+    // First ping right away, then every minute.
+    tick();
+    const id = window.setInterval(() => {
+      if (cancelled) return;
+      void tick();
+    }, 60_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">

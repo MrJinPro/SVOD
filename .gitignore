@@ -37,6 +37,17 @@ dist/
 # Logs
 *.log
 
+# Stored/generated reports & artifacts
+backend/reports_store/
+*.xlsx
+image/
+
+# Accidental "copy" files/folders
+backend/* copy*
+backend/app copy/
+backend/scripts copy/
+backend/.env copy*
+
 # OS/IDE
 .DS_Store
 Thumbs.db

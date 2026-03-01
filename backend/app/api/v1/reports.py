@@ -996,6 +996,22 @@ async def generate_pcn_ledger_xlsx(
         default=None,
         description="Repeatable override: 'ФИО:1000'",
     ),
+    includePresenceOnly: bool = Query(
+        default=True,
+        description="Include operators who were present in the shift even if they have 0 alarms",
+    ),
+    minPresenceMinutes: int = Query(
+        default=30,
+        ge=0,
+        le=24 * 60,
+        description="Minimum presence minutes inside a shift to count as dispatcher",
+    ),
+    presenceGraceMinutes: int = Query(
+        default=15,
+        ge=0,
+        le=24 * 60,
+        description="Grace minutes added after lastSeenAt to close non-ended presence sessions",
+    ),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
@@ -1097,6 +1113,80 @@ async def generate_pcn_ledger_xlsx(
 
     rows = (await session.execute(stmt)).all()
 
+    # Presence (who was logged in / "in the system")
+    # Used to compute the dispatcher count per shift (staffing), independent from actions.
+    presence_ops_by_shift: dict[tuple[date_type, str], set[str]] = {}
+    try:
+        from app.models.user_presence_session import UserPresenceSession
+
+        grace = timedelta(minutes=int(presenceGraceMinutes))
+        min_seconds = int(minPresenceMinutes) * 60
+
+        # Query a slightly wider window to account for grace.
+        q_start = window_start - grace
+        q_end = window_end + grace
+
+        pres_stmt = (
+            select(
+                UserPresenceSession.username,
+                UserPresenceSession.started_at,
+                UserPresenceSession.last_seen_at,
+                UserPresenceSession.ended_at,
+            )
+            .where(UserPresenceSession.started_at < q_end)
+            .where(
+                or_(
+                    and_(UserPresenceSession.ended_at.is_not(None), UserPresenceSession.ended_at >= q_start),
+                    and_(UserPresenceSession.ended_at.is_(None), UserPresenceSession.last_seen_at >= q_start),
+                )
+            )
+        )
+
+        pres_rows = (await session.execute(pres_stmt)).all()
+
+        # Prepare shift windows for the date range.
+        shift_windows: list[tuple[date_type, str, datetime, datetime]] = []
+        if d_from is not None and d_to is not None:
+            d = d_from
+            while d <= d_to:
+                day_s = datetime.combine(d, day_start)
+                day_e = datetime.combine(d, night_start)
+                night_s = datetime.combine(d, night_start)
+                night_e = datetime.combine(d + timedelta(days=1), day_start)
+                shift_windows.append((d, "день", day_s, day_e))
+                shift_windows.append((d, "ночь", night_s, night_e))
+                d = d + timedelta(days=1)
+
+        # Accumulate overlap seconds per (shift_date, shift_name, operator)
+        presence_seconds: dict[tuple[date_type, str, str], int] = {}
+        for username, started_at, last_seen_at, ended_at in pres_rows:
+            op = str(username or "").strip()
+            if not op or not isinstance(started_at, datetime) or not isinstance(last_seen_at, datetime):
+                continue
+
+            ses_start = started_at
+            ses_end = ended_at if isinstance(ended_at, datetime) else (last_seen_at + grace)
+            if ses_end <= ses_start:
+                continue
+
+            for sd, sh, s_start, s_end in shift_windows:
+                # fast reject
+                if ses_end <= s_start or ses_start >= s_end:
+                    continue
+                overlap = min(ses_end, s_end) - max(ses_start, s_start)
+                sec = int(overlap.total_seconds())
+                if sec <= 0:
+                    continue
+                key = (sd, sh, op)
+                presence_seconds[key] = presence_seconds.get(key, 0) + sec
+
+        for (sd, sh, op), sec in presence_seconds.items():
+            if min_seconds <= 0 or sec >= min_seconds:
+                presence_ops_by_shift.setdefault((sd, sh), set()).add(op)
+    except Exception:
+        # Presence is optional; fallback to action-based dispatcher count.
+        presence_ops_by_shift = {}
+
     # Aggregate counts per (shift_date, shift_name, operator)
     counts: dict[tuple[date_type, str, str], int] = {}
     for event_id, op, ts in rows:
@@ -1121,12 +1211,25 @@ async def generate_pcn_ledger_xlsx(
     out_rows: list[dict[str, object]] = []
     for sd, sh in ordered_shifts:
         total = int(shift_totals.get((sd, sh)) or 0)
-        dispatchers = len(shift_ops.get((sd, sh)) or set())
+        ops_from_actions = shift_ops.get((sd, sh)) or set()
+        ops_from_presence = presence_ops_by_shift.get((sd, sh)) or set()
+
+        # Dispatcher count is based on presence (staffing). If presence has no data for this shift,
+        # fallback to action-based operator set to avoid producing 0 dispatchers.
+        dispatchers = len(ops_from_presence) if ops_from_presence else len(ops_from_actions)
+
         # Operators for this shift
-        ops = []
+        alarms_by_op: dict[str, int] = {}
         for (sd2, sh2, op), c in counts.items():
             if sd2 == sd and sh2 == sh:
-                ops.append((op, int(c or 0)))
+                alarms_by_op[str(op)] = int(c or 0)
+
+        if includePresenceOnly:
+            op_names = set(alarms_by_op.keys()) | set(ops_from_presence)
+        else:
+            op_names = set(alarms_by_op.keys())
+
+        ops = [(op, int(alarms_by_op.get(op, 0))) for op in op_names]
         ops.sort(key=lambda x: (-x[1], x[0].lower()))
 
         for op, c in ops:
@@ -1219,7 +1322,9 @@ async def generate_pcn_ledger_xlsx(
         "Формула: % = (тревоги оператора * 100) / (все тревоги смены). "
         "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n"
         f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. "
-        f"Отработка тревоги: действие '{actionName or ''}'."
+        f"Отработка тревоги: действие '{actionName or ''}'. "
+        f"Диспетчеры в смену: по присутствию (>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин), "
+        "если данных нет — по действиям."
     )
     ws.cell(7, 2, clean_excel_text(formula_note)).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
     ws.cell(7, 2).font = Font(size=10)
@@ -1349,6 +1454,9 @@ async def generate_pcn_ledger_xlsx(
                 },
                 "bonusDefault": bonusDefault,
                 "bonusOverride": bonusOverride or [],
+                "includePresenceOnly": includePresenceOnly,
+                "minPresenceMinutes": minPresenceMinutes,
+                "presenceGraceMinutes": presenceGraceMinutes,
             },
             ensure_ascii=False,
         ),
