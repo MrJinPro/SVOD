@@ -174,6 +174,10 @@ def _as_report_out_dict(r: Report) -> dict:
         ps = str(r.period_start or "").strip()
         pe = str(r.period_end or "").strip()
         title = f"Ведомость по тревогам (ПЦН) {ps}–{pe}" if ps and pe else "Ведомость по тревогам (ПЦН)"
+    elif rt == "eventsRaportXlsx":
+        ps = str(r.period_start or "").strip()
+        pe = str(r.period_end or "").strip()
+        title = f"Рапорт по событиям {ps}–{pe}" if ps and pe else "Рапорт по событиям"
 
     d = {
         "id": str(r.id),
@@ -842,6 +846,92 @@ async def generate_gbr_raport_xlsx(
         storage_path=str(path),
         params_json=json.dumps(
             {"dateFrom": dateFrom, "dateTo": dateTo, "gbrName": gbrName, "objectId": objectId},
+            ensure_ascii=False,
+        ),
+        error_message=None,
+    )
+    session.add(r)
+    await session.commit()
+    return _as_report_out_dict(r)
+
+
+@router.post("/generate/events-raport-xlsx")
+async def generate_events_raport_xlsx(
+    dateFrom: str = Query(description="ISO datetime"),
+    dateTo: str = Query(description="ISO datetime"),
+    type: str | None = Query(default=None, description="Event.type filter"),  # noqa: A002
+    objectId: str | None = Query(default=None, description="Event.object_id filter"),
+    severity: str | None = Query(default=None, description="Event.severity filter"),
+    status: str | None = Query(default=None, description="Event.status filter"),
+    search: str | None = Query(default=None, description="Free-text search (description/object/client/location)"),
+    includeNoise: bool = Query(False, description="Include access/noise events"),
+    includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
+    includeCancelled: bool = Query(False, description="Include cancelled events"),
+    onlyWithOperatorComment: bool = Query(
+        True,
+        description="Show only events that have an operator comment (Result_Text)",
+    ),
+    limit: int = Query(50000, ge=1, le=200000),
+    session: AsyncSession = Depends(get_session),
+    _current: dict = Depends(get_current_user),
+) -> dict:
+    from_dt = _parse_dt(dateFrom)
+    to_dt = _parse_dt(dateTo)
+    if not from_dt or not to_dt or to_dt < from_dt:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    # Reuse events raport builder (no HTTP call)
+    from app.api.v1.events import build_events_raport_xlsx_bytes
+
+    xlsx, events_count = await build_events_raport_xlsx_bytes(
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        type=type,
+        objectId=objectId,
+        severity=severity,
+        status=status,
+        search=search,
+        includeNoise=includeNoise,
+        includeSystem=includeSystem,
+        includeCancelled=includeCancelled,
+        onlyWithOperatorComment=onlyWithOperatorComment,
+        limit=limit,
+        session=session,
+    )
+
+    report_id = str(uuid4())
+    ps = from_dt.date().isoformat()
+    pe = to_dt.date().isoformat()
+    filename = f"raport-events-{ps}-{pe}.xlsx"
+    path = _write_report_file(report_id, filename, xlsx)
+
+    r = Report(
+        id=report_id,
+        type="eventsRaportXlsx",
+        period_start=ps,
+        period_end=pe,
+        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
+        status="generated",
+        events_count=int(events_count or 0),
+        critical_count=0,
+        file_name=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        storage_path=str(path),
+        params_json=json.dumps(
+            {
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "type": type,
+                "objectId": objectId,
+                "severity": severity,
+                "status": status,
+                "search": search,
+                "includeNoise": includeNoise,
+                "includeSystem": includeSystem,
+                "includeCancelled": includeCancelled,
+                "onlyWithOperatorComment": onlyWithOperatorComment,
+                "limit": limit,
+            },
             ensure_ascii=False,
         ),
         error_message=None,

@@ -39,7 +39,7 @@ import type { DateRange } from 'react-day-picker';
 import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'pcnLedger';
+type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'eventsRaportXlsx' | 'pcnLedger';
 
 function formatLocalYYYYMMDD(d: Date): string {
   const yyyy = d.getFullYear();
@@ -272,6 +272,12 @@ export default function Reports() {
   const [objectQuery, setObjectQuery] = useState('');
   const [eventCode, setEventCode] = useState('');
 
+  const [eventsSearch, setEventsSearch] = useState('');
+  const [eventsObjectId, setEventsObjectId] = useState('');
+  const [eventsType, setEventsType] = useState<'all' | string>('all');
+  const [eventsSeverity, setEventsSeverity] = useState<'all' | string>('all');
+  const [eventsStatus, setEventsStatus] = useState<'all' | string>('all');
+
   const [gbrName, setGbrName] = useState<'all' | string>('all');
   const [gbrObjectId, setGbrObjectId] = useState('');
   const [gbrPreview, setGbrPreview] = useState<GbrTripRow[]>([]);
@@ -405,6 +411,27 @@ export default function Reports() {
         if (gbrName !== 'all') params.set('gbrName', String(gbrName));
         if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
         await apiPost(`/reports/generate/gbr-raport-xlsx?${params.toString()}`);
+      } else if (createKind === 'eventsRaportXlsx') {
+        if (!dateRange?.from || !dateRange?.to) {
+          toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+          return;
+        }
+        const params = new URLSearchParams();
+        const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
+        const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
+        params.set('dateFrom', df);
+        params.set('dateTo', dt);
+
+        // Keep consistent with Events page defaults: only operator-noted events.
+        params.set('onlyWithOperatorComment', 'true');
+
+        if (eventsSearch.trim()) params.set('search', eventsSearch.trim());
+        if (eventsObjectId.trim()) params.set('objectId', eventsObjectId.trim());
+        if (eventsType !== 'all') params.set('type', String(eventsType));
+        if (eventsSeverity !== 'all') params.set('severity', String(eventsSeverity));
+        if (eventsStatus !== 'all') params.set('status', String(eventsStatus));
+
+        await apiPost(`/reports/generate/events-raport-xlsx?${params.toString()}`);
       } else if (createKind === 'pcnLedger') {
         if (!dateRange?.from || !dateRange?.to) {
           toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
@@ -480,6 +507,7 @@ export default function Reports() {
                 <SelectItem value="all">Все типы</SelectItem>
                 <SelectItem value="objectsByCode">Объекты по коду</SelectItem>
                 <SelectItem value="gbrRaportXlsx">Рапорт (ГБР)</SelectItem>
+                <SelectItem value="eventsRaportXlsx">Рапорт по событиям</SelectItem>
                 <SelectItem value="pcnLedger">Ведомость (ПЦН)</SelectItem>
                 <SelectItem value="weekly">Недельные</SelectItem>
                 <SelectItem value="monthly">Месячные</SelectItem>
@@ -521,8 +549,7 @@ export default function Reports() {
             <DialogHeader>
               <DialogTitle>Создать отчёт</DialogTitle>
               <DialogDescription>
-                Выберите тип отчёта и параметры. В выгрузке используется код события (например E1001),
-                но отображается его расшифровка.
+                Выберите тип отчёта и параметры.
               </DialogDescription>
             </DialogHeader>
 
@@ -535,6 +562,7 @@ export default function Reports() {
                   <SelectContent>
                     <SelectItem value="objectsByCode">Объекты по коду события (XLSX)</SelectItem>
                     <SelectItem value="gbrRaportXlsx">Рапорт (ГБР) по шаблону (XLSX)</SelectItem>
+                    <SelectItem value="eventsRaportXlsx">Рапорт по событиям (XLSX)</SelectItem>
                     <SelectItem value="pcnLedger">Ведомость по тревогам (ПЦН) (XLSX)</SelectItem>
                   </SelectContent>
                 </Select>
@@ -698,6 +726,112 @@ export default function Reports() {
                         </tbody>
                       </table>
                     </ScrollArea>
+                  </div>
+                </div>
+              ) : null}
+
+              {createKind === 'eventsRaportXlsx' ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Период</div>
+                      <QuickRangeButtons />
+                      <div className="flex flex-wrap items-end gap-2">
+                        <DateRangePicker
+                          value={dateRange}
+                          onChange={setDateRange}
+                          placeholder="Выберите период"
+                          triggerClassName="w-[280px]"
+                          numberOfMonths={2}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Время (от/до)</div>
+                      <div className="flex items-center gap-2">
+                        <Input type="time" className="w-[140px] bg-background" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} />
+                        <div className="text-muted-foreground">—</div>
+                        <Input type="time" className="w-[140px] bg-background" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Поиск (опционально)</div>
+                      <Input
+                        className="w-full sm:w-[520px] bg-background"
+                        placeholder="Описание / объект / контрагент / адрес"
+                        value={eventsSearch}
+                        onChange={(e) => setEventsSearch(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">№ объекта (Panel_id) (опционально)</div>
+                      <Input
+                        className="w-[220px] bg-background"
+                        placeholder="ObjectId"
+                        value={eventsObjectId}
+                        onChange={(e) => setEventsObjectId(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Тип</div>
+                      <Select value={String(eventsType)} onValueChange={(v) => setEventsType(v as any)}>
+                        <SelectTrigger className="w-[200px] bg-background">
+                          <SelectValue placeholder="Тип" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все типы</SelectItem>
+                          <SelectItem value="intrusion">Проникновение</SelectItem>
+                          <SelectItem value="alarm">Тревога</SelectItem>
+                          <SelectItem value="access">Доступ</SelectItem>
+                          <SelectItem value="patrol">Обход</SelectItem>
+                          <SelectItem value="incident">Инцидент</SelectItem>
+                          <SelectItem value="maintenance">ТО</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Серьёзность</div>
+                      <Select value={String(eventsSeverity)} onValueChange={(v) => setEventsSeverity(v as any)}>
+                        <SelectTrigger className="w-[200px] bg-background">
+                          <SelectValue placeholder="Серьёзность" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все уровни</SelectItem>
+                          <SelectItem value="critical">Критический</SelectItem>
+                          <SelectItem value="warning">Внимание</SelectItem>
+                          <SelectItem value="info">Информация</SelectItem>
+                          <SelectItem value="success">Норма</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Статус</div>
+                      <Select value={String(eventsStatus)} onValueChange={(v) => setEventsStatus(v as any)}>
+                        <SelectTrigger className="w-[200px] bg-background">
+                          <SelectValue placeholder="Статус" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все статусы</SelectItem>
+                          <SelectItem value="active">Активно</SelectItem>
+                          <SelectItem value="pending">В обработке</SelectItem>
+                          <SelectItem value="resolved">Завершено</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    По умолчанию выгружаются только события с пометкой оператора (Result_Text).
                   </div>
                 </div>
               ) : null}

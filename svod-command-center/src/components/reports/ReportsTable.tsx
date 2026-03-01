@@ -33,6 +33,7 @@ const typeLabels: Record<ReportType, string> = {
   monthly: 'Месячный',
   objectsByCode: 'Объекты по коду',
   gbrRaportXlsx: 'Рапорт (ГБР)',
+  eventsRaportXlsx: 'Рапорт по событиям',
   pcnLedger: 'Ведомость по тревогам (ПЦН)',
 };
 
