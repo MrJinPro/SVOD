@@ -40,6 +40,16 @@ def _is_operator_handled_predicate() -> Any:
     return and_(Event.operator_id.is_not(None), Event.operator_id != "")
 
 
+def _has_operator_comment_predicate() -> Any:
+    """Event has an operator comment/note (Result_Text)."""
+
+    # Treat whitespace-only notes as empty.
+    return and_(
+        Event.result_text.is_not(None),
+        func.length(func.trim(Event.result_text)) > 0,
+    )
+
+
 def _accept_action_predicate() -> Any:
     """Best-effort match for operator action: accepted for processing."""
 
@@ -429,6 +439,10 @@ async def list_events(
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     includeCancelled: bool = Query(False, description="Include cancelled events"),
+    onlyWithOperatorComment: bool = Query(
+        False,
+        description="Show only events that have an operator comment (Result_Text)",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     filters: list[Any] = []
@@ -446,6 +460,9 @@ async def list_events(
     # UI requirement: hide cancelled by default.
     if not includeCancelled:
         filters.append(Event.status != "cancelled")
+
+    if onlyWithOperatorComment:
+        filters.append(_has_operator_comment_predicate())
 
     # UI requirement: hide system-handled alarms by default.
     # Convention for "real handled alarms": there is an operator action
@@ -541,6 +558,10 @@ async def export_events_export(
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     includeCancelled: bool = Query(False, description="Include cancelled events"),
+    onlyWithOperatorComment: bool = Query(
+        False,
+        description="Show only events that have an operator comment (Result_Text)",
+    ),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -556,6 +577,9 @@ async def export_events_export(
 
     if not includeCancelled:
         filters.append(Event.status != "cancelled")
+
+    if onlyWithOperatorComment:
+        filters.append(_has_operator_comment_predicate())
 
     if not includeSystem:
         actions_linked = await _actions_linked_present(session)
@@ -712,6 +736,10 @@ async def export_events_xlsx(
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     includeCancelled: bool = Query(False, description="Include cancelled events"),
+    onlyWithOperatorComment: bool = Query(
+        False,
+        description="Show only events that have an operator comment (Result_Text)",
+    ),
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -726,6 +754,7 @@ async def export_events_xlsx(
         includeNoise=includeNoise,
         includeSystem=includeSystem,
         includeCancelled=includeCancelled,
+        onlyWithOperatorComment=onlyWithOperatorComment,
         limit=limit,
         session=session,
     )
@@ -738,6 +767,10 @@ async def stream_events(
     includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
     includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
     includeCancelled: bool = Query(False, description="Include cancelled events"),
+    onlyWithOperatorComment: bool = Query(
+        False,
+        description="Stream only events that have an operator comment (Result_Text)",
+    ),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ):
@@ -777,6 +810,8 @@ async def stream_events(
                 stmt = stmt.where(Event.type != "access")
             if not includeCancelled:
                 stmt = stmt.where(Event.status != "cancelled")
+            if onlyWithOperatorComment:
+                stmt = stmt.where(_has_operator_comment_predicate())
             if not includeSystem:
                 if actions_linked:
                     handled_alarm = or_(

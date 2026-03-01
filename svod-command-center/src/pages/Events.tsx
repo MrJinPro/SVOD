@@ -83,6 +83,9 @@ export default function Events() {
     params.set('page', String(pageNumber));
     params.set('pageSize', '50');
 
+    // Hide events without operator note by default.
+    params.set('onlyWithOperatorComment', 'true');
+
     if (showSystem) params.set('includeSystem', 'true');
     if (showCancelled) params.set('includeCancelled', 'true');
 
@@ -128,6 +131,9 @@ export default function Events() {
     const params = new URLSearchParams();
     if (newestTimestamp) params.set('since', newestTimestamp);
     params.set('pollSeconds', '1.0');
+
+    // Keep stream consistent with list: only operator-noted events.
+    params.set('onlyWithOperatorComment', 'true');
 
     if (showSystem) params.set('includeSystem', 'true');
     if (showCancelled) params.set('includeCancelled', 'true');
