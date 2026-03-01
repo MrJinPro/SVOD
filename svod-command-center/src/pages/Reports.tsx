@@ -545,7 +545,7 @@ export default function Reports() {
         </div>
 
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent className="sm:max-w-[760px] max-w-[calc(100vw-2rem)] overflow-hidden">
+          <DialogContent fullscreenable className="sm:max-w-[760px] max-w-[calc(100vw-2rem)] overflow-hidden">
             <DialogHeader>
               <DialogTitle>Создать отчёт</DialogTitle>
               <DialogDescription>

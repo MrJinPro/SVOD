@@ -297,7 +297,7 @@ export default function Users() {
 
         {/* Add dialog */}
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
-          <DialogContent>
+          <DialogContent fullscreenable>
             <DialogHeader>
               <DialogTitle>Добавить пользователя</DialogTitle>
               <DialogDescription>Создание новой учётной записи</DialogDescription>
@@ -346,7 +346,7 @@ export default function Users() {
 
         {/* Edit dialog */}
         <Dialog open={editOpen} onOpenChange={setEditOpen}>
-          <DialogContent>
+          <DialogContent fullscreenable>
             <DialogHeader>
               <DialogTitle>Редактировать пользователя</DialogTitle>
               <DialogDescription>{selected ? `Пользователь: ${selected.username}` : ''}</DialogDescription>
@@ -391,7 +391,7 @@ export default function Users() {
 
         {/* Reset password dialog */}
         <Dialog open={resetOpen} onOpenChange={setResetOpen}>
-          <DialogContent>
+          <DialogContent fullscreenable>
             <DialogHeader>
               <DialogTitle>Сбросить пароль</DialogTitle>
               <DialogDescription>{selected ? `Пользователь: ${selected.username}` : ''}</DialogDescription>

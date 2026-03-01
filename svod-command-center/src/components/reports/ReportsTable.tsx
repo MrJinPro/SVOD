@@ -261,7 +261,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="sm:max-w-[900px] max-w-[calc(100vw-2rem)] overflow-hidden">
+        <DialogContent fullscreenable className="sm:max-w-[900px] max-w-[calc(100vw-2rem)] overflow-hidden">
           <DialogHeader>
             <DialogTitle>{previewTitle}</DialogTitle>
           </DialogHeader>
@@ -361,7 +361,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
       </Dialog>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent className="sm:max-w-[520px]">
+        <DialogContent fullscreenable className="sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>Удалить отчёт?</DialogTitle>
           </DialogHeader>

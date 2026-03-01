@@ -121,7 +121,7 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[95vw] max-w-3xl max-h-[85vh] overflow-y-auto">
+      <DialogContent fullscreenable className="w-[95vw] max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{header}</DialogTitle>
         </DialogHeader>
