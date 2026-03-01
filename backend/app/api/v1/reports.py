@@ -1000,6 +1000,10 @@ async def generate_pcn_ledger_xlsx(
         default=True,
         description="Include operators who were present in the shift even if they have 0 alarms",
     ),
+    dispatchersSource: str = Query(
+        default="auto",
+        description="Dispatcher count source: auto|presence|actions",
+    ),
     minPresenceMinutes: int = Query(
         default=30,
         ge=0,
@@ -1016,6 +1020,13 @@ async def generate_pcn_ledger_xlsx(
     _current: dict = Depends(get_current_user),
 ) -> dict:
     # Stored XLSX report: "Ведомость учета работы операторов ПЦН".
+
+    ds = (dispatchersSource or "auto").strip().lower()
+    if ds not in {"auto", "presence", "actions"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "BAD_REQUEST", "message": "dispatchersSource must be one of: auto|presence|actions"},
+        )
 
     def _has_time_component(v: str | None) -> bool:
         return bool(re.search(r"\d{1,2}:\d{2}", (v or "")))
@@ -1209,14 +1220,34 @@ async def generate_pcn_ledger_xlsx(
     # Build ordered output rows
     ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
     out_rows: list[dict[str, object]] = []
+    control_rows: list[dict[str, object]] = []
     for sd, sh in ordered_shifts:
         total = int(shift_totals.get((sd, sh)) or 0)
         ops_from_actions = shift_ops.get((sd, sh)) or set()
         ops_from_presence = presence_ops_by_shift.get((sd, sh)) or set()
 
-        # Dispatcher count is based on presence (staffing). If presence has no data for this shift,
-        # fallback to action-based operator set to avoid producing 0 dispatchers.
-        dispatchers = len(ops_from_presence) if ops_from_presence else len(ops_from_actions)
+        dispatchers_presence = len(ops_from_presence)
+        dispatchers_actions = len(ops_from_actions)
+
+        # Dispatcher count source selection.
+        if ds == "presence":
+            dispatchers = dispatchers_presence
+        elif ds == "actions":
+            dispatchers = dispatchers_actions
+        else:
+            # auto: prefer presence, but if it's empty fallback to actions.
+            dispatchers = dispatchers_presence if dispatchers_presence else dispatchers_actions
+
+        control_rows.append(
+            {
+                "date": sd,
+                "shift": sh,
+                "totalAlarms": total,
+                "dispatchersPresence": dispatchers_presence,
+                "dispatchersActions": dispatchers_actions,
+                "dispatchersUsed": dispatchers,
+            }
+        )
 
         # Operators for this shift
         alarms_by_op: dict[str, int] = {}
@@ -1323,8 +1354,8 @@ async def generate_pcn_ledger_xlsx(
         "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n"
         f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. "
         f"Отработка тревоги: действие '{actionName or ''}'. "
-        f"Диспетчеры в смену: по присутствию (>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин), "
-        "если данных нет — по действиям."
+        f"Диспетчеры в смену: {ds} (presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). "
+        "Сравнение presence/actions — на листе 'Контроль'."
     )
     ws.cell(7, 2, clean_excel_text(formula_note)).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
     ws.cell(7, 2).font = Font(size=10)
@@ -1416,6 +1447,48 @@ async def generate_pcn_ledger_xlsx(
     ws.column_dimensions["I"].width = 12
     ws.column_dimensions["J"].width = 16
 
+    # Control sheet: compare dispatcher counts from presence vs from actions
+    try:
+        ws2 = wb.create_sheet("Контроль")
+        ws2_headers = [
+            "Дата",
+            "Смена",
+            "Всего тревог",
+            "Диспетчеры (presence)",
+            "Диспетчеры (actions)",
+            "Использовано",
+        ]
+        for idx, h in enumerate(ws2_headers, start=1):
+            cell = ws2.cell(1, idx, clean_excel_text(h))
+            cell.font = Font(bold=True)
+            cell.alignment = center
+            cell.border = border
+
+        r = 2
+        for x in control_rows:
+            sd = x.get("date")
+            ws2.cell(r, 1, sd).number_format = "DD.MM.YYYY"
+            ws2.cell(r, 2, clean_excel_text(x.get("shift")))
+            ws2.cell(r, 3, int(x.get("totalAlarms") or 0))
+            ws2.cell(r, 4, int(x.get("dispatchersPresence") or 0))
+            ws2.cell(r, 5, int(x.get("dispatchersActions") or 0))
+            ws2.cell(r, 6, int(x.get("dispatchersUsed") or 0))
+            for col in range(1, 7):
+                c = ws2.cell(r, col)
+                c.border = border
+                c.alignment = center
+            r += 1
+
+        ws2.column_dimensions["A"].width = 12
+        ws2.column_dimensions["B"].width = 10
+        ws2.column_dimensions["C"].width = 12
+        ws2.column_dimensions["D"].width = 20
+        ws2.column_dimensions["E"].width = 18
+        ws2.column_dimensions["F"].width = 14
+    except Exception:
+        # If something goes wrong, do not fail the report generation.
+        pass
+
     bio = BytesIO()
     wb.save(bio)
     data = bio.getvalue()
@@ -1455,6 +1528,7 @@ async def generate_pcn_ledger_xlsx(
                 "bonusDefault": bonusDefault,
                 "bonusOverride": bonusOverride or [],
                 "includePresenceOnly": includePresenceOnly,
+                "dispatchersSource": dispatchersSource,
                 "minPresenceMinutes": minPresenceMinutes,
                 "presenceGraceMinutes": presenceGraceMinutes,
             },

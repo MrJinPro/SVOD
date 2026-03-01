@@ -105,26 +105,41 @@ async def list_objects(
 
     rows = (await session.execute(stmt)).scalars().all()
 
-    # Добавим лёгкую статистику: последние событие и кол-во за сегодня.
+    # Добавим лёгкую статистику: последнее событие и кол-во за сегодня.
+    # Важно: не делаем N+1 (по 2 запроса на объект) — это на больших данных выглядит как "вечная загрузка".
     today = date_type.today()
     dt_from = datetime.combine(today, datetime.min.time())
     dt_to = datetime.combine(today, datetime.max.time())
+
+    obj_ids = [str(o.id) for o in rows]
+    last_event_by_obj: dict[str, datetime] = {}
+    today_cnt_by_obj: dict[str, int] = {}
+
+    if obj_ids:
+        last_rows = (
+            await session.execute(
+                select(Event.object_id, func.max(Event.timestamp).label("last_ts"))
+                .where(Event.object_id.in_(obj_ids))
+                .group_by(Event.object_id)
+            )
+        ).all()
+        last_event_by_obj = {str(oid): ts for oid, ts in last_rows if oid and isinstance(ts, datetime)}
+
+        today_rows = (
+            await session.execute(
+                select(Event.object_id, func.count().label("cnt"))
+                .where(Event.object_id.in_(obj_ids))
+                .where(Event.timestamp >= dt_from)
+                .where(Event.timestamp <= dt_to)
+                .group_by(Event.object_id)
+            )
+        ).all()
+        today_cnt_by_obj = {str(oid): int(cnt or 0) for oid, cnt in today_rows if oid}
+
     out_items: list[dict[str, Any]] = []
     for obj in rows:
-        last_event_ts = (
-            await session.execute(
-                select(func.max(Event.timestamp)).where(Event.object_id == obj.id)
-            )
-        ).scalar_one_or_none()
-        today_cnt = (
-            await session.execute(
-                select(func.count()).select_from(Event).where(
-                    Event.object_id == obj.id,
-                    Event.timestamp >= dt_from,
-                    Event.timestamp <= dt_to,
-                )
-            )
-        ).scalar_one()
+        last_event_ts = last_event_by_obj.get(str(obj.id))
+        today_cnt = int(today_cnt_by_obj.get(str(obj.id), 0))
         out_items.append(
             {
                 "id": obj.id,
@@ -133,7 +148,7 @@ async def list_objects(
                 "clientName": obj.client_name,
                 "disabled": bool(obj.disabled),
                 "lastEventAt": last_event_ts.isoformat() if last_event_ts else None,
-                "eventsToday": int(today_cnt),
+                "eventsToday": today_cnt,
             }
         )
 
