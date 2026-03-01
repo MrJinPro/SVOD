@@ -206,7 +206,7 @@ export default function Events() {
               size="sm"
               className="gap-2"
               onClick={() => {
-                const url = `${API_BASE_URL}/events/export/xlsx?${path.split('?')[1] || ''}`
+                const url = `${API_BASE_URL}/events/export/raport/xlsx?${path.split('?')[1] || ''}`
                   // list endpoint has paging; export endpoint ignores page params safely
                   .replace(/(^|&)page=\d+/g, '$1')
                   .replace(/(^|&)pageSize=\d+/g, '$1')

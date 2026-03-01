@@ -227,6 +227,51 @@ def _coerce_dt(value: Any) -> datetime | None:
     return None
 
 
+def _extract_desc_value(description: str | None, label: str) -> str:
+    if not description:
+        return ""
+    want = (label or "").strip().lower()
+    if not want:
+        return ""
+    for raw in str(description).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith(want) and ":" in line:
+            head, tail = line.split(":", 1)
+            if head.strip().lower() == want:
+                return tail.strip()
+    return ""
+
+
+def _fmt_dt_ru(dt: datetime | None) -> str:
+    if dt is None:
+        return ""
+    return dt.strftime("%d.%m.%Y %H:%M:%S")
+
+
+def _fmt_date_ru(dt: datetime | None) -> str:
+    if dt is None:
+        return ""
+    return dt.strftime("%d.%m.%Y")
+
+
+def _fmt_travel(seconds: float | int | None) -> str:
+    try:
+        if seconds is None:
+            return ""
+        total = int(round(float(seconds)))
+        if total < 0:
+            total = abs(total)
+        h = total // 3600
+        m = (total % 3600) // 60
+        s = total % 60
+        return f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
+    except Exception:
+        return ""
+
+
 def _action_row_to_out(row: dict[str, Any]) -> dict[str, Any] | None:
     action_name = str(row.get("NameState") or "").strip()
     if not action_name:
@@ -757,6 +802,331 @@ async def export_events_xlsx(
         onlyWithOperatorComment=onlyWithOperatorComment,
         limit=limit,
         session=session,
+    )
+
+
+@router.get("/export/raport/xlsx")
+async def export_events_raport_xlsx(
+    dateFrom: str | None = None,
+    dateTo: str | None = None,
+    type: str | None = None,  # noqa: A002
+    objectId: str | None = None,
+    severity: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    includeNoise: bool = Query(False, description="Include access/noise events (arming/disarming, etc.)"),
+    includeSystem: bool = Query(False, description="Include system-handled events (no operator)"),
+    includeCancelled: bool = Query(False, description="Include cancelled events"),
+    onlyWithOperatorComment: bool = Query(
+        False,
+        description="Show only events that have an operator comment (Result_Text)",
+    ),
+    limit: int = Query(50000, ge=1, le=200000),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """XLSX: «Рапорт» по текущему списку событий (как в интерфейсе).
+
+    Источники колонок:
+    - events: № объекта, адрес, timestamp, result_text
+    - event_actions: вызов/прибыл/время в пути, ГБР, оператор
+    - events.description: шлейф/инженер/заявка/штраф/результат осмотра
+    - events (агрегация): «сработок за полгода» по объекту
+    """
+
+    filters: list[Any] = []
+
+    try:
+        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+    except Exception:
+        dialect_name = None
+
+    if not includeNoise:
+        filters.append(Event.type != "access")
+
+    if not includeCancelled:
+        filters.append(Event.status != "cancelled")
+
+    if onlyWithOperatorComment:
+        filters.append(_has_operator_comment_predicate())
+
+    if not includeSystem:
+        actions_linked = await _actions_linked_present(session)
+        if actions_linked:
+            handled_alarm = or_(
+                _is_operator_handled_predicate(),
+                _operator_action_exists(dialect_name=dialect_name),
+            )
+            filters.append(or_(Event.type != "alarm", handled_alarm))
+
+    if type:
+        filters.append(Event.type == type)
+    if objectId:
+        filters.append(Event.object_id == objectId)
+    if severity:
+        filters.append(Event.severity == severity)
+    if status:
+        filters.append(Event.status == status)
+
+    if dateFrom:
+        dt_from = _parse_dt(dateFrom)
+        if dt_from:
+            filters.append(Event.timestamp >= dt_from)
+    if dateTo:
+        dt_to = _parse_dt(dateTo)
+        if dt_to:
+            filters.append(Event.timestamp <= dt_to)
+
+    if search and search.strip():
+        needle = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                Event.description.ilike(needle),
+                Event.object_name.ilike(needle),
+                Event.client_name.ilike(needle),
+                Event.location.ilike(needle),
+            )
+        )
+
+    where = and_(*filters) if filters else None
+
+    stmt: Select[tuple[Event]] = select(Event).order_by(Event.timestamp.desc()).limit(limit)
+    if where is not None:
+        stmt = stmt.where(where)
+    events_rows: list[Event] = (await session.execute(stmt)).scalars().all()
+
+    event_ids = [e.id for e in events_rows if e.id]
+    object_ids = sorted({e.object_id for e in events_rows if getattr(e, "object_id", None)})
+
+    # Aggregate event_actions per event_id: called/arrived/cancelled + GBR + operator.
+    called_match_strict = or_(
+        EventAction.action_name.ilike("%Вызван%груп%"),
+        EventAction.action_name.ilike("%Вызван%реаг%"),
+        EventAction.action_name.ilike("%Вызван%ГБР%"),
+        EventAction.action_name.ilike("%Вызов%груп%"),
+        EventAction.action_name.ilike("%Вызов%реаг%"),
+        EventAction.action_name.ilike("%Вызов%ГБР%"),
+    )
+    called_match_loose = EventAction.action_name.ilike("%Вызван%")
+    arrived_match_strict = or_(
+        EventAction.action_name.ilike("%Приб%груп%"),
+        EventAction.action_name.ilike("%Приб%реаг%"),
+        EventAction.action_name.ilike("%Приб%ГБР%"),
+    )
+    arrived_match_loose = or_(
+        EventAction.action_name.ilike("%Прибыт%"),
+        EventAction.action_name.ilike("%Прибыл%"),
+    )
+    cancelled_match_strict = or_(
+        EventAction.action_name.ilike("%Отмен%груп%"),
+        EventAction.action_name.ilike("%Отмен%реаг%"),
+        EventAction.action_name.ilike("%Отмен%ГБР%"),
+    )
+    cancelled_match_loose = EventAction.action_name.ilike("%Отмен%")
+
+    called_ts = func.coalesce(
+        func.min(case((called_match_strict, EventAction.action_time), else_=None)),
+        func.min(case((called_match_loose, EventAction.action_time), else_=None)),
+    ).label("called_ts")
+    arrived_ts = func.coalesce(
+        func.min(case((arrived_match_strict, EventAction.action_time), else_=None)),
+        func.min(case((arrived_match_loose, EventAction.action_time), else_=None)),
+    ).label("arrived_ts")
+    cancelled_ts = func.coalesce(
+        func.min(case((cancelled_match_strict, EventAction.action_time), else_=None)),
+        func.min(case((cancelled_match_loose, EventAction.action_time), else_=None)),
+    ).label("cancelled_ts")
+    called_operator = func.coalesce(
+        func.min(case((called_match_strict, EventAction.operator_name), else_=None)),
+        func.min(case((called_match_loose, EventAction.operator_name), else_=None)),
+    ).label("called_operator")
+    gbr_name = func.coalesce(
+        func.min(case((called_match_strict, EventAction.gbr_name), else_=None)),
+        func.min(case((called_match_loose, EventAction.gbr_name), else_=None)),
+        func.min(EventAction.gbr_name),
+    ).label("gbr_name")
+
+    actions_by_event: dict[str, dict[str, Any]] = {}
+    if event_ids:
+        actions_q = (
+            select(
+                EventAction.event_id,
+                gbr_name,
+                called_ts,
+                arrived_ts,
+                cancelled_ts,
+                called_operator,
+            )
+            .where(EventAction.event_id.in_(event_ids))
+            .group_by(EventAction.event_id)
+        )
+        for (eid, gbr, called, arrived, cancelled, op) in (await session.execute(actions_q)).all():
+            actions_by_event[str(eid)] = {
+                "gbr": gbr,
+                "called": called,
+                "arrived": arrived,
+                "cancelled": cancelled,
+                "operator": op,
+            }
+
+    # Count alarms for the last 6 months per object.
+    half_year_counts: dict[str, int] = {}
+    if object_ids:
+        cutoff = datetime.utcnow() - timedelta(days=183)
+        cnt_q = (
+            select(Event.object_id, func.count())
+            .where(Event.object_id.in_(object_ids))
+            .where(Event.timestamp >= cutoff)
+            .where(Event.type == "alarm")
+            .group_by(Event.object_id)
+        )
+        for (oid, cnt) in (await session.execute(cnt_q)).all():
+            if oid is not None:
+                half_year_counts[str(oid)] = int(cnt or 0)
+
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Рапорт"
+
+    columns = [
+        "№ объекта",
+        "Адрес",
+        "Шлейф",
+        "Инженер",
+        "Результат",
+        "Дата",
+        "ГБР",
+        "Вызов",
+        "Прибыл",
+        "Время в пути",
+        "Результат осмотра",
+        "Оператор",
+        "Заявка",
+        "Штраф",
+        "Сработок за полгода",
+    ]
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    ws.cell(row=1, column=1, value="Рапорт").font = Font(bold=True, size=14)
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+
+    dt_from = _parse_dt(dateFrom) if dateFrom else None
+    dt_to = _parse_dt(dateTo) if dateTo else None
+    period_text = ""
+    if dt_from and dt_to:
+        period_text = f"За период: {dt_from.strftime('%d.%m.%Y %H:%M')} — {dt_to.strftime('%d.%m.%Y %H:%M')}"
+    elif dt_from:
+        period_text = f"С: {dt_from.strftime('%d.%m.%Y %H:%M')}"
+    elif dt_to:
+        period_text = f"До: {dt_to.strftime('%d.%m.%Y %H:%M')}"
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+    ws.cell(row=2, column=1, value=period_text).alignment = Alignment(horizontal="center")
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(columns))
+    ws.cell(row=3, column=1, value="оперативная обстановка следующая:").alignment = Alignment(
+        horizontal="center"
+    )
+
+    header_row = 5
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    widths = [12, 36, 10, 18, 22, 12, 18, 18, 18, 12, 22, 18, 18, 12, 18]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(ord('A') + i - 1)].width = w
+
+    for col_idx, title in enumerate(columns, start=1):
+        c = ws.cell(row=header_row, column=col_idx, value=title)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+
+    start_row = header_row + 1
+    for i, e in enumerate(events_rows, start=0):
+        row_idx = start_row + i
+
+        a = actions_by_event.get(str(e.id)) or {}
+        called = a.get("called")
+        arrived = a.get("arrived")
+        cancelled = a.get("cancelled")
+
+        travel_seconds: float | None = None
+        if isinstance(called, datetime) and isinstance(arrived, datetime):
+            try:
+                travel_seconds = float((arrived - called).total_seconds())
+            except Exception:
+                travel_seconds = None
+
+        shleif = _extract_desc_value(e.description, "Шлейф")
+        engineer = _extract_desc_value(e.description, "Инженер")
+        osmotr = _extract_desc_value(e.description, "Осмотр")
+        result_osmotr = _extract_desc_value(e.description, "Результат")
+        zayavka = _extract_desc_value(e.description, "Заявка")
+        shtraf = _extract_desc_value(e.description, "Штраф")
+
+        operator = (
+            (str(a.get("operator") or "").strip())
+            or _extract_desc_value(e.description, "Оператор")
+            or ""
+        )
+        gbr = (str(a.get("gbr") or "").strip()) or _extract_desc_value(e.description, "ГБР") or ""
+
+        # Column meanings (best-effort):
+        # - "Результат" is usually the operator note/result_text
+        # - "Результат осмотра" is the inspection result when present in description
+        result_main = (getattr(e, "result_text", None) or "").strip()
+        if not result_main:
+            result_main = _extract_desc_value(e.description, "Заметки")
+
+        date_cell = _fmt_date_ru(called if isinstance(called, datetime) else e.timestamp)
+
+        arrived_cell = ""
+        if isinstance(arrived, datetime):
+            arrived_cell = _fmt_dt_ru(arrived)
+        elif isinstance(cancelled, datetime):
+            arrived_cell = "Отмена"
+
+        values = [
+            getattr(e, "object_id", None) or "",
+            getattr(e, "location", None) or "",
+            shleif,
+            engineer,
+            result_main,
+            date_cell,
+            gbr,
+            _fmt_dt_ru(called if isinstance(called, datetime) else None),
+            arrived_cell,
+            _fmt_travel(travel_seconds),
+            (result_osmotr or osmotr),
+            operator,
+            zayavka,
+            shtraf,
+            str(half_year_counts.get(str(getattr(e, "object_id", "") or ""), 0) or 0),
+        ]
+
+        for col_idx, v in enumerate(values, start=1):
+            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c.border = border
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    ws.freeze_panes = ws["A6"]
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+
+    out = BytesIO()
+    wb.save(out)
+
+    filename = f"raport-{datetime.utcnow().date().isoformat()}.xlsx"
+    return Response(
+        content=out.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
