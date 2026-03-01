@@ -20,6 +20,7 @@ const AlarmAnalysis = lazy(() => import("./pages/AlarmAnalysis"));
 const GbrReports = lazy(() => import("./pages/GbrReports"));
 const GbrStatuses = lazy(() => import("./pages/GbrStatuses"));
 const StaffEfficiency = lazy(() => import("./pages/StaffEfficiency"));
+const Help = lazy(() => import("./pages/Help"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 import { getAuthToken } from "./lib/api";
 
@@ -57,6 +58,7 @@ const App = () => (
             <Route path="/staff" element={<RequireAuth><StaffEfficiency /></RequireAuth>} />
             <Route path="/integration" element={<RequireAuth><Integration /></RequireAuth>} />
             <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
+            <Route path="/help" element={<RequireAuth><Help /></RequireAuth>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

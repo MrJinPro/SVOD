@@ -1,6 +1,7 @@
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -33,6 +34,36 @@ export function MainLayout({ children, title, subtitle }: MainLayoutProps) {
         <main className="p-6">
           {children}
         </main>
+        <footer className="border-t border-border px-6 py-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm">
+              <Link
+                to="/help"
+                className="text-foreground hover:underline underline-offset-4"
+              >
+                Инструкция
+              </Link>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Разработал MrJinPro · Telegram:{' '}
+              <a
+                href="https://t.me/mrjinpro"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:underline underline-offset-4"
+              >
+                @mrjinpro
+              </a>
+              {' '}· Почта:{' '}
+              <a
+                href="mailto:dev@mrjin.pro"
+                className="hover:underline underline-offset-4"
+              >
+                dev@mrjin.pro
+              </a>
+            </div>
+          </div>
+        </footer>
       </div>
     </div>
   );
