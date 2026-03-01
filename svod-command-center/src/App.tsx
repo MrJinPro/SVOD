@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Navigate, useLocation } from "react-router-dom";
 import { Suspense, lazy } from "react";
+import { useApiGet } from "@/hooks/useApiGet";
 const Index = lazy(() => import("./pages/Index"));
 const Login = lazy(() => import("./pages/Login"));
 const Events = lazy(() => import("./pages/Events"));
@@ -35,6 +36,26 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return children;
 }
 
+function RequireRole({
+  roles,
+  children,
+}: {
+  roles: Array<'admin' | 'analyst' | 'operator'>;
+  children: JSX.Element;
+}) {
+  const { data: me, isLoading } = useApiGet('/auth/me', { role: 'operator' } as any);
+
+  if (isLoading) {
+    return <div className="p-6 text-sm text-muted-foreground">Загрузка…</div>;
+  }
+
+  const role = String((me as any)?.role || 'operator').trim() as any;
+  if (roles.includes(role)) {
+    return children;
+  }
+  return <Navigate to="/" replace />;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -50,14 +71,14 @@ const App = () => (
             <Route path="/events" element={<RequireAuth><Events /></RequireAuth>} />
             <Route path="/search" element={<RequireAuth><SearchPage /></RequireAuth>} />
             <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
-            <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
-            <Route path="/analytics" element={<RequireAuth><Analytics /></RequireAuth>} />
+            <Route path="/users" element={<RequireAuth><RequireRole roles={['admin']}><Users /></RequireRole></RequireAuth>} />
+            <Route path="/analytics" element={<RequireAuth><RequireRole roles={['admin','analyst']}><Analytics /></RequireRole></RequireAuth>} />
             <Route path="/alarm-analysis" element={<RequireAuth><AlarmAnalysis /></RequireAuth>} />
             <Route path="/gbr-statuses" element={<RequireAuth><GbrStatuses /></RequireAuth>} />
             <Route path="/gbr-reports" element={<RequireAuth><GbrReports /></RequireAuth>} />
-            <Route path="/staff" element={<RequireAuth><StaffEfficiency /></RequireAuth>} />
-            <Route path="/integration" element={<RequireAuth><Integration /></RequireAuth>} />
-            <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
+            <Route path="/staff" element={<RequireAuth><RequireRole roles={['admin','analyst']}><StaffEfficiency /></RequireRole></RequireAuth>} />
+            <Route path="/integration" element={<RequireAuth><RequireRole roles={['admin']}><Integration /></RequireRole></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><RequireRole roles={['admin']}><Settings /></RequireRole></RequireAuth>} />
             <Route path="/help" element={<RequireAuth><Help /></RequireAuth>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

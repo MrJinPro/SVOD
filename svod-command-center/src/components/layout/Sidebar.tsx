@@ -49,20 +49,12 @@ export function Sidebar({
   const navigate = useNavigate();
   const { data: me } = useApiGet('/auth/me', { username: '', role: 'operator', email: null } as any);
 
-  const canSeeAnalytics = (() => {
-    const role = String((me as any)?.role || '').trim();
-    if (role === 'admin' || role === 'analyst') return true;
-    const perms = ((me as any)?.permissions || []) as string[];
-    return Array.isArray(perms) && perms.includes('analytics:read');
-  })();
-
-  const canSeeUsers = (() => {
-    const role = String((me as any)?.role || '').trim();
-    if (role === 'admin') return true;
-    const perms = ((me as any)?.permissions || []) as string[];
-    if (!Array.isArray(perms)) return false;
-    return perms.includes('users:read') || perms.includes('users:write') || perms.includes('rbac:manage');
-  })();
+  const role = String((me as any)?.role || '').trim();
+  const isAdmin = role === 'admin';
+  const isAnalyst = role === 'analyst';
+  const canSeeAnalytics = isAdmin || isAnalyst;
+  const canSeeUsers = isAdmin;
+  const canSeeAdminTools = isAdmin;
 
   const roleLabel = (role: string) => {
     if (role === 'admin') return 'Администратор';
@@ -103,7 +95,7 @@ export function Sidebar({
         <nav className="flex-1 space-y-1 px-2 py-4">
           {navigation
             .filter((item) => {
-              if (item.href === '/analytics' || item.href === '/alarm-analysis' || item.href === '/gbr-statuses' || item.href === '/gbr-reports' || item.href === '/staff') return canSeeAnalytics;
+              if (item.href === '/analytics' || item.href === '/staff') return canSeeAnalytics;
               if (item.href === '/users') return canSeeUsers;
               return true;
             })
@@ -134,7 +126,13 @@ export function Sidebar({
 
         {/* Bottom section */}
         <div className="border-t border-sidebar-border px-2 py-4 space-y-1">
-          {bottomNavigation.map((item) => {
+          {bottomNavigation
+            .filter((item) => {
+              // Integration / Settings are admin-only.
+              if (item.href === '/integration' || item.href === '/settings') return canSeeAdminTools;
+              return true;
+            })
+            .map((item) => {
             const isActive = location.pathname === item.href;
             return (
               <NavLink
