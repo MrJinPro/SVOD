@@ -705,16 +705,53 @@ async def generate_gbr_raport_xlsx(
     # Reuse analytics logic (no HTTP call)
     from app.api.v1.analytics import gbr_trips  # local import to avoid circular deps
 
+    page_size = 2000
+    max_rows = 50000
     trips = await gbr_trips(
         date_from=dateFrom,
         date_to=dateTo,
         gbr_name=(gbrName or None),
         object_id=(objectId or None),
-        limit=2000,
+        limit=page_size,
         offset=0,
         session=session,
         _perm=current,
     )
+
+    total = int(trips.get("total") or 0)
+    if max_rows and total > max_rows:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TOO_MANY_ROWS",
+                "message": f"Слишком много строк для рапорта: {total}. Сузьте период/фильтры.",
+            },
+        )
+
+    rows_all: list[dict[str, Any]] = list(trips.get("data") or [])
+    if total > len(rows_all) and len(rows_all) >= page_size:
+        offset = page_size
+        while len(rows_all) < total:
+            out = await gbr_trips(
+                date_from=dateFrom,
+                date_to=dateTo,
+                gbr_name=(gbrName or None),
+                object_id=(objectId or None),
+                limit=page_size,
+                offset=offset,
+                session=session,
+                _perm=current,
+            )
+            batch = out.get("data") or []
+            if not batch:
+                break
+            rows_all.extend(batch)
+            offset += page_size
+            if len(batch) < page_size:
+                break
+
+    trips["data"] = rows_all
+    trips["total"] = total
 
     # Build XLSX similarly to analytics export
     from io import BytesIO
@@ -868,7 +905,7 @@ async def generate_gbr_raport_xlsx(
         period_end=pe,
         generated_at=datetime.utcnow().isoformat(timespec="seconds"),
         status="generated",
-        events_count=int(trips.get("total") or len(rows) or 0),
+        events_count=len(rows),
         critical_count=0,
         file_name=filename,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -978,6 +1015,10 @@ async def generate_pcn_ledger_xlsx(
     nightStart: str | None = Query(default="20:00", description="HH:MM (start of night shift)"),
     actionName: str | None = Query(default="Прием на обработку", description="EventAction.action_name match"),
     operatorQuery: str | None = Query(default=None, description="Filter by operator name (substring)"),
+    hideOperatorNames: bool = Query(
+        default=False,
+        description="If true, operator names are hidden in XLSX (personal data protection)",
+    ),
     pay0: int = Query(default=0, ge=0, le=100000, description="Payout for lowest bracket"),
     pay1: int = Query(default=330, ge=0, le=100000, description="Payout for bracket 2"),
     pay2: int = Query(default=430, ge=0, le=100000, description="Payout for bracket 3"),
@@ -1050,12 +1091,31 @@ async def generate_pcn_ledger_xlsx(
             raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
         window_start = dt_from
         window_end = dt_to
+        period_start_date = dt_from.date()
+        period_end_date = dt_to.date()
+
+        # For exact windows we do NOT clamp by shift_date, otherwise early-hours actions
+        # (before dayStart) would be incorrectly dropped (they belong to previous day's night shift).
+        clamp_shift_dates: tuple[date_type, date_type] | None = None
+
+        # For presence bucketing we need a date span that covers possible shift_dates.
+        # shift_bucket can produce (ts.date() - 1) for times before dayStart.
+        presence_span_start = window_start.date() - timedelta(days=1)
+        presence_span_end = window_end.date()
     else:
         if not d_from or not d_to or d_to < d_from:
             raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
         # Build query window that covers the last night shift up to next day's dayStart.
         window_start = datetime.combine(d_from, day_start)
         window_end = datetime.combine(d_to + timedelta(days=1), day_start)
+        period_start_date = d_from
+        period_end_date = d_to
+        clamp_shift_dates = (d_from, d_to)
+        presence_span_start = d_from
+        presence_span_end = d_to
+
+    if period_end_date < period_start_date:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
 
     payouts: tuple[int, int, int, int] = (int(pay0), int(pay1), int(pay2), int(pay3))
     thresholds: dict[int, tuple[int, int, int]] = {
@@ -1157,16 +1217,15 @@ async def generate_pcn_ledger_xlsx(
 
         # Prepare shift windows for the date range.
         shift_windows: list[tuple[date_type, str, datetime, datetime]] = []
-        if d_from is not None and d_to is not None:
-            d = d_from
-            while d <= d_to:
-                day_s = datetime.combine(d, day_start)
-                day_e = datetime.combine(d, night_start)
-                night_s = datetime.combine(d, night_start)
-                night_e = datetime.combine(d + timedelta(days=1), day_start)
-                shift_windows.append((d, "день", day_s, day_e))
-                shift_windows.append((d, "ночь", night_s, night_e))
-                d = d + timedelta(days=1)
+        d = presence_span_start
+        while d <= presence_span_end:
+            day_s = datetime.combine(d, day_start)
+            day_e = datetime.combine(d, night_start)
+            night_s = datetime.combine(d, night_start)
+            night_e = datetime.combine(d + timedelta(days=1), day_start)
+            shift_windows.append((d, "день", day_s, day_e))
+            shift_windows.append((d, "ночь", night_s, night_e))
+            d = d + timedelta(days=1)
 
         # Accumulate overlap seconds per (shift_date, shift_name, operator)
         presence_seconds: dict[tuple[date_type, str, str], int] = {}
@@ -1204,8 +1263,9 @@ async def generate_pcn_ledger_xlsx(
         if not isinstance(ts, datetime) or not op:
             continue
         shift_date, shift_name = _shift_bucket(ts, day_start=day_start, night_start=night_start)
-        if d_from is not None and d_to is not None:
-            if shift_date < d_from or shift_date > d_to:
+        if clamp_shift_dates is not None:
+            dmin, dmax = clamp_shift_dates
+            if shift_date < dmin or shift_date > dmax:
                 continue
         key = (shift_date, shift_name, str(op))
         counts[key] = counts.get(key, 0) + 1
@@ -1355,6 +1415,7 @@ async def generate_pcn_ledger_xlsx(
         f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. "
         f"Отработка тревоги: действие '{actionName or ''}'. "
         f"Диспетчеры в смену: {ds} (presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). "
+        ("ФИО скрыты. " if hideOperatorNames else "")
         "Сравнение presence/actions — на листе 'Контроль'."
     )
     ws.cell(7, 2, clean_excel_text(formula_note)).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
@@ -1362,10 +1423,16 @@ async def generate_pcn_ledger_xlsx(
 
     # Title
     ws.merge_cells(start_row=9, start_column=2, end_row=9, end_column=10)
-    if d_from.year == d_to.year and d_from.month == d_to.month and d_from.day == 1:
-        title = f"Ведомость учета работы операторов ПЦН за {d_from.strftime('%m.%Y')}г."
+    if (
+        period_start_date.year == period_end_date.year
+        and period_start_date.month == period_end_date.month
+        and period_start_date.day == 1
+    ):
+        title = f"Ведомость учета работы операторов ПЦН за {period_start_date.strftime('%m.%Y')}г."
     else:
-        title = f"Ведомость учета работы операторов ПЦН за период {d_from.isoformat()}–{d_to.isoformat()}"
+        title = (
+            f"Ведомость учета работы операторов ПЦН за период {period_start_date.isoformat()}–{period_end_date.isoformat()}"
+        )
     ws.cell(9, 2, clean_excel_text(title)).font = Font(bold=True, size=12)
     ws.cell(9, 2).alignment = Alignment(horizontal="center")
 
@@ -1411,7 +1478,7 @@ async def generate_pcn_ledger_xlsx(
             ws.cell(cur, 2, sd).number_format = "DD.MM.YYYY" if i == 0 else ""
             ws.cell(cur, 3, int(x.get("dispatchers") or 0) if i == 0 else "")
             ws.cell(cur, 4, sh if i == 0 else "")
-            ws.cell(cur, 5, clean_excel_text(x.get("operator")))
+            ws.cell(cur, 5, "" if hideOperatorNames else clean_excel_text(x.get("operator")))
             ws.cell(cur, 6, int(x.get("alarms") or 0))
             ws.cell(cur, 7, float(x.get("percent") or 0.0))
             ws.cell(cur, 7).number_format = "0.00"
@@ -1494,8 +1561,8 @@ async def generate_pcn_ledger_xlsx(
     data = bio.getvalue()
 
     report_id = str(uuid4())
-    ps = d_from.isoformat()
-    pe = d_to.isoformat()
+    ps = period_start_date.isoformat()
+    pe = period_end_date.isoformat()
     filename = f"pcn-ledger-{ps}-{pe}.xlsx"
     path = _write_report_file(report_id, filename, data)
 
@@ -1519,6 +1586,7 @@ async def generate_pcn_ledger_xlsx(
                 "nightStart": nightStart,
                 "actionName": actionName,
                 "operatorQuery": operatorQuery,
+                "hideOperatorNames": hideOperatorNames,
                 "payouts": {"pay0": pay0, "pay1": pay1, "pay2": pay2, "pay3": pay3},
                 "thresholds": {
                     "3": [thr3_1, thr3_2, thr3_3],

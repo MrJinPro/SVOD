@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { PaginationBar } from '@/components/PaginationBar';
 import { apiFetchRaw } from '@/lib/api';
+import { toast } from '@/hooks/use-toast';
 import { Download, RefreshCw, RotateCcw, Filter } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { AnalyticsFiltersResponse, GbrTripsResponse } from '@/types';
@@ -271,12 +272,24 @@ export default function GbrReports() {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
-                    onSelect={() =>
-                      downloadFile(
-                        exportXlsxPath,
-                        `gbr-trips-${new Date().toISOString().slice(0, 10)}.xlsx`
-                      )
-                    }
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      void (async () => {
+                        try {
+                          toast({ title: 'Скачать', description: 'Скачивание XLSX…' });
+                          await downloadFile(
+                            exportXlsxPath,
+                            `gbr-trips-${new Date().toISOString().slice(0, 10)}.xlsx`,
+                          );
+                        } catch (err: any) {
+                          toast({
+                            title: 'Скачать',
+                            description: err?.message || 'Ошибка скачивания XLSX',
+                            variant: 'destructive',
+                          });
+                        }
+                      })();
+                    }}
                   >
                     XLSX
                   </DropdownMenuItem>

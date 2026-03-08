@@ -29,7 +29,6 @@ type DraftFilters = {
   dateFrom: string; // YYYY-MM-DD
   dateTo: string; // YYYY-MM-DD
   operator: string;
-  gbrName: string;
   bucket: 'day' | 'month';
 };
 
@@ -37,7 +36,6 @@ const defaultFilters: DraftFilters = {
   dateFrom: '',
   dateTo: '',
   operator: 'all',
-  gbrName: 'all',
   bucket: 'day',
 };
 
@@ -111,7 +109,6 @@ export default function Analytics() {
     if (applied.dateFrom) params.set('dateFrom', toStartOfDayIso(applied.dateFrom));
     if (applied.dateTo) params.set('dateTo', toEndOfDayIso(applied.dateTo));
     if (applied.operator !== 'all') params.set('operator', applied.operator);
-    if (applied.gbrName !== 'all') params.set('gbrName', applied.gbrName);
 
     const qs = params.toString();
     return `/analytics/operators/handling${qs ? `?${qs}` : ''}`;
@@ -212,20 +209,6 @@ export default function Analytics() {
                 {(filters?.operators || []).map((o) => (
                   <SelectItem key={o} value={o}>
                     {o}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={draft.gbrName} onValueChange={(v) => setDraft((s) => ({ ...s, gbrName: v }))}>
-              <SelectTrigger className="w-[240px] bg-background">
-                <SelectValue placeholder="ГБР" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все ГБР</SelectItem>
-                {(filters?.gbrNames || []).map((g) => (
-                  <SelectItem key={g} value={g}>
-                    {g}
                   </SelectItem>
                 ))}
               </SelectContent>

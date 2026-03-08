@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Annotated
 
@@ -45,7 +46,13 @@ def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        dt = datetime.fromisoformat(value)
+        v = str(value).strip()
+        # Python's datetime.fromisoformat() does NOT accept trailing 'Z'.
+        # Frontend commonly sends ISO strings like "2026-03-01T00:00:00.000Z".
+        if v.endswith("Z"):
+            v = v[:-1] + "+00:00"
+
+        dt = datetime.fromisoformat(v)
         # Frontend sends ISO strings with timezone (e.g. trailing 'Z').
         # In Postgres we store `event_actions.action_time` as TIMESTAMP WITHOUT TIME ZONE.
         # asyncpg rejects tz-aware datetimes when binding to that type.
@@ -856,6 +863,80 @@ async def gbr_trips(
     return {"data": items, "total": int(total or 0), "limit": limit, "offset": offset}
 
 
+async def _fetch_all_gbr_trips(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    gbr_name: str | None,
+    object_id: str | None,
+    status: str | None,
+    session: AsyncSession,
+    _perm: Any,
+    page_size: int = 2000,
+    max_rows: int = 50000,
+) -> dict[str, Any]:
+    """Fetch all GBR trips for export/reporting.
+
+    `gbr_trips` is API-shaped and enforces `limit<=2000`, so we page through results.
+    We also guard against producing enormous XLSX files silently.
+    """
+
+    first = await gbr_trips(
+        date_from=date_from,
+        date_to=date_to,
+        gbr_name=gbr_name,
+        object_id=object_id,
+        status=status,
+        limit=int(page_size),
+        offset=0,
+        session=session,
+        _perm=_perm,
+    )
+
+    total = int(first.get("total") or 0)
+    if max_rows and total > int(max_rows):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TOO_MANY_ROWS",
+                "message": f"Слишком много строк для выгрузки: {total}. Сузьте период/фильтры.",
+            },
+        )
+
+    items: list[dict[str, Any]] = list(first.get("data") or [])
+    if total <= len(items) or len(items) < int(page_size):
+        first["data"] = items
+        first["total"] = total
+        return first
+
+    offset = int(page_size)
+    while len(items) < total:
+        out = await gbr_trips(
+            date_from=date_from,
+            date_to=date_to,
+            gbr_name=gbr_name,
+            object_id=object_id,
+            status=status,
+            limit=int(page_size),
+            offset=offset,
+            session=session,
+            _perm=_perm,
+        )
+        batch = out.get("data") or []
+        if not batch:
+            break
+        items.extend(batch)
+        offset += int(page_size)
+        if len(batch) < int(page_size):
+            break
+
+    first["data"] = items
+    first["total"] = total
+    first["limit"] = total
+    first["offset"] = 0
+    return first
+
+
 @router.get("/gbr/trips/export")
 async def gbr_trips_export(
     date_from: str | None = Query(None, alias="dateFrom"),
@@ -892,13 +973,12 @@ async def gbr_trips_export_xlsx(
     повторяя структуру (шапка + таблица) и заполняя доступные поля.
     """
 
-    result = await gbr_trips(
+    result = await _fetch_all_gbr_trips(
         date_from=date_from,
         date_to=date_to,
         gbr_name=gbr_name,
         object_id=object_id,
-        limit=2000,
-        offset=0,
+        status=None,
         session=session,
         _perm=_perm,
     )
@@ -907,6 +987,14 @@ async def gbr_trips_export_xlsx(
 
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, Side
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    def clean_excel_text(value: object) -> object:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return re.sub(ILLEGAL_CHARACTERS_RE, "", value)
+        return value
 
     wb = Workbook()
     ws = wb.active
@@ -1035,7 +1123,7 @@ async def gbr_trips_export_xlsx(
         ]
 
         for col_idx, v in enumerate(values, start=1):
-            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -1064,14 +1152,12 @@ async def gbr_trips_export_table_xlsx(
 ) -> Response:
     """XLSX: выгрузка «как в таблице» на странице Отчёт ГБР."""
 
-    result = await gbr_trips(
+    result = await _fetch_all_gbr_trips(
         date_from=date_from,
         date_to=date_to,
         gbr_name=gbr_name,
         object_id=object_id,
         status=status,
-        limit=2000,
-        offset=0,
         session=session,
         _perm=_perm,
     )
@@ -1080,6 +1166,14 @@ async def gbr_trips_export_table_xlsx(
 
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    def clean_excel_text(value: object) -> object:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return re.sub(ILLEGAL_CHARACTERS_RE, "", value)
+        return value
 
     wb = Workbook()
     ws = wb.active
@@ -1123,18 +1217,18 @@ async def gbr_trips_export_table_xlsx(
     for r in (result.get("data") or []):
         ws.append(
             [
-                _fmt_iso(r.get("calledAt")),
-                _arrival_cell(r),
-                r.get("tripStatus") or "—",
-                r.get("gbrName") or "",
-                r.get("objectId") or "",
-                r.get("objectName") or "",
-                (r.get("responsibleName") or r.get("clientName") or ""),
-                r.get("calledOperator") or "",
-                (_format_seconds_hhmmss(r.get("travelSeconds")) or "—"),
-                r.get("agencyEventId") or "",
-                r.get("meterCount") or "",
-                r.get("resultText") or "",
+                clean_excel_text(_fmt_iso(r.get("calledAt"))),
+                clean_excel_text(_arrival_cell(r)),
+                clean_excel_text(r.get("tripStatus") or "—"),
+                clean_excel_text(r.get("gbrName") or ""),
+                clean_excel_text(r.get("objectId") or ""),
+                clean_excel_text(r.get("objectName") or ""),
+                clean_excel_text((r.get("responsibleName") or r.get("clientName") or "")),
+                clean_excel_text(r.get("calledOperator") or ""),
+                clean_excel_text((_format_seconds_hhmmss(r.get("travelSeconds")) or "—")),
+                clean_excel_text(r.get("agencyEventId") or ""),
+                clean_excel_text(r.get("meterCount") or ""),
+                clean_excel_text(r.get("resultText") or ""),
             ]
         )
 

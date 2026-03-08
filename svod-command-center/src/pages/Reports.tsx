@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import {
   Dialog,
   DialogContent,
@@ -242,6 +244,7 @@ export default function Reports() {
   const [createKind, setCreateKind] = useState<CreateReportKind>('objectsByCode');
 
   const [pcnOperatorQuery, setPcnOperatorQuery] = useState('');
+  const [pcnHideOperatorNames, setPcnHideOperatorNames] = useState(false);
   const [pcnPay0, setPcnPay0] = useState('0');
   const [pcnPay1, setPcnPay1] = useState('330');
   const [pcnPay2, setPcnPay2] = useState('430');
@@ -441,6 +444,7 @@ export default function Reports() {
         params.set('dateFrom', setTimeOnDate(dateRange.from, timeFrom).toISOString());
         params.set('dateTo', setTimeOnDate(dateRange.to, timeTo).toISOString());
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
+        if (pcnHideOperatorNames) params.set('hideOperatorNames', 'true');
 
         // Shifts: configurable boundaries (Settings -> localStorage)
         const ui = loadUiSettings();
@@ -870,6 +874,20 @@ export default function Reports() {
                         value={pcnOperatorQuery}
                         onChange={(e) => setPcnOperatorQuery(e.target.value)}
                       />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Персональные данные</div>
+                      <div className="flex items-center gap-2 h-10">
+                        <Checkbox
+                          id="pcnHideOperatorNames"
+                          checked={pcnHideOperatorNames}
+                          onCheckedChange={(v) => setPcnHideOperatorNames(Boolean(v))}
+                        />
+                        <Label htmlFor="pcnHideOperatorNames" className="text-sm">
+                          Без фамилий (скрыть ФИО)
+                        </Label>
+                      </div>
                     </div>
                   </div>
 
