@@ -37,6 +37,88 @@ class OperatorCommentIn(BaseModel):
     resultText: str | None = Field(default=None, max_length=5000)
 
 
+_CYR_TO_LAT_CONFUSABLES = str.maketrans(
+    {
+        # Uppercase
+        "А": "A",
+        "В": "B",
+        "С": "C",
+        "Е": "E",
+        "Н": "H",
+        "К": "K",
+        "М": "M",
+        "О": "O",
+        "Р": "P",
+        "Т": "T",
+        "Х": "X",
+        "У": "Y",
+        # Lowercase
+        "а": "a",
+        "в": "b",
+        "с": "c",
+        "е": "e",
+        "н": "h",
+        "к": "k",
+        "м": "m",
+        "о": "o",
+        "р": "p",
+        "т": "t",
+        "х": "x",
+        "у": "y",
+    }
+)
+
+_LAT_TO_CYR_CONFUSABLES = str.maketrans(
+    {
+        # Uppercase
+        "A": "А",
+        "B": "В",
+        "C": "С",
+        "E": "Е",
+        "H": "Н",
+        "K": "К",
+        "M": "М",
+        "O": "О",
+        "P": "Р",
+        "T": "Т",
+        "X": "Х",
+        "Y": "У",
+        # Lowercase
+        "a": "а",
+        "b": "в",
+        "c": "с",
+        "e": "е",
+        "h": "н",
+        "k": "к",
+        "m": "м",
+        "o": "о",
+        "p": "р",
+        "t": "т",
+        "x": "х",
+        "y": "у",
+    }
+)
+
+
+def _query_variants(value: str) -> list[str]:
+    """Generate search variants for common Cyrillic/Latin lookalikes."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+
+    v1 = raw
+    v2 = raw.translate(_CYR_TO_LAT_CONFUSABLES)
+    v3 = raw.translate(_LAT_TO_CYR_CONFUSABLES)
+
+    out: list[str] = []
+    for v in (v1, v2, v3):
+        v = v.strip()
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 def _is_operator_handled_predicate() -> Any:
     """Heuristic: event is handled by an operator (not purely system)."""
 
@@ -220,7 +302,11 @@ async def build_events_raport_xlsx_bytes(
     if type:
         filters.append(Event.type == type)
     if objectId:
-        filters.append(Event.object_id == objectId)
+        oid_variants = _query_variants(objectId)
+        if len(oid_variants) == 1:
+            filters.append(Event.object_id == oid_variants[0])
+        else:
+            filters.append(or_(*[Event.object_id == v for v in oid_variants]))
     if severity:
         filters.append(Event.severity == severity)
     if status:
@@ -236,18 +322,25 @@ async def build_events_raport_xlsx_bytes(
             filters.append(Event.timestamp <= dt_to)
 
     if search and search.strip():
-        needle = f"%{search.strip()}%"
-        filters.append(
-            or_(
-                Event.description.ilike(needle),
-                Event.id.ilike(needle),
-                Event.object_id.ilike(needle),
-                Event.object_name.ilike(needle),
-                Event.client_name.ilike(needle),
-                Event.location.ilike(needle),
-                Event.result_text.ilike(needle),
+        variants = _query_variants(search)
+        needles = [f"%{v}%" for v in variants]
+
+        like_clauses: list[Any] = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Event.description.ilike(needle),
+                    Event.id.ilike(needle),
+                    Event.object_id.ilike(needle),
+                    Event.object_name.ilike(needle),
+                    Event.client_name.ilike(needle),
+                    Event.location.ilike(needle),
+                    Event.result_text.ilike(needle),
+                ]
             )
-        )
+
+        if like_clauses:
+            filters.append(or_(*like_clauses))
 
     where = and_(*filters) if filters else None
 
@@ -878,7 +971,11 @@ async def list_events(
     if type:
         filters.append(Event.type == type)
     if objectId:
-        filters.append(Event.object_id == objectId)
+        oid_variants = _query_variants(objectId)
+        if len(oid_variants) == 1:
+            filters.append(Event.object_id == oid_variants[0])
+        else:
+            filters.append(or_(*[Event.object_id == v for v in oid_variants]))
     if severity:
         filters.append(Event.severity == severity)
     if status:
@@ -909,15 +1006,25 @@ async def list_events(
             filters.append(Event.timestamp <= dt_to)
 
     if search and search.strip():
-        needle = f"%{search.strip()}%"
-        filters.append(
-            or_(
-                Event.description.ilike(needle),
-                Event.object_name.ilike(needle),
-                Event.client_name.ilike(needle),
-                Event.location.ilike(needle),
+        variants = _query_variants(search)
+        needles = [f"%{v}%" for v in variants]
+
+        like_clauses: list[Any] = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Event.description.ilike(needle),
+                    Event.id.ilike(needle),
+                    Event.object_id.ilike(needle),
+                    Event.object_name.ilike(needle),
+                    Event.client_name.ilike(needle),
+                    Event.location.ilike(needle),
+                    Event.result_text.ilike(needle),
+                ]
             )
-        )
+
+        if like_clauses:
+            filters.append(or_(*like_clauses))
 
     where = and_(*filters) if filters else None
 
@@ -991,7 +1098,11 @@ async def export_events_export(
     if type:
         filters.append(Event.type == type)
     if objectId:
-        filters.append(Event.object_id == objectId)
+        oid_variants = _query_variants(objectId)
+        if len(oid_variants) == 1:
+            filters.append(Event.object_id == oid_variants[0])
+        else:
+            filters.append(or_(*[Event.object_id == v for v in oid_variants]))
     if severity:
         filters.append(Event.severity == severity)
     if status:
@@ -1007,15 +1118,25 @@ async def export_events_export(
             filters.append(Event.timestamp <= dt_to)
 
     if search and search.strip():
-        needle = f"%{search.strip()}%"
-        filters.append(
-            or_(
-                Event.description.ilike(needle),
-                Event.object_name.ilike(needle),
-                Event.client_name.ilike(needle),
-                Event.location.ilike(needle),
+        variants = _query_variants(search)
+        needles = [f"%{v}%" for v in variants]
+
+        like_clauses: list[Any] = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Event.description.ilike(needle),
+                    Event.id.ilike(needle),
+                    Event.object_id.ilike(needle),
+                    Event.object_name.ilike(needle),
+                    Event.client_name.ilike(needle),
+                    Event.location.ilike(needle),
+                    Event.result_text.ilike(needle),
+                ]
             )
-        )
+
+        if like_clauses:
+            filters.append(or_(*like_clauses))
 
     where = and_(*filters) if filters else None
 
