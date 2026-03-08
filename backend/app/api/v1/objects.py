@@ -236,6 +236,16 @@ async def list_object_events(
             "clientName": e.client_name,
             "severity": e.severity,
             "status": e.status,
+            "code": getattr(e, "code", None),
+            "codeText": getattr(e, "code_text", None),
+            "stateName": getattr(e, "state_name", None),
+            "resultText": getattr(e, "result_text", None),
+            "meterCount": getattr(e, "meter_count", None),
+            "timeMeterCount": (
+                getattr(e, "time_meter_count", None).isoformat()
+                if getattr(e, "time_meter_count", None) is not None
+                else None
+            ),
             "description": e.description,
             "location": e.location,
             "operatorId": e.operator_id,

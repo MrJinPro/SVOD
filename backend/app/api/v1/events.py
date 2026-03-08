@@ -256,8 +256,45 @@ def _parse_dt(value: str) -> datetime | None:
         return None
 
 
-async def build_events_raport_xlsx_bytes(
+def _append_object_id_filter(filters: list[Any], object_id: str | None) -> None:
+    if not object_id:
+        return
+
+    oid_variants = _query_variants(object_id)
+    if len(oid_variants) == 1:
+        filters.append(Event.object_id == oid_variants[0])
+    elif oid_variants:
+        filters.append(or_(*[Event.object_id == v for v in oid_variants]))
+
+
+def _append_search_filter(filters: list[Any], search: str | None) -> None:
+    if not search or not search.strip():
+        return
+
+    variants = _query_variants(search)
+    needles = [f"%{v}%" for v in variants]
+
+    like_clauses: list[Any] = []
+    for needle in needles:
+        like_clauses.extend(
+            [
+                Event.description.ilike(needle),
+                Event.id.ilike(needle),
+                Event.object_id.ilike(needle),
+                Event.object_name.ilike(needle),
+                Event.client_name.ilike(needle),
+                Event.location.ilike(needle),
+                Event.result_text.ilike(needle),
+            ]
+        )
+
+    if like_clauses:
+        filters.append(or_(*like_clauses))
+
+
+async def _build_event_filters(
     *,
+    session: AsyncSession,
     dateFrom: str | None,
     dateTo: str | None,
     type: str | None,  # noqa: A002
@@ -269,14 +306,8 @@ async def build_events_raport_xlsx_bytes(
     includeSystem: bool,
     includeCancelled: bool,
     onlyWithOperatorComment: bool,
-    limit: int,
-    session: AsyncSession,
-) -> tuple[bytes, int]:
-    """Build XLSX bytes for «Рапорт» by current events filters.
-
-    Returns: (xlsx_bytes, events_count)
-    """
-
+    use_default_lookback: bool,
+) -> list[Any]:
     filters: list[Any] = []
 
     try:
@@ -304,16 +335,25 @@ async def build_events_raport_xlsx_bytes(
 
     if type:
         filters.append(Event.type == type)
-    if objectId:
-        oid_variants = _query_variants(objectId)
-        if len(oid_variants) == 1:
-            filters.append(Event.object_id == oid_variants[0])
-        else:
-            filters.append(or_(*[Event.object_id == v for v in oid_variants]))
+    _append_object_id_filter(filters, objectId)
     if severity:
         filters.append(Event.severity == severity)
     if status:
         filters.append(Event.status == status)
+
+    if (
+        use_default_lookback
+        and not dateFrom
+        and not dateTo
+        and not type
+        and not objectId
+        and not severity
+        and not status
+        and not (search and search.strip())
+        and int(settings.ui_events_default_lookback_hours) > 0
+    ):
+        dt_from = datetime.utcnow() - timedelta(hours=int(settings.ui_events_default_lookback_hours))
+        filters.append(Event.timestamp >= dt_from)
 
     if dateFrom:
         dt_from = _parse_dt(dateFrom)
@@ -324,26 +364,46 @@ async def build_events_raport_xlsx_bytes(
         if dt_to:
             filters.append(Event.timestamp <= dt_to)
 
-    if search and search.strip():
-        variants = _query_variants(search)
-        needles = [f"%{v}%" for v in variants]
+    _append_search_filter(filters, search)
+    return filters
 
-        like_clauses: list[Any] = []
-        for needle in needles:
-            like_clauses.extend(
-                [
-                    Event.description.ilike(needle),
-                    Event.id.ilike(needle),
-                    Event.object_id.ilike(needle),
-                    Event.object_name.ilike(needle),
-                    Event.client_name.ilike(needle),
-                    Event.location.ilike(needle),
-                    Event.result_text.ilike(needle),
-                ]
-            )
 
-        if like_clauses:
-            filters.append(or_(*like_clauses))
+async def build_events_raport_xlsx_bytes(
+    *,
+    dateFrom: str | None,
+    dateTo: str | None,
+    type: str | None,  # noqa: A002
+    objectId: str | None,
+    severity: str | None,
+    status: str | None,
+    search: str | None,
+    includeNoise: bool,
+    includeSystem: bool,
+    includeCancelled: bool,
+    onlyWithOperatorComment: bool,
+    limit: int,
+    session: AsyncSession,
+) -> tuple[bytes, int]:
+    """Build XLSX bytes for «Рапорт» by current events filters.
+
+    Returns: (xlsx_bytes, events_count)
+    """
+
+    filters = await _build_event_filters(
+        session=session,
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        type=type,
+        objectId=objectId,
+        severity=severity,
+        status=status,
+        search=search,
+        includeNoise=includeNoise,
+        includeSystem=includeSystem,
+        includeCancelled=includeCancelled,
+        onlyWithOperatorComment=onlyWithOperatorComment,
+        use_default_lookback=False,
+    )
 
     where = and_(*filters) if filters else None
 
@@ -939,95 +999,21 @@ async def list_events(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    filters: list[Any] = []
-
-    try:
-        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
-    except Exception:
-        dialect_name = None
-
-    # UI requirement: hide operator-irrelevant noise (e.g., постановка/снятие).
-    # These are classified as type=access during agency archive sync.
-    if not includeNoise:
-        filters.append(Event.type != "access")
-
-    # UI requirement: hide cancelled by default.
-    if not includeCancelled:
-        filters.append(Event.status != "cancelled")
-
-    if onlyWithOperatorComment:
-        filters.append(_has_operator_comment_predicate())
-
-    # UI requirement: hide system-handled alarms by default.
-    # Convention for "real handled alarms": there is an operator action
-    # "accepted for processing" (eventservice) OR Event.operator_id is set.
-    if not includeSystem:
-        actions_linked = await _actions_linked_present(session)
-        if actions_linked:
-            handled_alarm = or_(
-                _is_operator_handled_predicate(),
-                _operator_action_exists(dialect_name=dialect_name),
-            )
-            filters.append(or_(Event.type != "alarm", handled_alarm))
-        # else: fail-open (actions not synced) -> don't hide alarms
-
-    if type:
-        filters.append(Event.type == type)
-    if objectId:
-        oid_variants = _query_variants(objectId)
-        if len(oid_variants) == 1:
-            filters.append(Event.object_id == oid_variants[0])
-        else:
-            filters.append(or_(*[Event.object_id == v for v in oid_variants]))
-    if severity:
-        filters.append(Event.severity == severity)
-    if status:
-        filters.append(Event.status == status)
-
-    # Default UI behavior: if user didn't set any filters, show only recent events.
-    # This prevents slow queries when the DB contains millions of rows.
-    if (
-        not dateFrom
-        and not dateTo
-        and not type
-        and not objectId
-        and not severity
-        and not status
-        and not (search and search.strip())
-        and int(settings.ui_events_default_lookback_hours) > 0
-    ):
-        dt_from = datetime.utcnow() - timedelta(hours=int(settings.ui_events_default_lookback_hours))
-        filters.append(Event.timestamp >= dt_from)
-
-    if dateFrom:
-        dt_from = _parse_dt(dateFrom)
-        if dt_from:
-            filters.append(Event.timestamp >= dt_from)
-    if dateTo:
-        dt_to = _parse_dt(dateTo)
-        if dt_to:
-            filters.append(Event.timestamp <= dt_to)
-
-    if search and search.strip():
-        variants = _query_variants(search)
-        needles = [f"%{v}%" for v in variants]
-
-        like_clauses: list[Any] = []
-        for needle in needles:
-            like_clauses.extend(
-                [
-                    Event.description.ilike(needle),
-                    Event.id.ilike(needle),
-                    Event.object_id.ilike(needle),
-                    Event.object_name.ilike(needle),
-                    Event.client_name.ilike(needle),
-                    Event.location.ilike(needle),
-                    Event.result_text.ilike(needle),
-                ]
-            )
-
-        if like_clauses:
-            filters.append(or_(*like_clauses))
+    filters = await _build_event_filters(
+        session=session,
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        type=type,
+        objectId=objectId,
+        severity=severity,
+        status=status,
+        search=search,
+        includeNoise=includeNoise,
+        includeSystem=includeSystem,
+        includeCancelled=includeCancelled,
+        onlyWithOperatorComment=onlyWithOperatorComment,
+        use_default_lookback=True,
+    )
 
     where = and_(*filters) if filters else None
 
@@ -1073,73 +1059,21 @@ async def export_events_export(
     limit: int = Query(50000, ge=1, le=200000),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    filters: list[Any] = []
-
-    try:
-        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
-    except Exception:
-        dialect_name = None
-
-    if not includeNoise:
-        filters.append(Event.type != "access")
-
-    if not includeCancelled:
-        filters.append(Event.status != "cancelled")
-
-    if onlyWithOperatorComment:
-        filters.append(_has_operator_comment_predicate())
-
-    if not includeSystem:
-        actions_linked = await _actions_linked_present(session)
-        if actions_linked:
-            handled_alarm = or_(
-                _is_operator_handled_predicate(),
-                _operator_action_exists(dialect_name=dialect_name),
-            )
-            filters.append(or_(Event.type != "alarm", handled_alarm))
-
-    if type:
-        filters.append(Event.type == type)
-    if objectId:
-        oid_variants = _query_variants(objectId)
-        if len(oid_variants) == 1:
-            filters.append(Event.object_id == oid_variants[0])
-        else:
-            filters.append(or_(*[Event.object_id == v for v in oid_variants]))
-    if severity:
-        filters.append(Event.severity == severity)
-    if status:
-        filters.append(Event.status == status)
-
-    if dateFrom:
-        dt_from = _parse_dt(dateFrom)
-        if dt_from:
-            filters.append(Event.timestamp >= dt_from)
-    if dateTo:
-        dt_to = _parse_dt(dateTo)
-        if dt_to:
-            filters.append(Event.timestamp <= dt_to)
-
-    if search and search.strip():
-        variants = _query_variants(search)
-        needles = [f"%{v}%" for v in variants]
-
-        like_clauses: list[Any] = []
-        for needle in needles:
-            like_clauses.extend(
-                [
-                    Event.description.ilike(needle),
-                    Event.id.ilike(needle),
-                    Event.object_id.ilike(needle),
-                    Event.object_name.ilike(needle),
-                    Event.client_name.ilike(needle),
-                    Event.location.ilike(needle),
-                    Event.result_text.ilike(needle),
-                ]
-            )
-
-        if like_clauses:
-            filters.append(or_(*like_clauses))
+    filters = await _build_event_filters(
+        session=session,
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        type=type,
+        objectId=objectId,
+        severity=severity,
+        status=status,
+        search=search,
+        includeNoise=includeNoise,
+        includeSystem=includeSystem,
+        includeCancelled=includeCancelled,
+        onlyWithOperatorComment=onlyWithOperatorComment,
+        use_default_lookback=False,
+    )
 
     where = and_(*filters) if filters else None
 

@@ -33,6 +33,7 @@ import {
 import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
 import { API_BASE_URL, apiFetchRaw, apiGet, apiPost } from '@/lib/api';
 import { loadUiSettings } from '@/lib/uiSettings';
+import { appendCommonEventFilterParams, appendEventDateRangeParams } from '@/lib/eventFilters';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -48,13 +49,6 @@ function formatLocalYYYYMMDD(d: Date): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
-}
-
-function setTimeOnDate(d: Date, hhmm: string): Date {
-  const [hh, mm] = (hhmm || '00:00').split(':');
-  const out = new Date(d);
-  out.setHours(Number(hh || '0'), Number(mm || '0'), 0, 0);
-  return out;
 }
 
 type EventCodeItem = {
@@ -280,6 +274,9 @@ export default function Reports() {
   const [eventsType, setEventsType] = useState<'all' | string>('all');
   const [eventsSeverity, setEventsSeverity] = useState<'all' | string>('all');
   const [eventsStatus, setEventsStatus] = useState<'all' | string>('all');
+  const [eventsOnlyWithOperatorComment, setEventsOnlyWithOperatorComment] = useState(false);
+  const [eventsIncludeSystem, setEventsIncludeSystem] = useState(false);
+  const [eventsIncludeCancelled, setEventsIncludeCancelled] = useState(false);
 
   const [gbrName, setGbrName] = useState<'all' | string>('all');
   const [gbrObjectId, setGbrObjectId] = useState('');
@@ -345,10 +342,7 @@ export default function Reports() {
     try {
       const params = new URLSearchParams();
       // Use UTC ISO like other pages (Analytics/GbrReports)
-      const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
-      const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
-      params.set('dateFrom', df);
-      params.set('dateTo', dt);
+      appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
       if (gbrName !== 'all') params.set('gbrName', String(gbrName));
       if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
       params.set('limit', '2000');
@@ -373,10 +367,7 @@ export default function Reports() {
       return;
     }
     const params = new URLSearchParams();
-    const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
-    const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
-    params.set('dateFrom', df);
-    params.set('dateTo', dt);
+    appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
     if (gbrName !== 'all') params.set('gbrName', String(gbrName));
     if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
     const name = `raport-gbr-${formatLocalYYYYMMDD(new Date())}.xlsx`;
@@ -396,8 +387,7 @@ export default function Reports() {
         }
         const params = new URLSearchParams();
         params.set('eventCode', eventCode.trim());
-        params.set('dateFrom', setTimeOnDate(dateRange.from, timeFrom).toISOString());
-        params.set('dateTo', setTimeOnDate(dateRange.to, timeTo).toISOString());
+        appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
         if (clientName.trim()) params.set('clientName', clientName.trim());
         if (objectQuery.trim()) params.set('objectQuery', objectQuery.trim());
         await apiPost(`/reports/generate/objects-by-code?${params.toString()}`);
@@ -407,10 +397,7 @@ export default function Reports() {
           return;
         }
         const params = new URLSearchParams();
-        const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
-        const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
-        params.set('dateFrom', df);
-        params.set('dateTo', dt);
+        appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
         if (gbrName !== 'all') params.set('gbrName', String(gbrName));
         if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
         await apiPost(`/reports/generate/gbr-raport-xlsx?${params.toString()}`);
@@ -420,19 +407,17 @@ export default function Reports() {
           return;
         }
         const params = new URLSearchParams();
-        const df = setTimeOnDate(dateRange.from, timeFrom).toISOString();
-        const dt = setTimeOnDate(dateRange.to, timeTo).toISOString();
-        params.set('dateFrom', df);
-        params.set('dateTo', dt);
-
-        // Keep consistent with Events page defaults: only operator-noted events.
-        params.set('onlyWithOperatorComment', 'true');
-
-        if (eventsSearch.trim()) params.set('search', eventsSearch.trim());
-        if (eventsObjectId.trim()) params.set('objectId', eventsObjectId.trim());
-        if (eventsType !== 'all') params.set('type', String(eventsType));
-        if (eventsSeverity !== 'all') params.set('severity', String(eventsSeverity));
-        if (eventsStatus !== 'all') params.set('status', String(eventsStatus));
+        appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
+        appendCommonEventFilterParams(params, {
+          search: eventsSearch,
+          objectId: eventsObjectId,
+          type: String(eventsType),
+          severity: String(eventsSeverity),
+          status: String(eventsStatus),
+          onlyWithOperatorComment: eventsOnlyWithOperatorComment,
+          includeSystem: eventsIncludeSystem,
+          includeCancelled: eventsIncludeCancelled,
+        });
 
         await apiPost(`/reports/generate/events-raport-xlsx?${params.toString()}`);
       } else if (createKind === 'pcnLedger') {
@@ -441,8 +426,7 @@ export default function Reports() {
           return;
         }
         const params = new URLSearchParams();
-        params.set('dateFrom', setTimeOnDate(dateRange.from, timeFrom).toISOString());
-        params.set('dateTo', setTimeOnDate(dateRange.to, timeTo).toISOString());
+        appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
         if (pcnHideOperatorNames) params.set('hideOperatorNames', 'true');
 
@@ -834,8 +818,37 @@ export default function Reports() {
                     </div>
                   </div>
 
-                  <div className="text-xs text-muted-foreground">
-                    По умолчанию выгружаются только события с пометкой оператора (Result_Text).
+                  <div className="flex flex-wrap items-center gap-5 pt-1">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="eventsOnlyWithOperatorComment"
+                        checked={eventsOnlyWithOperatorComment}
+                        onCheckedChange={(checked) => setEventsOnlyWithOperatorComment(Boolean(checked))}
+                      />
+                      <Label htmlFor="eventsOnlyWithOperatorComment" className="text-sm">
+                        Только с пометкой оператора
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="eventsIncludeSystem"
+                        checked={eventsIncludeSystem}
+                        onCheckedChange={(checked) => setEventsIncludeSystem(Boolean(checked))}
+                      />
+                      <Label htmlFor="eventsIncludeSystem" className="text-sm">
+                        Включая системные
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="eventsIncludeCancelled"
+                        checked={eventsIncludeCancelled}
+                        onCheckedChange={(checked) => setEventsIncludeCancelled(Boolean(checked))}
+                      />
+                      <Label htmlFor="eventsIncludeCancelled" className="text-sm">
+                        Включая отменённые
+                      </Label>
+                    </div>
                   </div>
                 </div>
               ) : null}

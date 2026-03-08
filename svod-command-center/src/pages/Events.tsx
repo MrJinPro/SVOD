@@ -12,6 +12,7 @@ import { EventDetailsSheet } from '@/components/events/EventDetailsSheet.tsx';
 import { PaginationBar } from '@/components/PaginationBar';
 import type { Event, EventDetailsResponse } from '@/types';
 import { useSearchParams } from 'react-router-dom';
+import { appendCommonEventFilterParams, appendEventDateRangeParams, hasExplicitEventFilters } from '@/lib/eventFilters';
 
 const defaultFilters: EventFiltersValue = {
   search: '',
@@ -21,11 +22,6 @@ const defaultFilters: EventFiltersValue = {
   todayOnly: false,
   dateRange: { from: null, to: null },
 };
-
-function toLocalIso(dt: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
-}
 
 export default function Events() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -83,46 +79,25 @@ export default function Events() {
     params.set('page', String(pageNumber));
     params.set('pageSize', '50');
 
-    // Hide events without operator note by default,
-    // but when user applies any filters (date/type/severity/status/search)
-    // we should not hide them implicitly.
-    const haveSearch = Boolean(appliedFilters.search.trim());
-    const hasAnyFilter =
-      haveSearch ||
-      Boolean(appliedFilters.todayOnly) ||
-      Boolean(appliedFilters.dateRange.from || appliedFilters.dateRange.to) ||
-      appliedFilters.type !== 'all' ||
-      appliedFilters.severity !== 'all' ||
-      appliedFilters.status !== 'all';
+    const hasAnyFilter = hasExplicitEventFilters(appliedFilters);
 
     if (!hasAnyFilter) {
       params.set('onlyWithOperatorComment', 'true');
     }
 
-    if (showSystem) params.set('includeSystem', 'true');
-    if (showCancelled) params.set('includeCancelled', 'true');
+    appendCommonEventFilterParams(params, {
+      search: appliedFilters.search,
+      type: appliedFilters.type,
+      severity: appliedFilters.severity,
+      status: appliedFilters.status,
+      includeSystem: showSystem,
+      includeCancelled: showCancelled,
+    });
 
-    if (haveSearch) params.set('search', appliedFilters.search.trim());
-    if (appliedFilters.type !== 'all') params.set('type', appliedFilters.type);
-    if (appliedFilters.severity !== 'all') params.set('severity', appliedFilters.severity);
-    if (appliedFilters.status !== 'all') params.set('status', appliedFilters.status);
-
-    if (appliedFilters.todayOnly) {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-      params.set('dateFrom', toLocalIso(start));
-      params.set('dateTo', toLocalIso(end));
-    } else if (appliedFilters.dateRange.from || appliedFilters.dateRange.to) {
-      const from = appliedFilters.dateRange.from ?? appliedFilters.dateRange.to;
-      const to = appliedFilters.dateRange.to ?? appliedFilters.dateRange.from;
-      if (from && to) {
-        const start = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 0, 0, 0, 0);
-        const end = new Date(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59, 999);
-        params.set('dateFrom', toLocalIso(start));
-        params.set('dateTo', toLocalIso(end));
-      }
-    }
+    appendEventDateRangeParams(params, {
+      todayOnly: appliedFilters.todayOnly,
+      dateRange: appliedFilters.dateRange,
+    });
 
     return `/events?${params.toString()}`;
   }, [appliedFilters, pageNumber, showSystem, showCancelled]);
@@ -147,14 +122,7 @@ export default function Events() {
 
     // Keep stream consistent with list: only operator-noted events,
     // but if user is searching in the list, do not filter.
-    const haveSearch = Boolean(appliedFilters.search.trim());
-    const hasAnyFilter =
-      haveSearch ||
-      Boolean(appliedFilters.todayOnly) ||
-      Boolean(appliedFilters.dateRange.from || appliedFilters.dateRange.to) ||
-      appliedFilters.type !== 'all' ||
-      appliedFilters.severity !== 'all' ||
-      appliedFilters.status !== 'all';
+    const hasAnyFilter = hasExplicitEventFilters(appliedFilters);
 
     if (!hasAnyFilter) {
       params.set('onlyWithOperatorComment', 'true');
