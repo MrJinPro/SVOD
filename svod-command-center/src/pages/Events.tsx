@@ -292,6 +292,11 @@ export default function Events() {
           open={detailsOpen}
           onOpenChange={setDetailsOpen}
           event={selectedEvent}
+          onEventUpdated={(next) => {
+            setSelectedEvent(next);
+            // Refresh list so default "only with operator comment" filter picks it up.
+            refetch();
+          }}
         />
 
         <PaginationBar

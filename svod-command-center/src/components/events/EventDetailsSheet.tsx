@@ -5,6 +5,10 @@ import { apiGet } from '@/lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
+import { apiPatch } from '@/lib/api';
+import { toast } from '@/hooks/use-toast';
 
 const severityLabels: Record<string, string> = {
   critical: 'Критический',
@@ -61,12 +65,15 @@ interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   event: Event | null;
+  onEventUpdated?: (next: Event) => void;
 }
 
-export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
+export function EventDetailsSheet({ open, onOpenChange, event, onEventUpdated }: Props) {
   const [details, setDetails] = useState<EventDetailsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
 
   const eventId = event?.id ?? null;
 
@@ -80,7 +87,10 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
         const res = await apiGet<EventDetailsResponse>(
           `/events/details?eventId=${encodeURIComponent(eventId)}&actionsLimit=500`
         );
-        if (!cancelled) setDetails(res);
+        if (!cancelled) {
+          setDetails(res);
+          setNoteDraft(String(res?.event?.resultText ?? ''));
+        }
       } catch (e: any) {
         if (!cancelled) setError(e?.message || 'Ошибка загрузки деталей');
       } finally {
@@ -92,6 +102,12 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
       cancelled = true;
     };
   }, [open, eventId]);
+
+  useEffect(() => {
+    if (!open) return;
+    // Fallback: show whatever we already have before details load.
+    setNoteDraft(String(event?.resultText ?? ''));
+  }, [open, event?.id]);
 
   const fmtTs = (ts: string) => {
     const d = new Date(ts);
@@ -179,6 +195,56 @@ export function EventDetailsSheet({ open, onOpenChange, event }: Props) {
                 <div className="text-sm whitespace-pre-wrap">{humanizeDescription(event.description)}</div>
               </div>
             )}
+
+            <div className="rounded-md border border-border bg-card p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">Пометка оператора (Result_Text)</div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={noteSaving || !eventId}
+                    onClick={async () => {
+                      if (!eventId) return;
+                      setNoteSaving(true);
+                      try {
+                        const res = await apiPatch<{ event: Event }>(`/events/operator-comment`, {
+                          eventId,
+                          resultText: noteDraft,
+                        });
+                        const nextEvent = res?.event;
+                        if (nextEvent) {
+                          setDetails((prev) => (prev ? { ...prev, event: nextEvent } : { event: nextEvent, actions: [] }));
+                          onEventUpdated?.(nextEvent);
+                        }
+                        toast({ title: 'Событие', description: 'Пометка сохранена.' });
+                      } catch (e: any) {
+                        toast({
+                          title: 'Событие',
+                          description: e?.message || 'Не удалось сохранить пометку',
+                          variant: 'destructive',
+                        });
+                      } finally {
+                        setNoteSaving(false);
+                      }
+                    }}
+                  >
+                    {noteSaving ? 'Сохранение…' : 'Сохранить'}
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-2">
+                <Textarea
+                  value={noteDraft}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                  placeholder="Введите комментарий оператора…"
+                  disabled={noteSaving}
+                />
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Сохраняется только в базе SVOD (локально).
+              </div>
+            </div>
           </div>
         )}
 

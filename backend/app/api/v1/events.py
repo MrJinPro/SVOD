@@ -8,6 +8,7 @@ from typing import Any
 
 import csv
 import io
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import StreamingResponse
@@ -29,6 +30,11 @@ from app.models.event_action import EventAction
 router = APIRouter(prefix="/events")
 
 logger = logging.getLogger(__name__)
+
+
+class OperatorCommentIn(BaseModel):
+    eventId: str = Field(min_length=1, max_length=64)
+    resultText: str | None = Field(default=None, max_length=5000)
 
 
 def _is_operator_handled_predicate() -> Any:
@@ -790,6 +796,31 @@ async def get_event_details(
                 return {"event": _event_to_out(e), "actions": out_rows, "actionsMeta": actions_meta}
 
     return {"event": _event_to_out(e), "actions": [], "actionsMeta": actions_meta}
+
+
+@router.patch("/operator-comment")
+async def upsert_operator_comment(
+    payload: OperatorCommentIn,
+    session: AsyncSession = Depends(get_session),
+    current: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    e = await session.get(Event, payload.eventId)
+    if not e:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Event not found"})
+
+    text = (payload.resultText or "").strip()
+    e.result_text = text if text else None
+
+    # Best-effort: if comment is added and operator_id is empty, tag it
+    # with current username (used by some UI heuristics).
+    if text and not (str(getattr(e, "operator_id", "") or "").strip()):
+        who = str(current.get("username") or "").strip() or str(current.get("id") or "").strip()
+        if who:
+            e.operator_id = who
+
+    await session.commit()
+    await session.refresh(e)
+    return {"event": _event_to_out(e)}
 
 
 @router.get("")
