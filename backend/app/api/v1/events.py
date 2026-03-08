@@ -232,9 +232,12 @@ async def build_events_raport_xlsx_bytes(
         filters.append(
             or_(
                 Event.description.ilike(needle),
+                Event.id.ilike(needle),
+                Event.object_id.ilike(needle),
                 Event.object_name.ilike(needle),
                 Event.client_name.ilike(needle),
                 Event.location.ilike(needle),
+                Event.result_text.ilike(needle),
             )
         )
 

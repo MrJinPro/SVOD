@@ -83,13 +83,17 @@ export default function Events() {
     params.set('page', String(pageNumber));
     params.set('pageSize', '50');
 
-    // Hide events without operator note by default.
-    params.set('onlyWithOperatorComment', 'true');
+    // Hide events without operator note by default,
+    // but when user explicitly searches we should not filter them out.
+    const haveSearch = Boolean(appliedFilters.search.trim());
+    if (!haveSearch) {
+      params.set('onlyWithOperatorComment', 'true');
+    }
 
     if (showSystem) params.set('includeSystem', 'true');
     if (showCancelled) params.set('includeCancelled', 'true');
 
-    if (appliedFilters.search.trim()) params.set('search', appliedFilters.search.trim());
+    if (haveSearch) params.set('search', appliedFilters.search.trim());
     if (appliedFilters.type !== 'all') params.set('type', appliedFilters.type);
     if (appliedFilters.severity !== 'all') params.set('severity', appliedFilters.severity);
     if (appliedFilters.status !== 'all') params.set('status', appliedFilters.status);
@@ -132,13 +136,17 @@ export default function Events() {
     if (newestTimestamp) params.set('since', newestTimestamp);
     params.set('pollSeconds', '1.0');
 
-    // Keep stream consistent with list: only operator-noted events.
-    params.set('onlyWithOperatorComment', 'true');
+    // Keep stream consistent with list: only operator-noted events,
+    // but if user is searching in the list, do not filter.
+    const haveSearch = Boolean(appliedFilters.search.trim());
+    if (!haveSearch) {
+      params.set('onlyWithOperatorComment', 'true');
+    }
 
     if (showSystem) params.set('includeSystem', 'true');
     if (showCancelled) params.set('includeCancelled', 'true');
     return `/events/stream?${params.toString()}`;
-  }, [newestTimestamp, showSystem, showCancelled]);
+  }, [newestTimestamp, showSystem, showCancelled, appliedFilters.search]);
 
   useEventStream({
     enabled: live,
