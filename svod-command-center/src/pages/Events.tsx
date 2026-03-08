@@ -84,9 +84,18 @@ export default function Events() {
     params.set('pageSize', '50');
 
     // Hide events without operator note by default,
-    // but when user explicitly searches we should not filter them out.
+    // but when user applies any filters (date/type/severity/status/search)
+    // we should not hide them implicitly.
     const haveSearch = Boolean(appliedFilters.search.trim());
-    if (!haveSearch) {
+    const hasAnyFilter =
+      haveSearch ||
+      Boolean(appliedFilters.todayOnly) ||
+      Boolean(appliedFilters.dateRange.from || appliedFilters.dateRange.to) ||
+      appliedFilters.type !== 'all' ||
+      appliedFilters.severity !== 'all' ||
+      appliedFilters.status !== 'all';
+
+    if (!hasAnyFilter) {
       params.set('onlyWithOperatorComment', 'true');
     }
 
@@ -139,7 +148,15 @@ export default function Events() {
     // Keep stream consistent with list: only operator-noted events,
     // but if user is searching in the list, do not filter.
     const haveSearch = Boolean(appliedFilters.search.trim());
-    if (!haveSearch) {
+    const hasAnyFilter =
+      haveSearch ||
+      Boolean(appliedFilters.todayOnly) ||
+      Boolean(appliedFilters.dateRange.from || appliedFilters.dateRange.to) ||
+      appliedFilters.type !== 'all' ||
+      appliedFilters.severity !== 'all' ||
+      appliedFilters.status !== 'all';
+
+    if (!hasAnyFilter) {
       params.set('onlyWithOperatorComment', 'true');
     }
 

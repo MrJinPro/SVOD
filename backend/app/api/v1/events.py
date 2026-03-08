@@ -179,7 +179,10 @@ def _operator_action_exists(*, dialect_name: str | None) -> Any:
         (_numeric_event_id_predicate(dialect_name), cast(Event.id, Integer)),
         else_=None,
     )
-    date_key_expr = cast(func.to_char(Event.timestamp, "YYYYMMDD"), Integer)
+    if (dialect_name or "").lower() == "sqlite":
+        date_key_expr = cast(func.strftime("%Y%m%d", Event.timestamp), Integer)
+    else:
+        date_key_expr = cast(func.to_char(Event.timestamp, "YYYYMMDD"), Integer)
 
     return exists(
         select(1)
