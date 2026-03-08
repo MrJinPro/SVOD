@@ -71,7 +71,9 @@ async def list_objects(
 
     # By default, hide terminated/disabled objects.
     if not includeDisabled:
-        filters.append(Object.disabled.is_(False))
+        # Backward compat: older DBs/imports may contain NULL in 'disabled'.
+        # Consider NULL as "not disabled".
+        filters.append(or_(Object.disabled.is_(False), Object.disabled.is_(None)))
 
     # In some deployments, terminated objects are stored with Panel_id like 'IDxxxxx'.
     if not includeIdPrefix:
