@@ -1409,14 +1409,16 @@ async def generate_pcn_ledger_xlsx(
 
     # Formula note (so the sheet always shows the exact rule used)
     ws.merge_cells(start_row=7, start_column=2, end_row=8, end_column=10)
-    formula_note = (
-        "Формула: % = (тревоги оператора * 100) / (все тревоги смены). "
-        "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n"
-        f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. "
-        f"Отработка тревоги: действие '{actionName or ''}'. "
-        f"Диспетчеры в смену: {ds} (presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). "
-        ("ФИО скрыты. " if hideOperatorNames else "")
-        "Сравнение presence/actions — на листе 'Контроль'."
+    formula_note = "".join(
+        [
+            "Формула: % = (тревоги оператора * 100) / (все тревоги смены). ",
+            "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n",
+            f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. ",
+            f"Отработка тревоги: действие '{actionName or ''}'. ",
+            f"Диспетчеры в смену: {ds} (presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
+            "ФИО скрыты. " if hideOperatorNames else "",
+            "Сравнение presence/actions — на листе 'Контроль'.",
+        ]
     )
     ws.cell(7, 2, clean_excel_text(formula_note)).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
     ws.cell(7, 2).font = Font(size=10)
