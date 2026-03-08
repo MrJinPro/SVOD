@@ -427,6 +427,7 @@ def fetch_alarm_stands_analysis(
     archives_db_name: str,
     date_from: datetime,
     date_to: datetime,
+    q: str | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
     """Анализ объектов из dbo.Stands по архиву событий.
@@ -489,6 +490,20 @@ def fetch_alarm_stands_analysis(
         with conn.cursor() as cur:
             cur.execute(sql_stands)
             stands_rows = _rows_to_dicts(cur)
+
+        query = (q or "").strip().lower()
+        if query:
+            def _match(row: dict[str, Any]) -> bool:
+                panel_id = str(row.get("Panel_id") or "").strip().lower()
+                company = str(row.get("CompanyName") or "").strip().lower()
+                address = str(row.get("CompanyAddress") or "").strip().lower()
+                # Also allow searching by zone/group as a convenient fallback.
+                group_no = str(row.get("GroupNo") or row.get("Group_") or "").strip().lower()
+                zone = str(row.get("Zone") or "").strip().lower()
+                hay = " ".join([panel_id, company, address, group_no, zone])
+                return query in hay
+
+            stands_rows = [r for r in stands_rows if _match(r)]
 
         panel_ids = [str(r.get("Panel_id") or "").strip() for r in stands_rows]
         panel_ids = [p for p in panel_ids if p]

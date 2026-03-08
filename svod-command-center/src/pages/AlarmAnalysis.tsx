@@ -2,6 +2,7 @@ import { MainLayout } from '@/components/layout/MainLayout';
 import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useApiGet } from '@/hooks/useApiGet';
 import { RefreshCw, Filter, RotateCcw } from 'lucide-react';
@@ -44,14 +45,18 @@ export default function AlarmAnalysis() {
   });
   const [appliedRange, setAppliedRange] = useState<DateRange | undefined>(draftRange);
 
+  const [draftQuery, setDraftQuery] = useState<string>('');
+  const [appliedQuery, setAppliedQuery] = useState<string>('');
+
   const path = useMemo(() => {
     const params = new URLSearchParams();
     if (appliedRange?.from) params.set('dateFrom', toStartOfDayIso(appliedRange.from));
     if (appliedRange?.to) params.set('dateTo', toEndOfDayIso(appliedRange.to));
+    if (appliedQuery.trim()) params.set('q', appliedQuery.trim());
     params.set('limit', '200');
     const qs = params.toString();
     return `/analytics/alarms/stands${qs ? `?${qs}` : ''}`;
-  }, [appliedRange?.from, appliedRange?.to]);
+  }, [appliedRange?.from, appliedRange?.to, appliedQuery]);
 
   const {
     data,
@@ -85,11 +90,24 @@ export default function AlarmAnalysis() {
             </div>
 
             <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Поиск:</span>
+              <Input
+                value={draftQuery}
+                onChange={(e) => setDraftQuery(e.target.value)}
+                placeholder="Panel_id / объект / адрес"
+                className="w-[280px] bg-background"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
                 size="sm"
                 className="gap-2"
-                onClick={() => setAppliedRange(draftRange)}
+                onClick={() => {
+                  setAppliedRange(draftRange);
+                  setAppliedQuery(draftQuery);
+                }}
               >
                 <Filter className="h-4 w-4" />
                 Применить
@@ -105,6 +123,8 @@ export default function AlarmAnalysis() {
                   const next = { from, to: now } as DateRange;
                   setDraftRange(next);
                   setAppliedRange(next);
+                  setDraftQuery('');
+                  setAppliedQuery('');
                 }}
               >
                 <RotateCcw className="h-4 w-4" />

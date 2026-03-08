@@ -190,6 +190,7 @@ async def gbr_archive_trips(
 async def alarms_stands(
     date_from: str | None = Query(default=None, alias="dateFrom"),
     date_to: str | None = Query(default=None, alias="dateTo"),
+    q: str | None = Query(default=None, description="Search by panel/object/address/code"),
     limit: int = Query(default=200, ge=1, le=1000),
     _perm: Any = Depends(require_permissions("analytics:read")),
 ) -> dict[str, Any]:
@@ -230,6 +231,7 @@ async def alarms_stands(
             archives_db_name=settings.agency_archives_db_name,
             date_from=dt_from,
             date_to=dt_to,
+            q=q,
             limit=limit,
         )
     except RuntimeError as e:
