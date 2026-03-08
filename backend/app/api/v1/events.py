@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 import csv
@@ -155,9 +155,11 @@ def _parse_dt(value: str) -> datetime | None:
         if v.endswith("Z"):
             v = v[:-1] + "+00:00"
         dt = datetime.fromisoformat(v)
-        # Normalize timezone-aware inputs to naive UTC for DB comparisons.
+        # DB stores timestamps as naive datetimes (no timezone). If frontend sends
+        # tz-aware ISO strings (e.g. trailing 'Z'), normalize to server local time
+        # and drop tzinfo so comparisons match stored values.
         if dt.tzinfo is not None:
-            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt.astimezone().replace(tzinfo=None)
         return dt
     except Exception:
         return None

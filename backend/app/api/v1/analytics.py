@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Annotated
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -53,11 +53,12 @@ def _parse_dt(value: str | None) -> datetime | None:
             v = v[:-1] + "+00:00"
 
         dt = datetime.fromisoformat(v)
-        # Frontend sends ISO strings with timezone (e.g. trailing 'Z').
-        # In Postgres we store `event_actions.action_time` as TIMESTAMP WITHOUT TIME ZONE.
-        # asyncpg rejects tz-aware datetimes when binding to that type.
+        # DB stores timestamps as naive datetimes (no timezone). If the frontend sends
+        # tz-aware ISO strings (e.g. trailing 'Z' or '+03:00'), normalize them to the
+        # server's *local* timezone and drop tzinfo so comparisons match stored values.
+        # This also satisfies asyncpg which rejects tz-aware datetimes for TIMESTAMP WITHOUT TIME ZONE.
         if dt.tzinfo is not None:
-            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt.astimezone().replace(tzinfo=None)
         return dt
     except Exception:
         return None
