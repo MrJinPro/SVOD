@@ -350,13 +350,23 @@ export default function Events() {
         />
 
         {/* Table */}
-        <EventsTable
-          events={page.data}
-          onViewEvent={(evt) => {
-            setSelectedEvent(evt);
-            setDetailsOpen(true);
-          }}
-        />
+        {isLoading ? (
+          <div className="rounded-xl border border-border bg-card p-10 text-center">
+            <LoaderCircle className="mx-auto mb-4 h-10 w-10 animate-spin text-primary/70" />
+            <h3 className="mb-2 text-lg font-medium text-foreground">Обновляем список событий</h3>
+            <p className="text-muted-foreground">
+              Старые строки скрыты, чтобы не путать их с результатом нового поиска или фильтрации.
+            </p>
+          </div>
+        ) : (
+          <EventsTable
+            events={page.data}
+            onViewEvent={(evt) => {
+              setSelectedEvent(evt);
+              setDetailsOpen(true);
+            }}
+          />
+        )}
 
         <EventDetailsSheet
           open={detailsOpen}
@@ -369,14 +379,16 @@ export default function Events() {
           }}
         />
 
-        <PaginationBar
-          isLoading={isLoading}
-          shown={page.data.length}
-          total={page.total}
-          page={pageNumber}
-          totalPages={page.totalPages}
-          onPageChange={(next) => setPageNumber(next)}
-        />
+        {!isLoading && (
+          <PaginationBar
+            isLoading={isLoading}
+            shown={page.data.length}
+            total={page.total}
+            page={pageNumber}
+            totalPages={page.totalPages}
+            onPageChange={(next) => setPageNumber(next)}
+          />
+        )}
       </div>
     </MainLayout>
   );

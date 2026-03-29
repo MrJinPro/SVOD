@@ -1315,6 +1315,7 @@ async def list_events(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    search_active = bool(search and search.strip())
     filters = await _build_event_filters(
         session=session,
         dateFrom=dateFrom,
@@ -1333,19 +1334,29 @@ async def list_events(
 
     where = and_(*filters) if filters else None
 
-    count_stmt = select(func.count()).select_from(Event)
-    if where is not None:
-        count_stmt = count_stmt.where(where)
-    total = (await session.execute(count_stmt)).scalar_one()
-
     stmt: Select[tuple[Event]] = select(Event).order_by(Event.timestamp.desc())
     if where is not None:
         stmt = stmt.where(where)
-    stmt = stmt.offset((page - 1) * pageSize).limit(pageSize)
+    offset = (page - 1) * pageSize
 
-    rows = (await session.execute(stmt)).scalars().all()
+    if search_active:
+        stmt = stmt.offset(offset).limit(pageSize + 1)
+        raw_rows = (await session.execute(stmt)).scalars().all()
+        has_more = len(raw_rows) > pageSize
+        rows = raw_rows[:pageSize]
+        total = offset + len(rows) + (1 if has_more else 0)
+        total_pages = page + (1 if has_more else 0)
+    else:
+        count_stmt = select(func.count()).select_from(Event)
+        if where is not None:
+            count_stmt = count_stmt.where(where)
+        total = (await session.execute(count_stmt)).scalar_one()
+
+        stmt = stmt.offset(offset).limit(pageSize)
+        rows = (await session.execute(stmt)).scalars().all()
+        total_pages = (total + pageSize - 1) // pageSize if pageSize else 1
+
     page_items = [_event_to_out(e) for e in rows]
-    total_pages = (total + pageSize - 1) // pageSize if pageSize else 1
 
     return {
         "data": page_items,
@@ -1353,6 +1364,7 @@ async def list_events(
         "page": page,
         "pageSize": pageSize,
         "totalPages": total_pages,
+        "totalIsEstimate": search_active,
     }
 
 
