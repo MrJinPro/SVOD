@@ -443,6 +443,7 @@ async def build_events_raport_xlsx_bytes(
     from io import BytesIO
 
     from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
     from openpyxl.styles import Alignment, Border, Font, Side
 
     wb = Workbook()
@@ -495,7 +496,7 @@ async def build_events_raport_xlsx_bytes(
 
     widths = [12, 36, 10, 18, 22, 12, 18, 18, 18, 12, 22, 18, 18, 12, 18]
     for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[chr(ord('A') + i - 1)].width = w
+        ws.column_dimensions[get_column_letter(i)].width = w
 
     for col_idx, title in enumerate(columns, start=1):
         c = ws.cell(row=header_row, column=col_idx, value=title)
@@ -729,6 +730,7 @@ async def build_alarm_messages_xlsx_bytes(
     from io import BytesIO
 
     from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
     from openpyxl.styles import Alignment, Border, Font, Side
 
     wb = Workbook()
@@ -790,7 +792,7 @@ async def build_alarm_messages_xlsx_bytes(
         20, 14, 38, 26, 10, 20, 16, 10, 16, 12, 20, 12, 12, 52, 32, 24, 10, 12, 22, 10, 14, 10, 12, 16, 14, 12, 14,
     ]
     for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[chr(ord('A') + i - 1)].width = w
+        ws.column_dimensions[get_column_letter(i)].width = w
 
     for col_idx, title in enumerate(columns, start=1):
         c = ws.cell(row=header_row, column=col_idx, value=title)
