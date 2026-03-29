@@ -9,6 +9,7 @@ import { useApiGet } from "@/hooks/useApiGet";
 const Index = lazy(() => import("./pages/Index"));
 const Login = lazy(() => import("./pages/Login"));
 const Events = lazy(() => import("./pages/Events"));
+const SearchPage = lazy(() => import("./pages/SearchPage"));
 const Reports = lazy(() => import("./pages/Reports"));
 const Users = lazy(() => import("./pages/Users"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -68,7 +69,7 @@ const App = () => (
             <Route path="/objects" element={<RequireAuth><Objects /></RequireAuth>} />
             <Route path="/objects/:objectId" element={<RequireAuth><ObjectDetails /></RequireAuth>} />
             <Route path="/events" element={<RequireAuth><Events /></RequireAuth>} />
-            <Route path="/search" element={<Navigate to="/events" replace />} />
+            <Route path="/search" element={<RequireAuth><SearchPage /></RequireAuth>} />
             <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
             <Route path="/users" element={<RequireAuth><RequireRole roles={['admin']}><Users /></RequireRole></RequireAuth>} />
             <Route path="/analytics" element={<RequireAuth><RequireRole roles={['admin','analyst']}><Analytics /></RequireRole></RequireAuth>} />

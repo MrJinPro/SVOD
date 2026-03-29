@@ -81,3 +81,38 @@ def tokenize_query(value: str, *, max_tokens: int = 6) -> list[str]:
 
 def query_needles(value: str) -> list[str]:
     return [f"%{variant}%" for variant in query_variants(value)]
+
+
+def query_prefix_needles(value: str) -> list[str]:
+    return [f"{variant}%" for variant in query_variants(value)]
+
+
+def is_structured_search_token(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+
+    if raw[0] in {"*", "#"}:
+        return True
+
+    upper_raw = raw.upper()
+    if upper_raw.startswith("ID"):
+        return True
+
+    has_alpha = any(ch.isalpha() for ch in raw)
+    has_digit = any(ch.isdigit() for ch in raw)
+    if has_digit:
+        return True
+
+    compact = raw.replace("-", "").replace("_", "").replace("/", "")
+    return compact.isdigit() or (has_alpha and has_digit)
+
+
+def should_use_light_search(value: str) -> bool:
+    raw = str(value or "").strip()
+    return len(raw) < 3 or is_structured_search_token(raw)
+
+
+def should_search_related_text(value: str) -> bool:
+    raw = str(value or "").strip()
+    return len(raw) >= 3 and not is_structured_search_token(raw)

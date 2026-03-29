@@ -10,7 +10,14 @@ from app.db.session import get_session
 from app.models.event import Event
 from app.models.event_action import EventAction
 from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
-from app.utils.search import query_needles, tokenize_query
+from app.utils.search import (
+    query_needles,
+    query_prefix_needles,
+    query_variants,
+    should_search_related_text,
+    should_use_light_search,
+    tokenize_query,
+)
 
 router = APIRouter(prefix="/search")
 
@@ -49,45 +56,67 @@ def _object_to_out(obj: Object) -> dict[str, Any]:
 def _event_search_clause(raw: str):
     token_clauses = []
     for token in tokenize_query(raw):
-        needles = query_needles(token)
-
-        action_exists = exists(
-            select(literal(1)).where(
-                and_(
-                    EventAction.event_id == Event.id,
-                    or_(
-                        *[
-                            or_(
-                                EventAction.action_name.ilike(needle),
-                                EventAction.operator_name.ilike(needle),
-                                EventAction.computer.ilike(needle),
-                                EventAction.gbr_name.ilike(needle),
-                            )
-                            for needle in needles
-                        ]
-                    ),
-                )
-            )
-        )
+        variants = query_variants(token)
+        prefix_needles = query_prefix_needles(token)
+        contains_needles = query_needles(token)
+        light_search = should_use_light_search(token)
+        search_related = should_search_related_text(token)
 
         like_clauses = []
-        for needle in needles:
+        for variant in variants:
+            like_clauses.extend(
+                [
+                    Event.id == variant,
+                    Event.object_id == variant,
+                    Event.code == variant,
+                ]
+            )
+
+        for needle in prefix_needles:
             like_clauses.extend(
                 [
                     Event.id.ilike(needle),
                     Event.object_id.ilike(needle),
                     Event.object_name.ilike(needle),
                     Event.client_name.ilike(needle),
-                    Event.location.ilike(needle),
-                    Event.description.ilike(needle),
-                    Event.result_text.ilike(needle),
                     Event.code.ilike(needle),
-                    Event.code_text.ilike(needle),
-                    Event.state_name.ilike(needle),
                 ]
             )
 
-        token_clauses.append(or_(*like_clauses, action_exists))
+        if not light_search:
+            for needle in contains_needles:
+                like_clauses.extend(
+                    [
+                        Event.location.ilike(needle),
+                        Event.description.ilike(needle),
+                        Event.result_text.ilike(needle),
+                        Event.code_text.ilike(needle),
+                        Event.state_name.ilike(needle),
+                    ]
+                )
+
+        if search_related:
+            action_exists = exists(
+                select(literal(1)).where(
+                    and_(
+                        EventAction.event_id == Event.id,
+                        or_(
+                            *[
+                                or_(
+                                    EventAction.action_name.ilike(needle),
+                                    EventAction.operator_name.ilike(needle),
+                                    EventAction.computer.ilike(needle),
+                                    EventAction.gbr_name.ilike(needle),
+                                )
+                                for needle in contains_needles
+                            ]
+                        ),
+                    )
+                )
+            )
+            like_clauses.append(action_exists)
+
+        token_clauses.append(or_(*like_clauses))
 
     return and_(*token_clauses) if token_clauses else None
 
@@ -95,59 +124,75 @@ def _event_search_clause(raw: str):
 def _object_search_clause(raw: str):
     token_clauses = []
     for token in tokenize_query(raw):
-        needles = query_needles(token)
-
-        responsible_exists = exists(
-            select(literal(1))
-            .select_from(Responsible)
-            .where(
-                and_(
-                    Responsible.object_id == Object.id,
-                    or_(
-                        *[
-                            or_(Responsible.name.ilike(needle), Responsible.address.ilike(needle))
-                            for needle in needles
-                        ]
-                    ),
-                )
-            )
-        )
-        phone_exists = exists(
-            select(literal(1))
-            .select_from(ResponsiblePhone)
-            .join(Responsible, ResponsiblePhone.responsible_id == Responsible.id)
-            .where(
-                and_(
-                    Responsible.object_id == Object.id,
-                    or_(*[ResponsiblePhone.phone.ilike(needle) for needle in needles]),
-                )
-            )
-        )
-        group_exists = exists(
-            select(literal(1))
-            .select_from(ObjectGroup)
-            .where(
-                and_(
-                    ObjectGroup.object_id == Object.id,
-                    or_(*[ObjectGroup.name.ilike(needle) for needle in needles]),
-                )
-            )
-        )
+        variants = query_variants(token)
+        prefix_needles = query_prefix_needles(token)
+        contains_needles = query_needles(token)
+        light_search = should_use_light_search(token)
+        search_related = should_search_related_text(token)
 
         like_clauses = []
-        for needle in needles:
+        for variant in variants:
+            like_clauses.append(Object.id == variant)
+
+        for needle in prefix_needles:
             like_clauses.extend(
                 [
                     Object.id.ilike(needle),
                     Object.name.ilike(needle),
                     Object.address.ilike(needle),
                     Object.client_name.ilike(needle),
-                    Object.remarks.ilike(needle),
-                    Object.additional_info.ilike(needle),
                 ]
             )
 
-        token_clauses.append(or_(*like_clauses, responsible_exists, phone_exists, group_exists))
+        if not light_search:
+            for needle in contains_needles:
+                like_clauses.extend(
+                    [
+                        Object.remarks.ilike(needle),
+                        Object.additional_info.ilike(needle),
+                    ]
+                )
+
+        if search_related:
+            responsible_exists = exists(
+                select(literal(1))
+                .select_from(Responsible)
+                .where(
+                    and_(
+                        Responsible.object_id == Object.id,
+                        or_(
+                            *[
+                                or_(Responsible.name.ilike(needle), Responsible.address.ilike(needle))
+                                for needle in contains_needles
+                            ]
+                        ),
+                    )
+                )
+            )
+            phone_exists = exists(
+                select(literal(1))
+                .select_from(ResponsiblePhone)
+                .join(Responsible, ResponsiblePhone.responsible_id == Responsible.id)
+                .where(
+                    and_(
+                        Responsible.object_id == Object.id,
+                        or_(*[ResponsiblePhone.phone.ilike(needle) for needle in contains_needles]),
+                    )
+                )
+            )
+            group_exists = exists(
+                select(literal(1))
+                .select_from(ObjectGroup)
+                .where(
+                    and_(
+                        ObjectGroup.object_id == Object.id,
+                        or_(*[ObjectGroup.name.ilike(needle) for needle in contains_needles]),
+                    )
+                )
+            )
+            like_clauses.extend([responsible_exists, phone_exists, group_exists])
+
+        token_clauses.append(or_(*like_clauses))
 
     return and_(*token_clauses) if token_clauses else None
 
