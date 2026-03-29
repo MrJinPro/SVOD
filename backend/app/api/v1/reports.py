@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import date as date_type
 from datetime import time as time_type
 from datetime import timedelta
+from math import ceil
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -1396,12 +1397,24 @@ async def generate_pcn_ledger_xlsx(
             if sd2 == sd and sh2 == sh:
                 alarms_by_op[str(op)] = int(c or 0)
 
-        ranked_action_ops = [
-            op
+        ranked_action_items = [
+            (op, int(count_value or 0))
             for op, count_value in sorted(alarms_by_op.items(), key=lambda x: (-x[1], x[0].lower()))
             if int(count_value or 0) > 0
         ]
-        effective_action_ops = ranked_action_ops[:5]
+        ranked_action_ops = [op for op, _ in ranked_action_items]
+
+        # Heuristic for real shift staff from archive actions.
+        # We ignore tail operators with only incidental activity in the shift.
+        # Typical shifts have 3-5 operators; in practice the 5th person should
+        # still have a noticeable share of handled alarms.
+        min_alarm_threshold = max(5, int(ceil(total * 0.03))) if total > 0 else 5
+        filtered_action_items = [
+            (op, cnt) for op, cnt in ranked_action_items if cnt >= min_alarm_threshold
+        ]
+        if not filtered_action_items:
+            filtered_action_items = ranked_action_items[:1]
+        effective_action_ops = [op for op, _ in filtered_action_items[:5]]
 
         ranked_presence_ops = sorted(map(str, ops_from_presence), key=str.lower)
         effective_presence_ops = ranked_presence_ops[:5]
@@ -1438,6 +1451,7 @@ async def generate_pcn_ledger_xlsx(
                 "operatorsPresence": ", ".join(sorted(map(str, ops_from_presence), key=str.lower)),
                 "dispatchersActions": dispatchers_actions,
                 "operatorsActions": ", ".join(ranked_action_ops),
+                "actionsThreshold": min_alarm_threshold,
                 "dispatchersUsed": dispatchers,
                 "operatorsUsed": ", ".join(sorted(map(str, used_ops), key=str.lower)),
             }
@@ -1546,7 +1560,7 @@ async def generate_pcn_ledger_xlsx(
             "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n",
             f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. ",
             f"Отработка тревоги: действие '{actionName or ''}'. ",
-            f"Диспетчеры в смену: {ds} (auto/actions = до 5 операторов по архивным действиям; presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
+            f"Диспетчеры в смену: {ds} (auto/actions = до 5 операторов по архивным действиям, хвост отсекается по порогу смены; presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
             "ФИО скрыты. " if hideOperatorNames else "",
             "Сравнение presence/actions — на листе 'Контроль'.",
         ]
@@ -1677,6 +1691,7 @@ async def generate_pcn_ledger_xlsx(
             "Операторы (presence)",
             "Диспетчеры (actions)",
             "Операторы (actions)",
+            "Порог по тревогам",
             "Использовано",
             "Операторы (использовано)",
         ]
@@ -1697,12 +1712,13 @@ async def generate_pcn_ledger_xlsx(
             ws2.cell(r, 6, clean_excel_text(x.get("operatorsPresence") or ""))
             ws2.cell(r, 7, int(x.get("dispatchersActions") or 0))
             ws2.cell(r, 8, clean_excel_text(x.get("operatorsActions") or ""))
-            ws2.cell(r, 9, int(x.get("dispatchersUsed") or 0))
-            ws2.cell(r, 10, clean_excel_text(x.get("operatorsUsed") or ""))
-            for col in range(1, 11):
+            ws2.cell(r, 9, int(x.get("actionsThreshold") or 0))
+            ws2.cell(r, 10, int(x.get("dispatchersUsed") or 0))
+            ws2.cell(r, 11, clean_excel_text(x.get("operatorsUsed") or ""))
+            for col in range(1, 12):
                 c = ws2.cell(r, col)
                 c.border = border
-                c.alignment = center if col not in {6, 8, 10} else Alignment(horizontal="left", vertical="center", wrap_text=True)
+                c.alignment = center if col not in {6, 8, 11} else Alignment(horizontal="left", vertical="center", wrap_text=True)
             r += 1
 
         ws2.column_dimensions["A"].width = 12
@@ -1713,8 +1729,9 @@ async def generate_pcn_ledger_xlsx(
         ws2.column_dimensions["F"].width = 42
         ws2.column_dimensions["G"].width = 18
         ws2.column_dimensions["H"].width = 42
-        ws2.column_dimensions["I"].width = 14
-        ws2.column_dimensions["J"].width = 42
+        ws2.column_dimensions["I"].width = 16
+        ws2.column_dimensions["J"].width = 14
+        ws2.column_dimensions["K"].width = 42
     except Exception:
         # If something goes wrong, do not fail the report generation.
         pass
