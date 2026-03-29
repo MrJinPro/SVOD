@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, X } from 'lucide-react';
+import { LoaderCircle, Search, X } from 'lucide-react';
 
 import { MainLayout } from '@/components/layout/MainLayout';
 import { EventsTable } from '@/components/events/EventsTable';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
 import {
   Table,
   TableBody,
@@ -16,7 +17,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { apiGet } from '@/lib/api';
-import { SearchObjectResult, UnifiedSearchResponse } from '@/types';
+import { ObjectListItem, PaginatedResponse, SearchObjectResult, UnifiedSearchResponse } from '@/types';
 
 const emptyResults: UnifiedSearchResponse = {
   query: '',
@@ -33,30 +34,109 @@ export default function SearchPage() {
   const [results, setResults] = useState<UnifiedSearchResponse>(emptyResults);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progressValue, setProgressValue] = useState(0);
+  const [progressLabel, setProgressLabel] = useState('');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const requestIdRef = useRef(0);
 
   const queryFromUrl = (searchParams.get('q') || '').trim();
 
+  useEffect(() => {
+    if (!isLoading) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [isLoading]);
+
+  const mapObjectPreview = (item: ObjectListItem): SearchObjectResult => ({
+    ...item,
+    resultType: 'object',
+  });
+
   const runSearch = async (nextQuery: string) => {
     const trimmed = nextQuery.trim();
+    const currentRequestId = requestIdRef.current + 1;
+    requestIdRef.current = currentRequestId;
+
     if (!trimmed) {
       setHasSearched(false);
       setResults(emptyResults);
       setError(null);
+      setProgressValue(0);
+      setProgressLabel('');
       return;
     }
 
     setHasSearched(true);
     setIsLoading(true);
     setError(null);
+    setResults(emptyResults);
+    setProgressValue(8);
+    setProgressLabel('Сначала быстро ищем объекты в локальной базе…');
 
     try {
+      const objectPreviewParams = new URLSearchParams({
+        page: '1',
+        pageSize: '8',
+        includeDisabled: 'true',
+        includeIdPrefix: 'true',
+        includeStarPrefix: 'true',
+        search: trimmed,
+      });
+
+      const previewPayload = await apiGet<PaginatedResponse<ObjectListItem>>(
+        `/objects?${objectPreviewParams.toString()}`
+      );
+
+      if (requestIdRef.current !== currentRequestId) {
+        return;
+      }
+
+      const previewObjects = previewPayload.data.map(mapObjectPreview);
+      setResults({
+        query: trimmed,
+        objects: previewObjects,
+        events: [],
+        total: previewObjects.length,
+      });
+      setProgressValue(previewObjects.length > 0 ? 45 : 30);
+      setProgressLabel(
+        previewObjects.length > 0
+          ? 'Объекты уже найдены. Продолжаем расширенный поиск по событиям и связанным данным…'
+          : 'Быстрых совпадений по объектам пока нет. Продолжаем расширенный поиск…'
+      );
+
       const payload = await apiGet<UnifiedSearchResponse>(`/search?q=${encodeURIComponent(trimmed)}`);
+
+      if (requestIdRef.current !== currentRequestId) {
+        return;
+      }
+
       setResults(payload);
+      setProgressValue(100);
+      setProgressLabel(
+        payload.total > 0 ? 'Поиск завершён. Полный результат готов.' : 'Поиск завершён. Совпадения не найдены.'
+      );
     } catch (requestError: any) {
+      if (requestIdRef.current !== currentRequestId) {
+        return;
+      }
+
       setResults(emptyResults);
       setError(requestError?.message || 'Ошибка запроса');
+      setProgressValue(100);
+      setProgressLabel('Поиск завершился с ошибкой.');
     } finally {
-      setIsLoading(false);
+      if (requestIdRef.current === currentRequestId) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -127,17 +207,39 @@ export default function SearchPage() {
 
         {hasSearched && (
           <div className="space-y-4">
+            {(isLoading || progressLabel) && (
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-sm text-foreground">
+                      {isLoading && <LoaderCircle className="h-4 w-4 animate-spin text-primary" />}
+                      <span>{progressLabel || 'Подготовка поиска…'}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {isLoading
+                        ? `Запрос выполняется ${elapsedSeconds} сек. Сначала показываем объекты, затем дотягиваем события.`
+                        : 'Последний этап поиска завершён.'}
+                    </p>
+                  </div>
+                  <div className="min-w-24 text-right text-sm text-muted-foreground">{progressValue}%</div>
+                </div>
+                <Progress className="mt-3 h-2" value={progressValue} />
+              </div>
+            )}
+
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">
                 {isLoading ? (
-                  'Поиск…'
+                  <>
+                    Ищем: <strong className="text-foreground">{queryFromUrl || query}</strong>
+                  </>
                 ) : (
                   <>
                     Найдено: <strong className="text-foreground">{results.total}</strong> результатов по запросу «{queryFromUrl || query}»
                   </>
                 )}
               </p>
-              {!isLoading && (
+              {(results.objects.length > 0 || results.events.length > 0) && (
                 <div className="flex items-center gap-2 text-xs">
                   <Badge variant="outline">События: {results.events.length}</Badge>
                   <Badge variant="outline">Объекты: {results.objects.length}</Badge>
@@ -149,24 +251,13 @@ export default function SearchPage() {
 
             {results.total > 0 ? (
               <div className="space-y-6">
-                {results.events.length > 0 && (
-                  <section className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <Badge>События</Badge>
-                      <span className="text-sm text-muted-foreground">{results.events.length} найдено</span>
-                    </div>
-                    <EventsTable
-                      events={results.events}
-                      onViewEvent={(event) => navigate(`/events?openEventId=${encodeURIComponent(event.id)}`)}
-                    />
-                  </section>
-                )}
-
                 {objectResults.length > 0 && (
                   <section className="space-y-3">
                     <div className="flex items-center gap-2">
                       <Badge variant="secondary">Объекты</Badge>
-                      <span className="text-sm text-muted-foreground">{objectResults.length} найдено</span>
+                      <span className="text-sm text-muted-foreground">
+                        {objectResults.length} {isLoading ? 'показано сразу' : 'найдено'}
+                      </span>
                     </div>
                     <div className="overflow-hidden rounded-xl border border-border bg-card">
                       <Table>
@@ -196,6 +287,29 @@ export default function SearchPage() {
                     </div>
                   </section>
                 )}
+
+                {results.events.length > 0 && (
+                  <section className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Badge>События</Badge>
+                      <span className="text-sm text-muted-foreground">
+                        {results.events.length} найдено после расширенного поиска
+                      </span>
+                    </div>
+                    <EventsTable
+                      events={results.events}
+                      onViewEvent={(event) => navigate(`/events?openEventId=${encodeURIComponent(event.id)}`)}
+                    />
+                  </section>
+                )}
+              </div>
+            ) : isLoading ? (
+              <div className="rounded-xl border border-border bg-card p-12 text-center">
+                <LoaderCircle className="mx-auto mb-4 h-12 w-12 animate-spin text-primary/70" />
+                <h3 className="mb-2 text-lg font-medium text-foreground">Поиск выполняется</h3>
+                <p className="text-muted-foreground">
+                  Как только найдём быстрые совпадения по объектам, они появятся здесь сразу, не дожидаясь полного поиска.
+                </p>
               </div>
             ) : (
               <div className="rounded-xl border border-border bg-card p-12 text-center">
