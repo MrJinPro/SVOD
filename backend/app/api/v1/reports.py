@@ -1396,22 +1396,34 @@ async def generate_pcn_ledger_xlsx(
         # Dispatcher count source selection.
         if ds == "presence":
             dispatchers = dispatchers_presence
+            used_ops = set(ops_from_presence)
         elif ds == "actions":
             dispatchers = dispatchers_actions
+            used_ops = set(ops_from_actions)
         else:
             # auto: presence can undercount if user presence sessions were not
             # fully recorded, but action-derived staffing can never be lower than
             # the number of operators who actually processed alarms in the shift.
             dispatchers = max(dispatchers_presence, dispatchers_actions)
+            used_ops = set(ops_from_actions if dispatchers_actions >= dispatchers_presence else ops_from_presence)
+
+        if sh == "день":
+            shift_window = f"{day_start.strftime('%H:%M')}–{night_start.strftime('%H:%M')}"
+        else:
+            shift_window = f"{night_start.strftime('%H:%M')}–{day_start.strftime('%H:%M')}"
 
         control_rows.append(
             {
                 "date": sd,
                 "shift": sh,
+                "shiftWindow": shift_window,
                 "totalAlarms": total,
                 "dispatchersPresence": dispatchers_presence,
+                "operatorsPresence": ", ".join(sorted(map(str, ops_from_presence), key=str.lower)),
                 "dispatchersActions": dispatchers_actions,
+                "operatorsActions": ", ".join(sorted(map(str, ops_from_actions), key=str.lower)),
                 "dispatchersUsed": dispatchers,
+                "operatorsUsed": ", ".join(sorted(map(str, used_ops), key=str.lower)),
             }
         )
 
@@ -1551,6 +1563,17 @@ async def generate_pcn_ledger_xlsx(
     ws.cell(10, 2, clean_excel_text(" | ".join(scope_bits))).alignment = Alignment(horizontal="center")
     ws.cell(10, 2).font = Font(size=10, italic=True)
 
+    ws.merge_cells(start_row=11, start_column=2, end_row=11, end_column=10)
+    ws.cell(
+        11,
+        2,
+        clean_excel_text(
+            f"Дневная смена: {day_start.strftime('%H:%M')}–{night_start.strftime('%H:%M')} | "
+            f"Ночная смена: {night_start.strftime('%H:%M')}–{day_start.strftime('%H:%M')}"
+        ),
+    ).alignment = Alignment(horizontal="center")
+    ws.cell(11, 2).font = Font(size=10)
+
     headers = [
         "Дата",
         "Количество диспетчеров в смену",
@@ -1563,7 +1586,7 @@ async def generate_pcn_ledger_xlsx(
         "Всего в смену, руб.",
     ]
 
-    start_row = 12
+    start_row = 13
     for idx, h in enumerate(headers, start=2):
         cell = ws.cell(start_row, idx, clean_excel_text(h))
         cell.font = Font(bold=True)
@@ -1635,10 +1658,14 @@ async def generate_pcn_ledger_xlsx(
         ws2_headers = [
             "Дата",
             "Смена",
+            "Границы смены",
             "Всего тревог",
             "Диспетчеры (presence)",
+            "Операторы (presence)",
             "Диспетчеры (actions)",
+            "Операторы (actions)",
             "Использовано",
+            "Операторы (использовано)",
         ]
         for idx, h in enumerate(ws2_headers, start=1):
             cell = ws2.cell(1, idx, clean_excel_text(h))
@@ -1651,22 +1678,30 @@ async def generate_pcn_ledger_xlsx(
             sd = x.get("date")
             ws2.cell(r, 1, sd).number_format = "DD.MM.YYYY"
             ws2.cell(r, 2, clean_excel_text(x.get("shift")))
-            ws2.cell(r, 3, int(x.get("totalAlarms") or 0))
-            ws2.cell(r, 4, int(x.get("dispatchersPresence") or 0))
-            ws2.cell(r, 5, int(x.get("dispatchersActions") or 0))
-            ws2.cell(r, 6, int(x.get("dispatchersUsed") or 0))
-            for col in range(1, 7):
+            ws2.cell(r, 3, clean_excel_text(x.get("shiftWindow") or ""))
+            ws2.cell(r, 4, int(x.get("totalAlarms") or 0))
+            ws2.cell(r, 5, int(x.get("dispatchersPresence") or 0))
+            ws2.cell(r, 6, clean_excel_text(x.get("operatorsPresence") or ""))
+            ws2.cell(r, 7, int(x.get("dispatchersActions") or 0))
+            ws2.cell(r, 8, clean_excel_text(x.get("operatorsActions") or ""))
+            ws2.cell(r, 9, int(x.get("dispatchersUsed") or 0))
+            ws2.cell(r, 10, clean_excel_text(x.get("operatorsUsed") or ""))
+            for col in range(1, 11):
                 c = ws2.cell(r, col)
                 c.border = border
-                c.alignment = center
+                c.alignment = center if col not in {6, 8, 10} else Alignment(horizontal="left", vertical="center", wrap_text=True)
             r += 1
 
         ws2.column_dimensions["A"].width = 12
         ws2.column_dimensions["B"].width = 10
-        ws2.column_dimensions["C"].width = 12
-        ws2.column_dimensions["D"].width = 20
-        ws2.column_dimensions["E"].width = 18
-        ws2.column_dimensions["F"].width = 14
+        ws2.column_dimensions["C"].width = 18
+        ws2.column_dimensions["D"].width = 12
+        ws2.column_dimensions["E"].width = 20
+        ws2.column_dimensions["F"].width = 42
+        ws2.column_dimensions["G"].width = 18
+        ws2.column_dimensions["H"].width = 42
+        ws2.column_dimensions["I"].width = 14
+        ws2.column_dimensions["J"].width = 42
     except Exception:
         # If something goes wrong, do not fail the report generation.
         pass
