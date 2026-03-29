@@ -1390,22 +1390,38 @@ async def generate_pcn_ledger_xlsx(
         ops_from_actions = shift_ops.get((sd, sh)) or set()
         ops_from_presence = presence_ops_by_shift.get((sd, sh)) or set()
 
-        dispatchers_presence = len(ops_from_presence)
-        dispatchers_actions = len(ops_from_actions)
+        # Operators for this shift by accepted alarm actions.
+        alarms_by_op: dict[str, int] = {}
+        for (sd2, sh2, op), c in counts.items():
+            if sd2 == sd and sh2 == sh:
+                alarms_by_op[str(op)] = int(c or 0)
+
+        ranked_action_ops = [
+            op
+            for op, count_value in sorted(alarms_by_op.items(), key=lambda x: (-x[1], x[0].lower()))
+            if int(count_value or 0) > 0
+        ]
+        effective_action_ops = ranked_action_ops[:5]
+
+        ranked_presence_ops = sorted(map(str, ops_from_presence), key=str.lower)
+        effective_presence_ops = ranked_presence_ops[:5]
+
+        dispatchers_presence = len(effective_presence_ops)
+        dispatchers_actions = len(effective_action_ops)
 
         # Dispatcher count source selection.
+        # For PЦН business logic we primarily care about who actually handled alarms
+        # in the shift. Presence remains auxiliary/debug information on the control sheet.
         if ds == "presence":
+            used_ops = set(effective_presence_ops)
             dispatchers = dispatchers_presence
-            used_ops = set(ops_from_presence)
         elif ds == "actions":
+            used_ops = set(effective_action_ops)
             dispatchers = dispatchers_actions
-            used_ops = set(ops_from_actions)
         else:
-            # auto: presence can undercount if user presence sessions were not
-            # fully recorded, but action-derived staffing can never be lower than
-            # the number of operators who actually processed alarms in the shift.
-            dispatchers = max(dispatchers_presence, dispatchers_actions)
-            used_ops = set(ops_from_actions if dispatchers_actions >= dispatchers_presence else ops_from_presence)
+            # auto: prefer archive actions, fallback to presence only if no actions exist.
+            used_ops = set(effective_action_ops or effective_presence_ops)
+            dispatchers = len(used_ops)
 
         if sh == "день":
             shift_window = f"{day_start.strftime('%H:%M')}–{night_start.strftime('%H:%M')}"
@@ -1421,22 +1437,19 @@ async def generate_pcn_ledger_xlsx(
                 "dispatchersPresence": dispatchers_presence,
                 "operatorsPresence": ", ".join(sorted(map(str, ops_from_presence), key=str.lower)),
                 "dispatchersActions": dispatchers_actions,
-                "operatorsActions": ", ".join(sorted(map(str, ops_from_actions), key=str.lower)),
+                "operatorsActions": ", ".join(ranked_action_ops),
                 "dispatchersUsed": dispatchers,
                 "operatorsUsed": ", ".join(sorted(map(str, used_ops), key=str.lower)),
             }
         )
 
-        # Operators for this shift
-        alarms_by_op: dict[str, int] = {}
-        for (sd2, sh2, op), c in counts.items():
-            if sd2 == sd and sh2 == sh:
-                alarms_by_op[str(op)] = int(c or 0)
-
-        if includePresenceOnly:
-            op_names = set(alarms_by_op.keys()) | set(ops_from_presence)
+        if ds == "presence":
+            if includePresenceOnly:
+                op_names = set(effective_presence_ops)
+            else:
+                op_names = set(op for op in effective_presence_ops if int(alarms_by_op.get(op, 0)) > 0)
         else:
-            op_names = set(alarms_by_op.keys())
+            op_names = set(effective_action_ops)
 
         ops = [(op, int(alarms_by_op.get(op, 0))) for op in op_names]
         ops.sort(key=lambda x: (-x[1], x[0].lower()))
@@ -1533,7 +1546,7 @@ async def generate_pcn_ledger_xlsx(
             "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n",
             f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. ",
             f"Отработка тревоги: действие '{actionName or ''}'. ",
-            f"Диспетчеры в смену: {ds} (presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
+            f"Диспетчеры в смену: {ds} (auto/actions = до 5 операторов по архивным действиям; presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
             "ФИО скрыты. " if hideOperatorNames else "",
             "Сравнение presence/actions — на листе 'Контроль'.",
         ]
