@@ -1,8 +1,5 @@
-import { Search, Clock } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Clock } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 interface HeaderProps {
   title: string;
@@ -11,14 +8,6 @@ interface HeaderProps {
 
 export function Header({ title, subtitle }: HeaderProps) {
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [quickQuery, setQuickQuery] = useState('');
-  const navigate = useNavigate();
-
-  const submitQuickSearch = () => {
-    const q = quickQuery.trim();
-    if (!q) return;
-    navigate(`/search?q=${encodeURIComponent(q)}`);
-  };
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -50,26 +39,6 @@ export function Header({ title, subtitle }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-4">
-        {/* Search */}
-        <div className="hidden md:flex items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              type="search"
-              placeholder="Поиск по объектам и событиям..."
-              className="w-72 pl-9 bg-muted/50 border-muted focus:bg-background"
-              value={quickQuery}
-              onChange={(e) => setQuickQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  submitQuickSearch();
-                }
-              }}
-            />
-          </div>
-          <Button variant="outline" size="sm" onClick={submitQuickSearch}>Найти</Button>
-        </div>
-
         {/* Time display */}
         <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 text-muted-foreground">
           <Clock className="h-4 w-4" />
