@@ -3,7 +3,8 @@ import { EventFilters, type EventFiltersValue } from '@/components/events/EventF
 import { EventsTable } from '@/components/events/EventsTable';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
-import { Download, RefreshCw } from 'lucide-react';
+import { Download, LoaderCircle, RefreshCw } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
 import { toast } from '@/hooks/use-toast';
 import { useEffect, useMemo, useState } from 'react';
 import { API_BASE_URL, apiGet } from '@/lib/api';
@@ -34,6 +35,7 @@ export default function Events() {
   const [showCancelled, setShowCancelled] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [loadingSeconds, setLoadingSeconds] = useState(0);
 
   const openEventId = searchParams.get('openEventId');
 
@@ -109,6 +111,73 @@ export default function Events() {
     pageSize: 50,
     totalPages: 1,
   });
+
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setLoadingSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [isLoading]);
+
+  const loadingUi = useMemo(() => {
+    if (!isLoading) {
+      return {
+        value: 100,
+        title: 'Загрузка завершена',
+        description: 'Список событий готов.',
+      };
+    }
+
+    const hasSearch = Boolean(appliedFilters.search.trim());
+    const hasDate = Boolean(appliedFilters.todayOnly || appliedFilters.dateRange.from || appliedFilters.dateRange.to);
+    const hasExtraFilters =
+      appliedFilters.type !== 'all' ||
+      appliedFilters.severity !== 'all' ||
+      appliedFilters.status !== 'all' ||
+      showSystem ||
+      showCancelled;
+
+    if (hasSearch) {
+      return {
+        value: 62,
+        title: 'Ищем события по запросу и связанным данным…',
+        description: `Выполняется поиск по журналу, объектам, кодам и комментариям. Прошло ${loadingSeconds} сек.`,
+      };
+    }
+
+    if (hasDate || hasExtraFilters) {
+      return {
+        value: 48,
+        title: 'Применяем фильтры к журналу событий…',
+        description: `Обновляем выборку по периоду, статусам и дополнительным параметрам. Прошло ${loadingSeconds} сек.`,
+      };
+    }
+
+    return {
+      value: 30,
+      title: 'Загружаем журнал событий…',
+      description: `Получаем актуальную первую страницу событий. Прошло ${loadingSeconds} сек.`,
+    };
+  }, [
+    appliedFilters.dateRange.from,
+    appliedFilters.dateRange.to,
+    appliedFilters.search,
+    appliedFilters.severity,
+    appliedFilters.status,
+    appliedFilters.todayOnly,
+    appliedFilters.type,
+    isLoading,
+    loadingSeconds,
+    showCancelled,
+    showSystem,
+  ]);
 
   const newestTimestamp = useMemo(() => {
     const first = (page as any)?.data?.[0]?.timestamp;
@@ -229,6 +298,22 @@ export default function Events() {
             setPageNumber(1);
           }}
         />
+
+        {isLoading && (
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-sm text-foreground">
+                  <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
+                  <span>{loadingUi.title}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">{loadingUi.description}</p>
+              </div>
+              <div className="min-w-24 text-right text-sm text-muted-foreground">{loadingUi.value}%</div>
+            </div>
+            <Progress className="mt-3 h-2" value={loadingUi.value} />
+          </div>
+        )}
 
         {pendingNew > 0 && (
           <div className="rounded-xl border border-border bg-card p-3 flex items-center justify-between">
