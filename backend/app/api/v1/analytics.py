@@ -70,6 +70,68 @@ def _action_name_matches(col, patterns: list[str]):
     return or_(*[col.ilike(p) for p in patterns])
 
 
+def _gbr_called_match(col):
+    return _action_name_matches(
+        col,
+        [
+            "%Вызван%груп%",
+            "%Вызван%реаг%",
+            "%Вызван%ГБР%",
+            "%Вызов%груп%",
+            "%Вызов%реаг%",
+            "%Вызов%ГБР%",
+            "%Направ%груп%",
+            "%Направ%реаг%",
+            "%Направ%ГБР%",
+            "%Отправ%груп%",
+            "%Отправ%реаг%",
+            "%Отправ%ГБР%",
+            "%Выезд%груп%",
+            "%Выезд%реаг%",
+            "%Выезд%ГБР%",
+        ],
+    )
+
+
+def _gbr_called_loose_match(col):
+    return _action_name_matches(col, ["%Вызван%", "%Направ%", "%Отправ%", "%Выезд%", "%Следу%"])
+
+
+def _gbr_arrived_match(col):
+    return _action_name_matches(
+        col,
+        [
+            "%Приб%груп%",
+            "%Приб%реаг%",
+            "%Приб%ГБР%",
+            "%На объект%",
+            "%Доех%объект%",
+        ],
+    )
+
+
+def _gbr_arrived_loose_match(col):
+    return _action_name_matches(col, ["%Прибыт%", "%Прибыл%", "%На объект%", "%Доех%"]) 
+
+
+def _gbr_cancelled_match(col):
+    return _action_name_matches(
+        col,
+        [
+            "%Отмен%груп%",
+            "%Отмен%реаг%",
+            "%Отмен%ГБР%",
+            "%Отбой%груп%",
+            "%Отбой%реаг%",
+            "%Отбой%ГБР%",
+        ],
+    )
+
+
+def _gbr_cancelled_loose_match(col):
+    return _action_name_matches(col, ["%Отмен%", "%Отбой%", "%Ложн%тревог%", "%Ложный%"]) 
+
+
 def _xlsx_response(data: bytes, filename: str) -> Response:
     return Response(
         content=data,
@@ -643,46 +705,33 @@ async def gbr_trips(
 
     # Match actions robustly but avoid false positives.
     # We use a strict match (mentions group/GBR/react) with a fallback loose match.
-    called_match_strict = _action_name_matches(
-        EventAction.action_name,
-        [
-            "%Вызван%груп%",
-            "%Вызван%реаг%",
-            "%Вызван%ГБР%",
-            "%Вызов%груп%",
-            "%Вызов%реаг%",
-            "%Вызов%ГБР%",
-        ],
-    )
-    called_match_loose = _action_name_matches(EventAction.action_name, ["%Вызван%"])
+    called_match_strict = _gbr_called_match(EventAction.action_name)
+    called_match_loose = _gbr_called_loose_match(EventAction.action_name)
 
-    arrived_match_strict = _action_name_matches(
-        EventAction.action_name,
-        [
-            "%Приб%груп%",
-            "%Приб%реаг%",
-            "%Приб%ГБР%",
-        ],
-    )
-    arrived_match_loose = _action_name_matches(EventAction.action_name, ["%Прибыт%", "%Прибыл%"])
+    arrived_match_strict = _gbr_arrived_match(EventAction.action_name)
+    arrived_match_loose = _gbr_arrived_loose_match(EventAction.action_name)
 
-    cancelled_match_strict = _action_name_matches(
-        EventAction.action_name,
-        [
-            "%Отмен%груп%",
-            "%Отмен%реаг%",
-            "%Отмен%ГБР%",
-        ],
+    cancelled_match_strict = _gbr_cancelled_match(EventAction.action_name)
+    cancelled_match_loose = _gbr_cancelled_loose_match(EventAction.action_name)
+
+    any_trip_match = or_(
+        called_match_strict,
+        called_match_loose,
+        arrived_match_strict,
+        arrived_match_loose,
+        cancelled_match_strict,
+        cancelled_match_loose,
     )
-    cancelled_match_loose = _action_name_matches(EventAction.action_name, ["%Отмен%"])
 
     called_ts_strict = func.min(case((called_match_strict, EventAction.action_time), else_=None))
     called_ts_loose = func.min(case((called_match_loose, EventAction.action_time), else_=None))
-    called_ts = func.coalesce(called_ts_strict, called_ts_loose).label("called_ts")
+    any_trip_ts = func.min(case((any_trip_match, EventAction.action_time), else_=None))
+    called_ts = func.coalesce(called_ts_strict, called_ts_loose, any_trip_ts).label("called_ts")
 
     called_op_strict = func.min(case((called_match_strict, EventAction.operator_name), else_=None))
     called_op_loose = func.min(case((called_match_loose, EventAction.operator_name), else_=None))
-    called_operator = func.coalesce(called_op_strict, called_op_loose).label("called_operator")
+    any_trip_operator = func.min(case((any_trip_match, EventAction.operator_name), else_=None))
+    called_operator = func.coalesce(called_op_strict, called_op_loose, any_trip_operator).label("called_operator")
 
     arrived_ts_strict = func.min(case((arrived_match_strict, EventAction.action_time), else_=None))
     arrived_ts_loose = func.min(case((arrived_match_loose, EventAction.action_time), else_=None))
@@ -769,7 +818,7 @@ async def gbr_trips(
         .select_from(sq)
         .outerjoin(Event, Event.id == sq.c.event_id)
         .outerjoin(resp_sq, resp_sq.c.object_id == Event.object_id)
-        .where(sq.c.called_ts.is_not(None))
+        .where(or_(sq.c.called_ts.is_not(None), sq.c.arrived_ts.is_not(None), sq.c.cancelled_ts.is_not(None)))
         .order_by(sq.c.called_ts.desc())
         .offset(offset)
         .limit(limit)
@@ -849,7 +898,7 @@ async def gbr_trips(
         select(sq.c.event_id)
         .select_from(sq)
         .outerjoin(Event, Event.id == sq.c.event_id)
-        .where(sq.c.called_ts.is_not(None))
+        .where(or_(sq.c.called_ts.is_not(None), sq.c.arrived_ts.is_not(None), sq.c.cancelled_ts.is_not(None)))
     )
 
     if status_norm == "arrived":
@@ -1115,7 +1164,7 @@ async def gbr_trips_export_xlsx(
             ),
             _format_seconds_hhmmss(r.get("travelSeconds")),
             "",  # результат осмотра
-            "",  # оператор
+            r.get("calledOperator") or "",
             "",  # заявка
             "",  # штраф
             "",  # сработок

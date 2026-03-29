@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, exists, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,82 +9,182 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_session
 from app.models.event import Event
 from app.models.event_action import EventAction
+from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
+from app.utils.search import query_needles, tokenize_query
 
 router = APIRouter(prefix="/search")
 
-
-_CYR_TO_LAT_CONFUSABLES = str.maketrans(
-    {
-        "А": "A",
-        "В": "B",
-        "С": "C",
-        "Е": "E",
-        "Н": "H",
-        "К": "K",
-        "М": "M",
-        "О": "O",
-        "Р": "P",
-        "Т": "T",
-        "Х": "X",
-        "У": "Y",
-        "а": "a",
-        "в": "b",
-        "с": "c",
-        "е": "e",
-        "н": "h",
-        "к": "k",
-        "м": "m",
-        "о": "o",
-        "р": "p",
-        "т": "t",
-        "х": "x",
-        "у": "y",
+def _event_to_out(event: Event) -> dict[str, Any]:
+    return {
+        "resultType": "event",
+        "id": event.id,
+        "timestamp": event.timestamp.isoformat(),
+        "type": event.type,
+        "objectId": event.object_id,
+        "objectName": event.object_name,
+        "clientName": event.client_name,
+        "severity": event.severity,
+        "status": event.status,
+        "description": event.description,
+        "location": event.location,
+        "resultText": event.result_text,
+        "operatorId": event.operator_id,
+        "code": getattr(event, "code", None),
+        "codeText": getattr(event, "code_text", None),
+        "stateName": getattr(event, "state_name", None),
     }
-)
 
-_LAT_TO_CYR_CONFUSABLES = str.maketrans(
-    {
-        "A": "А",
-        "B": "В",
-        "C": "С",
-        "E": "Е",
-        "H": "Н",
-        "K": "К",
-        "M": "М",
-        "O": "О",
-        "P": "Р",
-        "T": "Т",
-        "X": "Х",
-        "Y": "У",
-        "a": "а",
-        "b": "в",
-        "c": "с",
-        "e": "е",
-        "h": "н",
-        "k": "к",
-        "m": "м",
-        "o": "о",
-        "p": "р",
-        "t": "т",
-        "x": "х",
-        "y": "у",
+
+def _object_to_out(obj: Object) -> dict[str, Any]:
+    return {
+        "resultType": "object",
+        "id": obj.id,
+        "name": obj.name,
+        "address": obj.address,
+        "clientName": obj.client_name,
+        "disabled": bool(obj.disabled),
     }
-)
 
 
-def _query_variants(value: str) -> list[str]:
-    raw = str(value or "").strip()
+def _event_search_clause(raw: str):
+    token_clauses = []
+    for token in tokenize_query(raw):
+        needles = query_needles(token)
+
+        action_exists = exists(
+            select(literal(1)).where(
+                and_(
+                    EventAction.event_id == Event.id,
+                    or_(
+                        *[
+                            or_(
+                                EventAction.action_name.ilike(needle),
+                                EventAction.operator_name.ilike(needle),
+                                EventAction.computer.ilike(needle),
+                                EventAction.gbr_name.ilike(needle),
+                            )
+                            for needle in needles
+                        ]
+                    ),
+                )
+            )
+        )
+
+        like_clauses = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Event.id.ilike(needle),
+                    Event.object_id.ilike(needle),
+                    Event.object_name.ilike(needle),
+                    Event.client_name.ilike(needle),
+                    Event.location.ilike(needle),
+                    Event.description.ilike(needle),
+                    Event.result_text.ilike(needle),
+                    Event.code.ilike(needle),
+                    Event.code_text.ilike(needle),
+                    Event.state_name.ilike(needle),
+                ]
+            )
+
+        token_clauses.append(or_(*like_clauses, action_exists))
+
+    return and_(*token_clauses) if token_clauses else None
+
+
+def _object_search_clause(raw: str):
+    token_clauses = []
+    for token in tokenize_query(raw):
+        needles = query_needles(token)
+
+        responsible_exists = exists(
+            select(literal(1))
+            .select_from(Responsible)
+            .where(
+                and_(
+                    Responsible.object_id == Object.id,
+                    or_(
+                        *[
+                            or_(Responsible.name.ilike(needle), Responsible.address.ilike(needle))
+                            for needle in needles
+                        ]
+                    ),
+                )
+            )
+        )
+        phone_exists = exists(
+            select(literal(1))
+            .select_from(ResponsiblePhone)
+            .join(Responsible, ResponsiblePhone.responsible_id == Responsible.id)
+            .where(
+                and_(
+                    Responsible.object_id == Object.id,
+                    or_(*[ResponsiblePhone.phone.ilike(needle) for needle in needles]),
+                )
+            )
+        )
+        group_exists = exists(
+            select(literal(1))
+            .select_from(ObjectGroup)
+            .where(
+                and_(
+                    ObjectGroup.object_id == Object.id,
+                    or_(*[ObjectGroup.name.ilike(needle) for needle in needles]),
+                )
+            )
+        )
+
+        like_clauses = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Object.id.ilike(needle),
+                    Object.name.ilike(needle),
+                    Object.address.ilike(needle),
+                    Object.client_name.ilike(needle),
+                    Object.remarks.ilike(needle),
+                    Object.additional_info.ilike(needle),
+                ]
+            )
+
+        token_clauses.append(or_(*like_clauses, responsible_exists, phone_exists, group_exists))
+
+    return and_(*token_clauses) if token_clauses else None
+
+
+@router.get("")
+async def search_all(
+    q: str = Query("", min_length=0),
+    limitPerType: int = Query(25, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    raw = q.strip()
     if not raw:
-        return []
-    v1 = raw
-    v2 = raw.translate(_CYR_TO_LAT_CONFUSABLES)
-    v3 = raw.translate(_LAT_TO_CYR_CONFUSABLES)
-    out: list[str] = []
-    for v in (v1, v2, v3):
-        v = v.strip()
-        if v and v not in out:
-            out.append(v)
-    return out
+        return {"query": "", "events": [], "objects": [], "total": 0}
+
+    event_stmt = select(Event)
+    event_where = _event_search_clause(raw)
+    if event_where is not None:
+        event_stmt = event_stmt.where(event_where)
+    event_stmt = event_stmt.order_by(Event.timestamp.desc()).limit(limitPerType)
+
+    object_stmt = select(Object)
+    object_where = _object_search_clause(raw)
+    if object_where is not None:
+        object_stmt = object_stmt.where(object_where)
+    object_stmt = object_stmt.order_by(Object.id.asc()).limit(limitPerType)
+
+    events = (await session.execute(event_stmt)).scalars().all()
+    objects = (await session.execute(object_stmt)).scalars().all()
+
+    out_events = [_event_to_out(event) for event in events]
+    out_objects = [_object_to_out(obj) for obj in objects]
+    return {
+        "query": raw,
+        "events": out_events,
+        "objects": out_objects,
+        "total": len(out_events) + len(out_objects),
+    }
 
 
 @router.get("/events")
@@ -95,79 +197,11 @@ async def search_events(
     if not raw:
         return []
 
-    # Smart search: split query into tokens and require every token to match
-    # at least one field (event fields or related event_actions fields).
-    # Example: "оповещён" will match operator notes (result_text).
-    tokens = [t for t in raw.split() if t]
-    tokens = tokens[:6]  # keep queries reasonably fast
-
-    token_clauses = []
-    for t in tokens:
-        variants = _query_variants(t)
-        needles = [f"%{v}%" for v in variants]
-
-        action_exists = exists(
-            select(literal(1)).where(
-                and_(
-                    EventAction.event_id == Event.id,
-                    or_(
-                        *[
-                            or_(
-                                EventAction.action_name.ilike(n),
-                                EventAction.operator_name.ilike(n),
-                                EventAction.computer.ilike(n),
-                                EventAction.gbr_name.ilike(n),
-                            )
-                            for n in needles
-                        ],
-                    ),
-                )
-            )
-        )
-
-        like_clauses = []
-        for needle in needles:
-            like_clauses.extend(
-                [
-                    # Core event fields
-                    Event.id.ilike(needle),
-                    Event.object_id.ilike(needle),
-                    Event.object_name.ilike(needle),
-                    Event.client_name.ilike(needle),
-                    Event.location.ilike(needle),
-                    Event.description.ilike(needle),
-                    # Operator note / comment
-                    Event.result_text.ilike(needle),
-                    # Agency fields used in UI/reporting
-                    Event.code.ilike(needle),
-                    Event.code_text.ilike(needle),
-                    Event.state_name.ilike(needle),
-                ]
-            )
-
-        token_clauses.append(or_(*like_clauses, action_exists))
-
-    where_clause = and_(*token_clauses) if token_clauses else None
+    where_clause = _event_search_clause(raw)
     stmt = select(Event)
     if where_clause is not None:
         stmt = stmt.where(where_clause)
     stmt = stmt.order_by(Event.timestamp.desc()).limit(limit)
 
     rows = (await session.execute(stmt)).scalars().all()
-    return [
-        {
-            "id": e.id,
-            "timestamp": e.timestamp.isoformat(),
-            "type": e.type,
-            "objectId": e.object_id,
-            "objectName": e.object_name,
-            "clientName": e.client_name,
-            "severity": e.severity,
-            "status": e.status,
-            "description": e.description,
-            "location": e.location,
-            "resultText": e.result_text,
-            "operatorId": e.operator_id,
-        }
-        for e in rows
-    ]
+    return [_event_to_out(event) for event in rows]

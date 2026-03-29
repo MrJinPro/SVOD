@@ -14,6 +14,12 @@ export function Header({ title, subtitle }: HeaderProps) {
   const [quickQuery, setQuickQuery] = useState('');
   const navigate = useNavigate();
 
+  const submitQuickSearch = () => {
+    const q = quickQuery.trim();
+    if (!q) return;
+    navigate(`/search?q=${encodeURIComponent(q)}`);
+  };
+
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
@@ -45,21 +51,23 @@ export function Header({ title, subtitle }: HeaderProps) {
 
       <div className="flex items-center gap-4">
         {/* Search */}
-        <div className="relative hidden md:block">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder="Быстрый поиск..."
-            className="w-64 pl-9 bg-muted/50 border-muted focus:bg-background"
-            value={quickQuery}
-            onChange={(e) => setQuickQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                const q = quickQuery.trim();
-                if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
-              }
-            }}
-          />
+        <div className="hidden md:flex items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              placeholder="Поиск по объектам и событиям..."
+              className="w-72 pl-9 bg-muted/50 border-muted focus:bg-background"
+              value={quickQuery}
+              onChange={(e) => setQuickQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  submitQuickSearch();
+                }
+              }}
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={submitQuickSearch}>Найти</Button>
         </div>
 
         {/* Time display */}

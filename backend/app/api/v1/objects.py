@@ -5,14 +5,75 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, and_, func, not_, or_, select
+from sqlalchemy import Select, and_, exists, func, literal, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.models.event import Event
-from app.models.object import Object
+from app.models.object import Object, ObjectGroup, Responsible, ResponsiblePhone
+from app.utils.search import query_needles, tokenize_query
 
 router = APIRouter(prefix="/objects")
+
+
+def _object_search_clause(search: str):
+    token_clauses: list[Any] = []
+    for token in tokenize_query(search):
+        needles = query_needles(token)
+
+        responsible_exists = exists(
+            select(literal(1))
+            .select_from(Responsible)
+            .where(
+                and_(
+                    Responsible.object_id == Object.id,
+                    or_(
+                        *[
+                            or_(Responsible.name.ilike(needle), Responsible.address.ilike(needle))
+                            for needle in needles
+                        ]
+                    ),
+                )
+            )
+        )
+        phone_exists = exists(
+            select(literal(1))
+            .select_from(ResponsiblePhone)
+            .join(Responsible, ResponsiblePhone.responsible_id == Responsible.id)
+            .where(
+                and_(
+                    Responsible.object_id == Object.id,
+                    or_(*[ResponsiblePhone.phone.ilike(needle) for needle in needles]),
+                )
+            )
+        )
+        group_exists = exists(
+            select(literal(1))
+            .select_from(ObjectGroup)
+            .where(
+                and_(
+                    ObjectGroup.object_id == Object.id,
+                    or_(*[ObjectGroup.name.ilike(needle) for needle in needles]),
+                )
+            )
+        )
+
+        like_clauses: list[Any] = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Object.id.ilike(needle),
+                    Object.name.ilike(needle),
+                    Object.address.ilike(needle),
+                    Object.client_name.ilike(needle),
+                    Object.remarks.ilike(needle),
+                    Object.additional_info.ilike(needle),
+                ]
+            )
+
+        token_clauses.append(or_(*like_clauses, responsible_exists, phone_exists, group_exists))
+
+    return and_(*token_clauses) if token_clauses else None
 
 
 def _object_to_out(obj: Object) -> dict[str, Any]:
@@ -83,15 +144,9 @@ async def list_objects(
     if not includeStarPrefix:
         filters.append(not_(Object.id.like("*%")))
     if search and search.strip():
-        needle = f"%{search.strip()}%"
-        filters.append(
-            or_(
-                Object.id.ilike(needle),
-                Object.name.ilike(needle),
-                Object.address.ilike(needle),
-                Object.client_name.ilike(needle),
-            )
-        )
+        clause = _object_search_clause(search.strip())
+        if clause is not None:
+            filters.append(clause)
 
     where = and_(*filters) if filters else None
 

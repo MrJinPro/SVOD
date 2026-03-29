@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import Integer, Select, and_, case, cast, exists, func, or_, select
+from sqlalchemy import Integer, Select, and_, case, cast, exists, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_current_user
@@ -26,6 +26,7 @@ from app.integrations.agency_sqlite import (
 )
 from app.models.event import Event
 from app.models.event_action import EventAction
+from app.utils.search import query_needles, query_variants, tokenize_query
 
 router = APIRouter(prefix="/events")
 
@@ -37,101 +38,15 @@ class OperatorCommentIn(BaseModel):
     resultText: str | None = Field(default=None, max_length=5000)
 
 
-_CYR_TO_LAT_CONFUSABLES = str.maketrans(
-    {
-        # Uppercase
-        "А": "A",
-        "В": "B",
-        "С": "C",
-        "Е": "E",
-        "Н": "H",
-        "К": "K",
-        "М": "M",
-        "О": "O",
-        "Р": "P",
-        "Т": "T",
-        "Х": "X",
-        "У": "Y",
-        # Lowercase
-        "а": "a",
-        "в": "b",
-        "с": "c",
-        "е": "e",
-        "н": "h",
-        "к": "k",
-        "м": "m",
-        "о": "o",
-        "р": "p",
-        "т": "t",
-        "х": "x",
-        "у": "y",
-    }
-)
-
-_LAT_TO_CYR_CONFUSABLES = str.maketrans(
-    {
-        # Uppercase
-        "A": "А",
-        "B": "В",
-        "C": "С",
-        "E": "Е",
-        "H": "Н",
-        "K": "К",
-        "M": "М",
-        "O": "О",
-        "P": "Р",
-        "T": "Т",
-        "X": "Х",
-        "Y": "У",
-        # Lowercase
-        "a": "а",
-        "b": "в",
-        "c": "с",
-        "e": "е",
-        "h": "н",
-        "k": "к",
-        "m": "м",
-        "o": "о",
-        "p": "р",
-        "t": "т",
-        "x": "х",
-        "y": "у",
-    }
-)
-
-
-def _query_variants(value: str) -> list[str]:
-    """Generate search variants for common Cyrillic/Latin lookalikes."""
-
-    raw = str(value or "").strip()
-    if not raw:
-        return []
-
-    v1 = raw
-    v2 = raw.translate(_CYR_TO_LAT_CONFUSABLES)
-    v3 = raw.translate(_LAT_TO_CYR_CONFUSABLES)
-
-    out: list[str] = []
-    for v in (v1, v2, v3):
-        v = v.strip()
-        if v and v not in out:
-            out.append(v)
-    return out
-
-
 def _is_operator_handled_predicate() -> Any:
     """Heuristic: event is handled by an operator (not purely system)."""
 
-    # Historically we relied on Event.operator_id being filled for operator-handled alarms.
-    # This is more robust than joining actions: some deployments may not have event_actions
-    # synced yet, or IDs may not match during migration.
     return and_(Event.operator_id.is_not(None), Event.operator_id != "")
 
 
 def _has_operator_comment_predicate() -> Any:
     """Event has an operator comment/note (Result_Text)."""
 
-    # Treat whitespace-only notes as empty.
     return and_(
         Event.result_text.is_not(None),
         func.length(func.trim(Event.result_text)) > 0,
@@ -141,7 +56,6 @@ def _has_operator_comment_predicate() -> Any:
 def _accept_action_predicate() -> Any:
     """Best-effort match for operator action: accepted for processing."""
 
-    # In agency logs this can vary a bit; we match by substrings.
     return or_(
         EventAction.action_name == "Прием на обработку",
         EventAction.action_name.ilike("%прин%в обработ%"),
@@ -271,25 +185,49 @@ def _append_search_filter(filters: list[Any], search: str | None) -> None:
     if not search or not search.strip():
         return
 
-    variants = _query_variants(search)
-    needles = [f"%{v}%" for v in variants]
-
-    like_clauses: list[Any] = []
-    for needle in needles:
-        like_clauses.extend(
-            [
-                Event.description.ilike(needle),
-                Event.id.ilike(needle),
-                Event.object_id.ilike(needle),
-                Event.object_name.ilike(needle),
-                Event.client_name.ilike(needle),
-                Event.location.ilike(needle),
-                Event.result_text.ilike(needle),
-            ]
+    token_clauses: list[Any] = []
+    for token in tokenize_query(search):
+        needles = query_needles(token)
+        action_exists = exists(
+            select(literal(1)).where(
+                and_(
+                    EventAction.event_id == Event.id,
+                    or_(
+                        *[
+                            or_(
+                                EventAction.action_name.ilike(needle),
+                                EventAction.operator_name.ilike(needle),
+                                EventAction.computer.ilike(needle),
+                                EventAction.gbr_name.ilike(needle),
+                            )
+                            for needle in needles
+                        ]
+                    ),
+                )
+            )
         )
 
-    if like_clauses:
-        filters.append(or_(*like_clauses))
+        like_clauses: list[Any] = []
+        for needle in needles:
+            like_clauses.extend(
+                [
+                    Event.description.ilike(needle),
+                    Event.id.ilike(needle),
+                    Event.object_id.ilike(needle),
+                    Event.object_name.ilike(needle),
+                    Event.client_name.ilike(needle),
+                    Event.location.ilike(needle),
+                    Event.result_text.ilike(needle),
+                    Event.code.ilike(needle),
+                    Event.code_text.ilike(needle),
+                    Event.state_name.ilike(needle),
+                ]
+            )
+
+        token_clauses.append(or_(*like_clauses, action_exists))
+
+    if token_clauses:
+        filters.append(and_(*token_clauses))
 
 
 async def _build_event_filters(

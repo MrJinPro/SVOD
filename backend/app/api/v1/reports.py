@@ -1441,6 +1441,13 @@ async def generate_pcn_ledger_xlsx(
     ws.cell(9, 2, clean_excel_text(title)).font = Font(bold=True, size=12)
     ws.cell(9, 2).alignment = Alignment(horizontal="center")
 
+    ws.merge_cells(start_row=10, start_column=2, end_row=10, end_column=10)
+    scope_bits = [f"Оператор: {operatorQuery.strip()}" if (operatorQuery or "").strip() else "Оператор: все"]
+    if hideOperatorNames:
+        scope_bits.append("ФИО скрыты")
+    ws.cell(10, 2, clean_excel_text(" | ".join(scope_bits))).alignment = Alignment(horizontal="center")
+    ws.cell(10, 2).font = Font(size=10, italic=True)
+
     headers = [
         "Дата",
         "Количество диспетчеров в смену",
@@ -1453,7 +1460,7 @@ async def generate_pcn_ledger_xlsx(
         "Всего в смену, руб.",
     ]
 
-    start_row = 11
+    start_row = 12
     for idx, h in enumerate(headers, start=2):
         cell = ws.cell(start_row, idx, clean_excel_text(h))
         cell.font = Font(bold=True)

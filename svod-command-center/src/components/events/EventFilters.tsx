@@ -44,7 +44,7 @@ export function EventFilters({ value, onChange, onApply, onReset }: EventFilters
         <div className="relative flex-1 min-w-[250px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Поиск по событиям..."
+            placeholder="Поиск по событию, объекту, коду, комментарию, оператору..."
             className="pl-9 bg-background"
             value={value.search}
             onChange={(e) => onChange({ ...value, search: e.target.value })}

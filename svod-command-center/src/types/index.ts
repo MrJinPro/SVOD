@@ -53,6 +53,21 @@ export interface ObjectListItem {
   eventsToday?: number;
 }
 
+export interface SearchEventResult extends Event {
+  resultType: 'event';
+}
+
+export interface SearchObjectResult extends ObjectListItem {
+  resultType: 'object';
+}
+
+export interface UnifiedSearchResponse {
+  query: string;
+  events: SearchEventResult[];
+  objects: SearchObjectResult[];
+  total: number;
+}
+
 export interface ObjectGroup {
   group: number;
   name?: string;

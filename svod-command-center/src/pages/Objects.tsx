@@ -14,6 +14,8 @@ import {
 } from '@/components/ui/table';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 
 const emptyPage: PaginatedResponse<ObjectListItem> = {
   data: [],
@@ -27,6 +29,7 @@ export default function Objects() {
   const navigate = useNavigate();
   const [draftSearch, setDraftSearch] = useState('');
   const [search, setSearch] = useState('');
+  const [includeDisabled, setIncludeDisabled] = useState(true);
   const [pageNumber, setPageNumber] = useState(1);
 
   const path = useMemo(() => {
@@ -34,8 +37,13 @@ export default function Objects() {
     params.set('page', String(pageNumber));
     params.set('pageSize', '50');
     if (search.trim()) params.set('search', search.trim());
+    if (includeDisabled) {
+      params.set('includeDisabled', 'true');
+      params.set('includeIdPrefix', 'true');
+      params.set('includeStarPrefix', 'true');
+    }
     return `/objects?${params.toString()}`;
-  }, [pageNumber, search]);
+  }, [includeDisabled, pageNumber, search]);
 
   const { data: page, error, isLoading, refetch } = useApiGet<PaginatedResponse<ObjectListItem>>(path, emptyPage);
 
@@ -47,6 +55,19 @@ export default function Objects() {
             Найдено: <strong className="text-foreground">{page.total}</strong>
           </div>
           <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 mr-2">
+              <Checkbox
+                id="objects-include-disabled"
+                checked={includeDisabled}
+                onCheckedChange={(checked) => {
+                  setIncludeDisabled(Boolean(checked));
+                  setPageNumber(1);
+                }}
+              />
+              <Label htmlFor="objects-include-disabled" className="text-sm whitespace-nowrap">
+                Показывать отключённые
+              </Label>
+            </div>
             <Input
               value={draftSearch}
               onChange={(e) => setDraftSearch(e.target.value)}
@@ -56,7 +77,7 @@ export default function Objects() {
                   setPageNumber(1);
                 }
               }}
-              placeholder="Поиск (номер, имя, адрес, клиент)…"
+              placeholder="Поиск (номер, имя, адрес, клиент, ответственный, телефон)…"
               className="w-80"
             />
             <Button
@@ -103,6 +124,7 @@ export default function Objects() {
                 <TableHead className="text-muted-foreground font-medium">Название</TableHead>
                 <TableHead className="text-muted-foreground font-medium">Адрес</TableHead>
                 <TableHead className="text-muted-foreground font-medium">Клиент</TableHead>
+                <TableHead className="w-[120px] text-muted-foreground font-medium">Статус</TableHead>
                 <TableHead className="w-[110px] text-muted-foreground font-medium">Сегодня</TableHead>
               </TableRow>
             </TableHeader>
@@ -118,6 +140,9 @@ export default function Objects() {
                   <TableCell className="font-medium text-foreground">{o.name || o.id}</TableCell>
                   <TableCell className="text-muted-foreground">{o.address || '—'}</TableCell>
                   <TableCell className="text-foreground">{o.clientName || '—'}</TableCell>
+                  <TableCell className={o.disabled ? 'text-destructive font-medium' : 'text-foreground'}>
+                    {o.disabled ? 'Отключён' : 'Активен'}
+                  </TableCell>
                   <TableCell className="text-foreground">
                     {typeof o.eventsToday === 'number' ? o.eventsToday : '—'}
                   </TableCell>
@@ -125,7 +150,7 @@ export default function Objects() {
               ))}
               {!isLoading && page.data.length === 0 && (
                 <TableRow className="border-border">
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-10">
+                  <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
                     Ничего не найдено
                   </TableCell>
                 </TableRow>
