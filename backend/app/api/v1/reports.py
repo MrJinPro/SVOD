@@ -123,7 +123,19 @@ def _pcn_ledger_payout(
     - else -> pay3
     """
 
-    t = thresholds.get(int(dispatchers))
+    dispatchers_i = int(dispatchers)
+
+    # Business matrix is configured only for 3/4/5 dispatchers.
+    # If the staffing source undercounts (for example presence sees only 1 user
+    # while alarm actions show 3 operators), we should not collapse payout to 0.
+    # Clamp to the nearest configured bracket instead of returning pay0.
+    if dispatchers_i <= 3:
+        t = thresholds.get(3)
+    elif dispatchers_i == 4:
+        t = thresholds.get(4)
+    else:
+        t = thresholds.get(5)
+
     if not t:
         return int(payouts[0])
     t1, t2, t3 = t
@@ -1387,8 +1399,10 @@ async def generate_pcn_ledger_xlsx(
         elif ds == "actions":
             dispatchers = dispatchers_actions
         else:
-            # auto: prefer presence, but if it's empty fallback to actions.
-            dispatchers = dispatchers_presence if dispatchers_presence else dispatchers_actions
+            # auto: presence can undercount if user presence sessions were not
+            # fully recorded, but action-derived staffing can never be lower than
+            # the number of operators who actually processed alarms in the shift.
+            dispatchers = max(dispatchers_presence, dispatchers_actions)
 
         control_rows.append(
             {
