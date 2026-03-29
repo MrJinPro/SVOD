@@ -112,6 +112,7 @@ export type ReportType =
   | 'objectsByCode'
   | 'gbrRaportXlsx'
   | 'eventsRaportXlsx'
+  | 'alarmMessages'
   | 'pcnLedger';
 export type ReportStatus = 'generated' | 'sent' | 'pending' | 'failed';
 

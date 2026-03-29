@@ -42,7 +42,7 @@ import type { DateRange } from 'react-day-picker';
 import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'eventsRaportXlsx' | 'pcnLedger';
+type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'eventsRaportXlsx' | 'alarmMessages' | 'pcnLedger';
 
 function formatLocalYYYYMMDD(d: Date): string {
   const yyyy = d.getFullYear();
@@ -401,7 +401,7 @@ export default function Reports() {
         if (gbrName !== 'all') params.set('gbrName', String(gbrName));
         if (gbrObjectId.trim()) params.set('objectId', gbrObjectId.trim());
         await apiPost(`/reports/generate/gbr-raport-xlsx?${params.toString()}`);
-      } else if (createKind === 'eventsRaportXlsx') {
+      } else if (createKind === 'eventsRaportXlsx' || createKind === 'alarmMessages') {
         if (!dateRange?.from || !dateRange?.to) {
           toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
           return;
@@ -419,7 +419,11 @@ export default function Reports() {
           includeCancelled: eventsIncludeCancelled,
         });
 
-        await apiPost(`/reports/generate/events-raport-xlsx?${params.toString()}`);
+        const path = createKind === 'alarmMessages'
+          ? `/reports/generate/alarm-messages-xlsx?${params.toString()}`
+          : `/reports/generate/events-raport-xlsx?${params.toString()}`;
+
+        await apiPost(path);
       } else if (createKind === 'pcnLedger') {
         if (!dateRange?.from || !dateRange?.to) {
           toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
@@ -496,6 +500,7 @@ export default function Reports() {
                 <SelectItem value="objectsByCode">Объекты по коду</SelectItem>
                 <SelectItem value="gbrRaportXlsx">Рапорт (ГБР)</SelectItem>
                 <SelectItem value="eventsRaportXlsx">Рапорт по событиям</SelectItem>
+                <SelectItem value="alarmMessages">Тревожные сообщения</SelectItem>
                 <SelectItem value="pcnLedger">Ведомость (ПЦН)</SelectItem>
                 <SelectItem value="weekly">Недельные</SelectItem>
                 <SelectItem value="monthly">Месячные</SelectItem>
@@ -551,6 +556,7 @@ export default function Reports() {
                     <SelectItem value="objectsByCode">Объекты по коду события (XLSX)</SelectItem>
                     <SelectItem value="gbrRaportXlsx">Рапорт (ГБР) по шаблону (XLSX)</SelectItem>
                     <SelectItem value="eventsRaportXlsx">Рапорт по событиям (XLSX)</SelectItem>
+                    <SelectItem value="alarmMessages">Тревожные сообщения (XLSX)</SelectItem>
                     <SelectItem value="pcnLedger">Ведомость по тревогам (ПЦН) (XLSX)</SelectItem>
                   </SelectContent>
                 </Select>
@@ -718,7 +724,7 @@ export default function Reports() {
                 </div>
               ) : null}
 
-              {createKind === 'eventsRaportXlsx' ? (
+              {createKind === 'eventsRaportXlsx' || createKind === 'alarmMessages' ? (
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-end gap-3">
                     <div className="space-y-1">

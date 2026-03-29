@@ -26,6 +26,7 @@ from app.integrations.agency_sqlite import (
 )
 from app.models.event import Event
 from app.models.event_action import EventAction
+from app.models.object import Object
 from app.utils.search import query_needles, query_variants, tokenize_query
 
 router = APIRouter(prefix="/events")
@@ -568,6 +569,349 @@ async def build_events_raport_xlsx_bytes(
             c.alignment = Alignment(vertical="top", wrap_text=True)
 
     ws.freeze_panes = ws["A6"]
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+
+    out = BytesIO()
+    wb.save(out)
+    return (out.getvalue(), len(events_rows))
+
+
+async def build_alarm_messages_xlsx_bytes(
+    *,
+    dateFrom: str | None,
+    dateTo: str | None,
+    type: str | None,  # noqa: A002
+    objectId: str | None,
+    severity: str | None,
+    status: str | None,
+    search: str | None,
+    includeNoise: bool,
+    includeSystem: bool,
+    includeCancelled: bool,
+    onlyWithOperatorComment: bool,
+    limit: int,
+    session: AsyncSession,
+) -> tuple[bytes, int]:
+    filters = await _build_event_filters(
+        session=session,
+        dateFrom=dateFrom,
+        dateTo=dateTo,
+        type=type,
+        objectId=objectId,
+        severity=severity,
+        status=status,
+        search=search,
+        includeNoise=includeNoise,
+        includeSystem=includeSystem,
+        includeCancelled=includeCancelled,
+        onlyWithOperatorComment=onlyWithOperatorComment,
+        use_default_lookback=False,
+    )
+
+    where = and_(*filters) if filters else None
+
+    stmt: Select[tuple[Event]] = select(Event).order_by(Event.timestamp.desc()).limit(limit)
+    if where is not None:
+        stmt = stmt.where(where)
+    events_rows: list[Event] = (await session.execute(stmt)).scalars().all()
+
+    event_ids = [e.id for e in events_rows if e.id]
+    object_ids = sorted({e.object_id for e in events_rows if getattr(e, "object_id", None)})
+
+    called_match_strict = or_(
+        EventAction.action_name.ilike("%Вызван%груп%"),
+        EventAction.action_name.ilike("%Вызван%реаг%"),
+        EventAction.action_name.ilike("%Вызван%ГБР%"),
+        EventAction.action_name.ilike("%Вызов%груп%"),
+        EventAction.action_name.ilike("%Вызов%реаг%"),
+        EventAction.action_name.ilike("%Вызов%ГБР%"),
+        EventAction.action_name.ilike("%Направ%груп%"),
+        EventAction.action_name.ilike("%Направ%реаг%"),
+        EventAction.action_name.ilike("%Направ%ГБР%"),
+        EventAction.action_name.ilike("%Отправ%груп%"),
+        EventAction.action_name.ilike("%Отправ%реаг%"),
+        EventAction.action_name.ilike("%Отправ%ГБР%"),
+        EventAction.action_name.ilike("%Выезд%груп%"),
+        EventAction.action_name.ilike("%Выезд%реаг%"),
+        EventAction.action_name.ilike("%Выезд%ГБР%"),
+    )
+    called_match_loose = or_(
+        EventAction.action_name.ilike("%Вызван%"),
+        EventAction.action_name.ilike("%Направ%"),
+        EventAction.action_name.ilike("%Отправ%"),
+        EventAction.action_name.ilike("%Выезд%"),
+        EventAction.action_name.ilike("%Следу%"),
+    )
+    arrived_match_strict = or_(
+        EventAction.action_name.ilike("%Приб%груп%"),
+        EventAction.action_name.ilike("%Приб%реаг%"),
+        EventAction.action_name.ilike("%Приб%ГБР%"),
+        EventAction.action_name.ilike("%На объект%"),
+        EventAction.action_name.ilike("%Доех%объект%"),
+    )
+    arrived_match_loose = or_(
+        EventAction.action_name.ilike("%Прибыт%"),
+        EventAction.action_name.ilike("%Прибыл%"),
+        EventAction.action_name.ilike("%На объект%"),
+        EventAction.action_name.ilike("%Доех%"),
+    )
+    cancelled_match_strict = or_(
+        EventAction.action_name.ilike("%Отмен%груп%"),
+        EventAction.action_name.ilike("%Отмен%реаг%"),
+        EventAction.action_name.ilike("%Отмен%ГБР%"),
+        EventAction.action_name.ilike("%Отбой%груп%"),
+        EventAction.action_name.ilike("%Отбой%реаг%"),
+        EventAction.action_name.ilike("%Отбой%ГБР%"),
+    )
+    cancelled_match_loose = or_(
+        EventAction.action_name.ilike("%Отмен%"),
+        EventAction.action_name.ilike("%Отбой%"),
+        EventAction.action_name.ilike("%Ложн%тревог%"),
+        EventAction.action_name.ilike("%Ложный%"),
+    )
+
+    called_ts = func.coalesce(
+        func.min(case((called_match_strict, EventAction.action_time), else_=None)),
+        func.min(case((called_match_loose, EventAction.action_time), else_=None)),
+    ).label("called_ts")
+    arrived_ts = func.coalesce(
+        func.min(case((arrived_match_strict, EventAction.action_time), else_=None)),
+        func.min(case((arrived_match_loose, EventAction.action_time), else_=None)),
+    ).label("arrived_ts")
+    cancelled_ts = func.coalesce(
+        func.min(case((cancelled_match_strict, EventAction.action_time), else_=None)),
+        func.min(case((cancelled_match_loose, EventAction.action_time), else_=None)),
+    ).label("cancelled_ts")
+    accepted_ts = func.min(case((_accept_action_predicate(), EventAction.action_time), else_=None)).label("accepted_ts")
+    called_operator = func.coalesce(
+        func.min(case((called_match_strict, EventAction.operator_name), else_=None)),
+        func.min(case((called_match_loose, EventAction.operator_name), else_=None)),
+        func.min(case((_accept_action_predicate(), EventAction.operator_name), else_=None)),
+    ).label("called_operator")
+    gbr_name = func.coalesce(
+        func.min(case((called_match_strict, EventAction.gbr_name), else_=None)),
+        func.min(case((called_match_loose, EventAction.gbr_name), else_=None)),
+        func.min(EventAction.gbr_name),
+    ).label("gbr_name")
+
+    actions_by_event: dict[str, dict[str, Any]] = {}
+    if event_ids:
+        actions_q = (
+            select(
+                EventAction.event_id,
+                gbr_name,
+                called_ts,
+                arrived_ts,
+                cancelled_ts,
+                accepted_ts,
+                called_operator,
+            )
+            .where(EventAction.event_id.in_(event_ids))
+            .group_by(EventAction.event_id)
+        )
+        for (eid, gbr, called, arrived, cancelled, accepted, op) in (await session.execute(actions_q)).all():
+            actions_by_event[str(eid)] = {
+                "gbr": gbr,
+                "called": called,
+                "arrived": arrived,
+                "cancelled": cancelled,
+                "accepted": accepted,
+                "operator": op,
+            }
+
+    objects_by_id: dict[str, Object] = {}
+    if object_ids:
+        objects = (await session.execute(select(Object).where(Object.id.in_(object_ids)))).scalars().all()
+        objects_by_id = {str(obj.id): obj for obj in objects}
+
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Тревожные сообщения"
+
+    columns = [
+        "Дата тревоги",
+        "№ Объекта",
+        "Адрес объекта",
+        "ФИО",
+        "Принят",
+        "Дата принятия",
+        "Система",
+        "Шлейф",
+        "Инженер",
+        "ГБР",
+        "Оператор",
+        "Время вызова",
+        "Время прибытия",
+        "Результат",
+        "Результат осмотра",
+        "Заметки",
+        "Заявка",
+        "Выполнена",
+        "Результат заявки",
+        "Штраф",
+        "№ квитанции",
+        "Пропажа",
+        "Устранена",
+        "Договорной отдел",
+        "Время в пути",
+        "Пропажи",
+        "Ложная сработка",
+    ]
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    ws.cell(row=1, column=1, value="Тревожные сообщения").font = Font(bold=True, size=14)
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+
+    dt_from = _parse_dt(dateFrom) if dateFrom else None
+    dt_to = _parse_dt(dateTo) if dateTo else None
+    period_text = ""
+    if dt_from and dt_to:
+        period_text = f"За период: {dt_from.strftime('%d.%m.%Y %H:%M')} — {dt_to.strftime('%d.%m.%Y %H:%M')}"
+    elif dt_from:
+        period_text = f"С: {dt_from.strftime('%d.%m.%Y %H:%M')}"
+    elif dt_to:
+        period_text = f"До: {dt_to.strftime('%d.%m.%Y %H:%M')}"
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+    ws.cell(row=2, column=1, value=period_text).alignment = Alignment(horizontal="center")
+
+    header_row = 4
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    widths = [
+        20, 14, 38, 26, 10, 20, 16, 10, 16, 12, 20, 12, 12, 52, 32, 24, 10, 12, 22, 10, 14, 10, 12, 16, 14, 12, 14,
+    ]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(ord('A') + i - 1)].width = w
+
+    for col_idx, title in enumerate(columns, start=1):
+        c = ws.cell(row=header_row, column=col_idx, value=title)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+
+    def _fmt_time_ru(dt: datetime | None) -> str:
+        if dt is None:
+            return ""
+        return dt.strftime("%H:%M:%S")
+
+    def _flag_text(value: Any, default: str = "") -> str:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        text = str(value).strip()
+        if not text:
+            return default
+        low = text.lower()
+        if low in {"1", "да", "true", "yes", "+"}:
+            return "1"
+        if low in {"0", "нет", "false", "no", "-"}:
+            return "0"
+        return text
+
+    start_row = header_row + 1
+    for i, e in enumerate(events_rows, start=0):
+        row_idx = start_row + i
+
+        a = actions_by_event.get(str(e.id)) or {}
+        called = a.get("called")
+        arrived = a.get("arrived")
+        cancelled = a.get("cancelled")
+        accepted = a.get("accepted")
+        obj = objects_by_id.get(str(getattr(e, "object_id", "") or ""))
+
+        travel_seconds: float | None = None
+        if isinstance(called, datetime) and isinstance(arrived, datetime):
+            try:
+                travel_seconds = float((arrived - called).total_seconds())
+            except Exception:
+                travel_seconds = None
+
+        shleif = _extract_desc_value(e.description, "Шлейф")
+        engineer = _extract_desc_value(e.description, "Инженер")
+        system_name = _extract_desc_value(e.description, "Система")
+        osmotr = _extract_desc_value(e.description, "Осмотр")
+        result_osmotr = _extract_desc_value(e.description, "Результат осмотра") or _extract_desc_value(e.description, "Результат")
+        notes = _extract_desc_value(e.description, "Заметки")
+        zayavka = _extract_desc_value(e.description, "Заявка")
+        result_zayavka = _extract_desc_value(e.description, "Результат заявки")
+        shtraf = _extract_desc_value(e.description, "Штраф")
+        receipt_no = _extract_desc_value(e.description, "№ квитанции") or _extract_desc_value(e.description, "Квитанция")
+        contract_department = _extract_desc_value(e.description, "Договорной отдел")
+        missing_count = _extract_desc_value(e.description, "Пропажи")
+        missing_flag = _extract_desc_value(e.description, "Пропажа")
+        eliminated_flag = _extract_desc_value(e.description, "Устранена")
+        completed_flag = _extract_desc_value(e.description, "Выполнена")
+        false_alarm = _extract_desc_value(e.description, "Ложная сработка")
+
+        operator = ((str(a.get("operator") or "").strip()) or _extract_desc_value(e.description, "Оператор") or "")
+        gbr = (str(a.get("gbr") or "").strip()) or _extract_desc_value(e.description, "ГБР") or ""
+        result_main = (getattr(e, "result_text", None) or "").strip()
+        if not result_main:
+            result_main = notes
+
+        combined_text = " ".join(
+            [
+                str(getattr(e, "result_text", None) or ""),
+                str(getattr(e, "description", None) or ""),
+                str(getattr(e, "code_text", None) or ""),
+            ]
+        ).lower()
+
+        if not false_alarm and "ложн" in combined_text:
+            false_alarm = "1"
+        if not missing_flag and "пропаж" in combined_text:
+            missing_flag = "1"
+        if not completed_flag and getattr(e, "status", None) == "resolved":
+            completed_flag = "1"
+        if not eliminated_flag and getattr(e, "status", None) == "resolved":
+            eliminated_flag = "1"
+
+        values = [
+            _fmt_dt_ru(getattr(e, "timestamp", None)),
+            getattr(e, "object_id", None) or "",
+            getattr(e, "location", None) or getattr(e, "object_name", None) or "",
+            getattr(e, "client_name", None) or "",
+            "1" if accepted or operator else "0",
+            _fmt_dt_ru(accepted if isinstance(accepted, datetime) else getattr(obj, "created_at", None)),
+            system_name,
+            shleif,
+            engineer,
+            gbr,
+            operator,
+            _fmt_time_ru(called if isinstance(called, datetime) else getattr(e, "timestamp", None)),
+            _fmt_time_ru(arrived) if isinstance(arrived, datetime) else ("Отмена" if isinstance(cancelled, datetime) else ""),
+            result_main,
+            result_osmotr or osmotr,
+            notes,
+            _flag_text(zayavka, "0"),
+            _flag_text(completed_flag, "0"),
+            result_zayavka,
+            _flag_text(shtraf, "0"),
+            receipt_no,
+            _flag_text(missing_flag, "0"),
+            _flag_text(eliminated_flag, "0"),
+            _flag_text(contract_department, "0"),
+            _fmt_travel(travel_seconds),
+            missing_count,
+            _flag_text(false_alarm, "0"),
+        ]
+
+        for col_idx, v in enumerate(values, start=1):
+            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c.border = border
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    ws.freeze_panes = ws["A5"]
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0

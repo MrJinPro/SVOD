@@ -243,6 +243,7 @@ const typeLabels: Record<ReportType, string> = {
   objectsByCode: 'Объекты по коду',
   gbrRaportXlsx: 'Рапорт (ГБР)',
   eventsRaportXlsx: 'Рапорт по событиям',
+  alarmMessages: 'Тревожные сообщения',
   pcnLedger: 'Ведомость по тревогам (ПЦН)',
 };
 
