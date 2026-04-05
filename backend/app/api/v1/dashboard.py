@@ -73,22 +73,28 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
     dt_from, dt_to = _day_bounds(ref_day)
     y_from, y_to = _day_bounds(prev_day)
 
+    alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
+
     total_today = (
         await session.execute(
-            select(func.count()).select_from(Event).where(Event.timestamp >= dt_from, Event.timestamp <= dt_to)
+            select(func.count(func.distinct(alarm_id_expr)))
+            .select_from(Event)
+            .where(Event.timestamp >= dt_from, Event.timestamp <= dt_to)
         )
     ).scalar_one()
 
     total_yesterday = (
         await session.execute(
-            select(func.count()).select_from(Event).where(Event.timestamp >= y_from, Event.timestamp <= y_to)
+            select(func.count(func.distinct(alarm_id_expr)))
+            .select_from(Event)
+            .where(Event.timestamp >= y_from, Event.timestamp <= y_to)
         )
     ).scalar_one()
 
     # Critical events for the reference day.
     critical_day = (
         await session.execute(
-            select(func.count()).select_from(Event).where(
+            select(func.count(func.distinct(alarm_id_expr))).select_from(Event).where(
                 Event.severity == "critical",
                 Event.timestamp >= dt_from,
                 Event.timestamp <= dt_to,
@@ -140,20 +146,33 @@ async def dashboard_timeline(session: AsyncSession = Depends(get_session)) -> li
         hour: {"time": f"{hour:02d}:00", "events": 0, "critical": 0} for hour in range(0, 24, 2)
     }
 
+    alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
+
     rows = (
         await session.execute(
-            select(Event.timestamp, Event.severity).where(and_(Event.timestamp >= dt_from, Event.timestamp <= dt_to))
+            select(Event.timestamp, Event.severity, alarm_id_expr.label("alarm_id")).where(
+                and_(Event.timestamp >= dt_from, Event.timestamp <= dt_to)
+            )
         )
     ).all()
 
-    for ts, severity in rows:
+    seen_by_bucket: dict[int, set[str]] = {hour: set() for hour in range(0, 24, 2)}
+    crit_by_bucket: dict[int, set[str]] = {hour: set() for hour in range(0, 24, 2)}
+
+    for ts, severity, alarm_id in rows:
         if not isinstance(ts, datetime):
+            continue
+        aid = str(alarm_id or "").strip()
+        if not aid:
             continue
         bucket_hour = (int(ts.hour) // 2) * 2
         if bucket_hour not in buckets:
             continue
-        buckets[bucket_hour]["events"] += 1
-        if severity == "critical":
+        if aid not in seen_by_bucket[bucket_hour]:
+            seen_by_bucket[bucket_hour].add(aid)
+            buckets[bucket_hour]["events"] += 1
+        if severity == "critical" and aid not in crit_by_bucket[bucket_hour]:
+            crit_by_bucket[bucket_hour].add(aid)
             buckets[bucket_hour]["critical"] += 1
 
     return [buckets[hour] for hour in sorted(buckets.keys())]
@@ -167,12 +186,14 @@ async def dashboard_by_type(session: AsyncSession = Depends(get_session)) -> lis
     window_end = max_ts or datetime.now()
     dt_from = window_end - timedelta(hours=24)
 
+    alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
+
     rows = (
         await session.execute(
-            select(Event.type, func.count().label("cnt"))
+            select(Event.type, func.count(func.distinct(alarm_id_expr)).label("cnt"))
             .where(Event.timestamp >= dt_from, Event.timestamp <= window_end)
             .group_by(Event.type)
-            .order_by(func.count().desc())
+            .order_by(func.count(func.distinct(alarm_id_expr)).desc())
         )
     ).all()
 

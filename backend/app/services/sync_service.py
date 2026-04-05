@@ -380,6 +380,16 @@ async def sync_recent_events_from_agency_mssql_archives(
         except Exception:
             continue
 
+        parent_event_id: str | None = None
+        try:
+            parent_raw = r.get("Event_Parent_id")
+            if parent_raw is not None:
+                parent_int = int(parent_raw)
+                if parent_int > 0:
+                    parent_event_id = f"mssql:{date_key}:{parent_int}"
+        except Exception:
+            parent_event_id = None
+
         event_pairs.add((date_key, event_id))
 
         ts = r.get("TimeEvent")
@@ -461,6 +471,7 @@ async def sync_recent_events_from_agency_mssql_archives(
         events_to_insert.append(
             {
                 "id": f"mssql:{date_key}:{event_id}",
+                "parent_event_id": parent_event_id,
                 "timestamp": ts,
                 "type": event_type,
                 "object_id": panel_id,
@@ -542,9 +553,30 @@ async def sync_recent_events_from_agency_mssql_archives(
     if dialect is not None and getattr(dialect, "name", None) == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        result = await session.execute(
-            pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
+        insert_stmt = pg_insert(Event).values(events_to_insert)
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[Event.id],
+            set_={
+                "parent_event_id": insert_stmt.excluded.parent_event_id,
+                "timestamp": insert_stmt.excluded.timestamp,
+                "type": insert_stmt.excluded.type,
+                "object_id": insert_stmt.excluded.object_id,
+                "object_name": insert_stmt.excluded.object_name,
+                "client_name": insert_stmt.excluded.client_name,
+                "severity": insert_stmt.excluded.severity,
+                "status": insert_stmt.excluded.status,
+                "description": insert_stmt.excluded.description,
+                "location": insert_stmt.excluded.location,
+                "operator_id": insert_stmt.excluded.operator_id,
+                "code": insert_stmt.excluded.code,
+                "code_group": insert_stmt.excluded.code_group,
+                "code_text": insert_stmt.excluded.code_text,
+                "state_name": insert_stmt.excluded.state_name,
+                "state_is_over_process": insert_stmt.excluded.state_is_over_process,
+                "result_text": insert_stmt.excluded.result_text,
+            },
         )
+        result = await session.execute(stmt)
         if actions_to_insert:
             actions_result = await session.execute(
                 pg_insert(EventAction)
@@ -559,6 +591,7 @@ async def sync_recent_events_from_agency_mssql_archives(
             sqlite_insert(Event)
             .values(
                 id=bindparam("id"),
+                parent_event_id=bindparam("parent_event_id"),
                 timestamp=bindparam("timestamp"),
                 type=bindparam("type"),
                 object_id=bindparam("object_id"),
@@ -572,12 +605,14 @@ async def sync_recent_events_from_agency_mssql_archives(
                 state_name=bindparam("state_name"),
                 state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
+                result_text=bindparam("result_text"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
             .on_conflict_do_update(
                 index_elements=[Event.id],
                 set_={
+                    "parent_event_id": sqlite_insert(Event).excluded.parent_event_id,
                     "timestamp": sqlite_insert(Event).excluded.timestamp,
                     "type": sqlite_insert(Event).excluded.type,
                     "object_id": sqlite_insert(Event).excluded.object_id,
@@ -593,6 +628,7 @@ async def sync_recent_events_from_agency_mssql_archives(
                     "code_text": sqlite_insert(Event).excluded.code_text,
                     "state_name": sqlite_insert(Event).excluded.state_name,
                     "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
+                    "result_text": sqlite_insert(Event).excluded.result_text,
                 },
             )
         )
@@ -1372,6 +1408,16 @@ async def sync_events_from_agency_mssql_archives(
         except Exception:
             continue
 
+        parent_event_id: str | None = None
+        try:
+            parent_raw = r.get("Event_Parent_id")
+            if parent_raw is not None:
+                parent_int = int(parent_raw)
+                if parent_int > 0:
+                    parent_event_id = f"mssql:{date_key}:{parent_int}"
+        except Exception:
+            parent_event_id = None
+
         max_date_key, max_event_id = (date_key, event_id)
         event_pairs.add((date_key, event_id))
 
@@ -1452,6 +1498,7 @@ async def sync_events_from_agency_mssql_archives(
         events_to_insert.append(
             {
                 "id": f"mssql:{date_key}:{event_id}",
+                "parent_event_id": parent_event_id,
                 "timestamp": ts,
                 "type": event_type,
                 "object_id": panel_id,
@@ -1533,7 +1580,29 @@ async def sync_events_from_agency_mssql_archives(
     if dialect is not None and getattr(dialect, "name", None) == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        stmt = pg_insert(Event).values(events_to_insert).on_conflict_do_nothing(index_elements=[Event.id])
+        insert_stmt = pg_insert(Event).values(events_to_insert)
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[Event.id],
+            set_={
+                "parent_event_id": insert_stmt.excluded.parent_event_id,
+                "timestamp": insert_stmt.excluded.timestamp,
+                "type": insert_stmt.excluded.type,
+                "object_id": insert_stmt.excluded.object_id,
+                "object_name": insert_stmt.excluded.object_name,
+                "client_name": insert_stmt.excluded.client_name,
+                "severity": insert_stmt.excluded.severity,
+                "status": insert_stmt.excluded.status,
+                "description": insert_stmt.excluded.description,
+                "location": insert_stmt.excluded.location,
+                "operator_id": insert_stmt.excluded.operator_id,
+                "code": insert_stmt.excluded.code,
+                "code_group": insert_stmt.excluded.code_group,
+                "code_text": insert_stmt.excluded.code_text,
+                "state_name": insert_stmt.excluded.state_name,
+                "state_is_over_process": insert_stmt.excluded.state_is_over_process,
+                "result_text": insert_stmt.excluded.result_text,
+            },
+        )
         result = await session.execute(stmt)
 
         if actions_to_insert:
@@ -1553,6 +1622,7 @@ async def sync_events_from_agency_mssql_archives(
             sqlite_insert(Event)
             .values(
                 id=bindparam("id"),
+                parent_event_id=bindparam("parent_event_id"),
                 timestamp=bindparam("timestamp"),
                 type=bindparam("type"),
                 object_id=bindparam("object_id"),
@@ -1566,12 +1636,14 @@ async def sync_events_from_agency_mssql_archives(
                 state_name=bindparam("state_name"),
                 state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
+                result_text=bindparam("result_text"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
             .on_conflict_do_update(
                 index_elements=[Event.id],
                 set_={
+                    "parent_event_id": sqlite_insert(Event).excluded.parent_event_id,
                     "timestamp": sqlite_insert(Event).excluded.timestamp,
                     "type": sqlite_insert(Event).excluded.type,
                     "object_id": sqlite_insert(Event).excluded.object_id,
@@ -1587,6 +1659,7 @@ async def sync_events_from_agency_mssql_archives(
                     "code_text": sqlite_insert(Event).excluded.code_text,
                     "state_name": sqlite_insert(Event).excluded.state_name,
                     "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
+                    "result_text": sqlite_insert(Event).excluded.result_text,
                 },
             )
         )

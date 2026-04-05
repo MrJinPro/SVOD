@@ -538,7 +538,11 @@ export default function Reports() {
         </div>
 
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent fullscreenable className="sm:max-w-[760px] max-w-[calc(100vw-2rem)] overflow-hidden">
+          <DialogContent
+            fullscreenable
+            defaultFullscreen
+            className="w-[98vw] max-w-[1400px] h-[92dvh] overflow-hidden p-3 sm:p-4 flex flex-col"
+          >
             <DialogHeader>
               <DialogTitle>Создать отчёт</DialogTitle>
               <DialogDescription>
@@ -546,7 +550,7 @@ export default function Reports() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4">
+            <div className="space-y-4 min-h-0 overflow-y-auto pr-1">
               <div className="flex flex-wrap items-center gap-3">
                 <Select value={createKind} onValueChange={(v) => setCreateKind(v as CreateReportKind)}>
                   <SelectTrigger className="w-full sm:w-[360px]">
@@ -684,8 +688,8 @@ export default function Reports() {
                   </div>
 
                   <div className="rounded-md border border-border">
-                    <ScrollArea className="h-[280px]">
-                      <table className="w-full text-sm">
+                    <ScrollArea className="h-[52dvh] min-h-[320px]">
+                      <table className="w-full min-w-[980px] text-sm">
                         <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                           <tr>
                             <th className="text-left font-medium px-3 py-2">№ объекта</th>

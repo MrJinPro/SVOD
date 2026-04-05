@@ -26,6 +26,8 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN object_id VARCHAR(64)"))
 
             # Enrich events with agency code/state info (optional)
+            if "parent_event_id" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN parent_event_id VARCHAR(64)"))
             if "code" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN code VARCHAR(16)"))
             if "code_group" not in col_names:
@@ -146,6 +148,7 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN object_id VARCHAR(64)"))
 
             for col_name, col_type in (
+                ("parent_event_id", "VARCHAR(64)"),
                 ("code", "VARCHAR(16)"),
                 ("code_group", "INTEGER"),
                 ("code_text", "VARCHAR(500)"),

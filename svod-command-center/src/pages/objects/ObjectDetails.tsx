@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Separator } from '@/components/ui/separator';
 import { EventsTable } from '@/components/events/EventsTable';
+import { EventDetailsSheet } from '@/components/events/EventDetailsSheet';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -36,6 +37,8 @@ const emptyEvents: PaginatedResponse<Event> = {
 export default function ObjectDetails() {
   const { objectId } = useParams();
   const [eventsPage, setEventsPage] = useState(1);
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const id = objectId ? decodeURIComponent(objectId) : '';
 
@@ -51,7 +54,7 @@ export default function ObjectDetails() {
     return `/objects/${encodeURIComponent(id)}/events?${params.toString()}`;
   }, [id, eventsPage]);
 
-  const { data: eventsPageData, error: eventsError, isLoading: eventsLoading } = useApiGet<PaginatedResponse<Event>>(
+  const { data: eventsPageData, error: eventsError, isLoading: eventsLoading, refetch: refetchEvents } = useApiGet<PaginatedResponse<Event>>(
     eventsPath,
     emptyEvents
   );
@@ -191,7 +194,13 @@ export default function ObjectDetails() {
             onPageChange={(next) => setEventsPage(next)}
           />
 
-          <EventsTable events={eventsPageData.data} />
+          <EventsTable
+            events={eventsPageData.data}
+            onViewEvent={(event) => {
+              setSelectedEvent(event);
+              setDetailsOpen(true);
+            }}
+          />
 
           <PaginationBar
             isLoading={eventsLoading}
@@ -202,6 +211,16 @@ export default function ObjectDetails() {
             onPageChange={(next) => setEventsPage(next)}
           />
         </div>
+
+        <EventDetailsSheet
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          event={selectedEvent}
+          onEventUpdated={(next) => {
+            setSelectedEvent(next);
+            void refetchEvents();
+          }}
+        />
       </div>
     </MainLayout>
   );

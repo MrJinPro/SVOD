@@ -23,6 +23,7 @@ class Event(Base):
     status: Mapped[str] = mapped_column(String(16), index=True)
 
     # Agency/MSSQL fields (optional, used for richer UI/reporting)
+    parent_event_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     code: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     code_group: Mapped[int | None] = mapped_column(nullable=True)
     code_text: Mapped[str | None] = mapped_column(String(500), index=True, nullable=True)

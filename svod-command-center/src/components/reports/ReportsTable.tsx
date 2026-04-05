@@ -77,6 +77,12 @@ function SheetViewer({
     setZoom(pct);
   };
 
+  useEffect(() => {
+    if (!viewColumns.length) return;
+    const raf = window.requestAnimationFrame(() => fitToWidth());
+    return () => window.cancelAnimationFrame(raf);
+  }, [viewColumns.length, totalWidth]);
+
   const onStartResize = (idx: number, e: any) => {
     e.preventDefault?.();
     e.stopPropagation?.();
@@ -165,7 +171,7 @@ function SheetViewer({
       </div>
 
       <div className="rounded-md border border-border bg-muted/30">
-        <div ref={viewportRef} className="max-h-[70dvh] w-full overflow-auto p-6">
+        <div ref={viewportRef} className="max-h-[78dvh] w-full overflow-auto p-3 sm:p-6">
           <div className="mx-auto w-fit" style={zoomStyle}>
             <div className="rounded-md border border-border bg-background">
               <div className="p-4 border-b border-border space-y-1">
@@ -191,9 +197,9 @@ function SheetViewer({
                     <thead>
                       <tr className="border-b border-border bg-muted/40">
                         {viewColumns.map((c, idx) => (
-                          <th
+                            <th
                             key={`${c}-${idx}`}
-                            className="relative text-left font-medium px-3 py-2 whitespace-nowrap select-none"
+                              className="relative text-left font-medium px-3 py-2 whitespace-nowrap select-none"
                             draggable
                             onDragStart={() => onDragStartHeader(idx)}
                             onDragOver={(e) => e.preventDefault()}
@@ -214,7 +220,7 @@ function SheetViewer({
                       {viewRows.map((r, i) => (
                         <tr key={i} className="border-b border-border last:border-b-0">
                           {viewColumns.map((_, j) => (
-                            <td key={j} className="px-3 py-2 align-top whitespace-nowrap">
+                            <td key={j} className="px-3 py-2 align-top whitespace-pre-wrap break-words">
                               {r?.[j] ? r[j] : '—'}
                             </td>
                           ))}
@@ -476,19 +482,23 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent fullscreenable className="sm:max-w-[900px] max-w-[calc(100vw-2rem)] overflow-hidden">
+        <DialogContent
+          fullscreenable
+          defaultFullscreen
+          className="w-[98vw] max-w-[1400px] h-[92dvh] overflow-hidden p-3 sm:p-4 flex flex-col"
+        >
           <DialogHeader>
             <DialogTitle>{previewTitle}</DialogTitle>
           </DialogHeader>
-          <div className="rounded-md border border-border">
-            <div className="w-full">
+          <div className="rounded-md border border-border min-h-0 flex-1 overflow-hidden">
+            <div className="w-full h-full min-h-0">
               {previewMode === 'none' ? (
                 <div className="p-4 text-sm text-muted-foreground">
                   {previewLoading ? 'Загрузка…' : 'Предпросмотр недоступен для этого отчёта. Скачайте XLSX.'}
                 </div>
               ) : previewMode === 'gbr' ? (
-                <div className="max-h-[70dvh] w-full overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-max text-sm">
+                <div className="h-full max-h-[80dvh] w-full overflow-x-auto overflow-y-auto">
+                  <table className="w-full min-w-[1100px] text-sm">
                     <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                       <tr>
                         <th className="text-left font-medium px-3 py-2 whitespace-nowrap">№ объекта</th>
@@ -531,7 +541,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                   </table>
                 </div>
               ) : (
-                <div className="p-3">
+                <div className="h-full min-h-0 p-2 sm:p-3">
                   <SheetViewer
                     titleLines={tableTitleLines}
                     columns={tableColumns}

@@ -337,6 +337,7 @@ def fetch_archive_events_since(
             sql = f"""
             SELECT TOP ({int(remaining)})
                 a.Event_id,
+                a.Event_Parent_id,
                 a.Date_Key,
                 a.Panel_id,
                 a.Group_ AS GroupNo,
@@ -419,6 +420,85 @@ def fetch_archive_events_recent(
     end_date = datetime.strptime(str(int(date_to_key)), "%Y%m%d").date()
 
     months = _months_between(start_date, end_date)
+
+    out: list[dict[str, Any]] = []
+
+    with pyodbc.connect(conn_str, timeout=10) as conn:
+        # SQL Server returns NVARCHAR/NCHAR via SQL_WCHAR as UTF-16LE.
+        # Decoding it as UTF-8 can crash on Cyrillic data.
+        conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+        conn.setencoding(encoding="utf-8")
+
+        # Most recent first: iterate months in reverse.
+        for m in reversed(months):
+            if len(out) >= limit:
+                break
+
+            suffix = _month_table_suffix(m)
+            archive_table = f"{archives_db_name}.dbo.archive{suffix}"
+            service_table = f"{archives_db_name}.dbo.eventservice{suffix}"
+
+            # Reference dictionary tables from the main DB (the one in the URL).
+            code_table = f"{info.database}.dbo.Code_T"
+            states_table = f"{info.database}.dbo.States"
+
+            remaining = limit - len(out)
+
+            sql = f"""
+            SELECT TOP ({int(remaining)})
+                a.Event_id,
+                a.Event_Parent_id,
+                a.Date_Key,
+                a.Panel_id,
+                a.Group_ AS GroupNo,
+                a.Line,
+                a.Zone,
+                a.Code,
+                a.CodeGroup,
+                a.TimeEvent,
+                a.Result_Text,
+                a.StateEvent,
+                es.NameState,
+                es.PersonName,
+                st.StateName AS StateName,
+                st.isOverProcess AS StateIsOverProcess,
+                COALESCE(ct.CodeMes_RU, ct.Message) AS CodeText,
+                es.GrResponseName,
+                es.OperationTime
+            FROM {archive_table} a
+            OUTER APPLY (
+                SELECT TOP (1)
+                    s.NameState,
+                    s.PersonName,
+                    s.GrResponseName,
+                    s.OperationTime
+                FROM {service_table} s
+                WHERE s.Event_id = a.Event_id AND s.Date_Key = a.Date_Key
+                ORDER BY s.OperationTime DESC
+            ) es
+            LEFT JOIN {states_table} st
+                ON st.State_id = a.StateEvent
+            LEFT JOIN {code_table} ct
+                ON ct.Code = a.Code AND ct.CodeGroup = a.CodeGroup
+            WHERE a.Date_Key BETWEEN ? AND ?
+            ORDER BY a.Date_Key DESC, a.Event_id DESC
+            """
+
+            params = [int(date_from_key), int(date_to_key)]
+
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = _rows_to_dicts(cur)
+                    out.extend(rows)
+            except Exception as e:
+                msg = str(e)
+                if "Invalid object name" in msg or "42S02" in msg:
+                    continue
+                raise
+
+    return out
 
 
 def fetch_alarm_stands_analysis(

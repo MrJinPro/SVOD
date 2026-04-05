@@ -1351,25 +1351,27 @@ async def object_events_summary(
 
     where = and_(*filters) if filters else None
 
-    total_q = select(func.count()).select_from(Event)
+    alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
+
+    total_q = select(func.count(func.distinct(alarm_id_expr))).select_from(Event)
     if where is not None:
         total_q = total_q.where(where)
     total = (await session.execute(total_q)).scalar_one()
 
-    by_sev_q = select(Event.severity, func.count()).select_from(Event)
+    by_sev_q = select(Event.severity, func.count(func.distinct(alarm_id_expr))).select_from(Event)
     if where is not None:
         by_sev_q = by_sev_q.where(where)
     by_sev_q = by_sev_q.group_by(Event.severity)
 
-    by_status_q = select(Event.status, func.count()).select_from(Event)
+    by_status_q = select(Event.status, func.count(func.distinct(alarm_id_expr))).select_from(Event)
     if where is not None:
         by_status_q = by_status_q.where(where)
     by_status_q = by_status_q.group_by(Event.status)
 
-    by_code_q = select(Event.code_group, Event.code, Event.code_text, func.count()).select_from(Event)
+    by_code_q = select(Event.code_group, Event.code, Event.code_text, func.count(func.distinct(alarm_id_expr))).select_from(Event)
     if where is not None:
         by_code_q = by_code_q.where(where)
-    by_code_q = by_code_q.group_by(Event.code_group, Event.code, Event.code_text).order_by(func.count().desc()).limit(200)
+    by_code_q = by_code_q.group_by(Event.code_group, Event.code, Event.code_text).order_by(func.count(func.distinct(alarm_id_expr)).desc()).limit(200)
 
     by_sev = {str(k or ""): int(v or 0) for (k, v) in (await session.execute(by_sev_q)).all()}
     by_status = {str(k or ""): int(v or 0) for (k, v) in (await session.execute(by_status_q)).all()}

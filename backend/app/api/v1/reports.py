@@ -531,6 +531,7 @@ async def generate_objects_by_code_report(
     base_stmt = (
         select(
             Event.id.label("event_id"),
+            func.coalesce(Event.parent_event_id, Event.id).label("alarm_id"),
             Event.object_id.label("object_id"),
             obj_name.label("object_name"),
             obj_addr.label("address"),
@@ -549,19 +550,19 @@ async def generate_objects_by_code_report(
             base.c.object_id,
             base.c.object_name,
             base.c.address,
-            func.count().label("events_count"),
+            func.count(func.distinct(base.c.alarm_id)).label("events_count"),
             func.min(base.c.timestamp).label("first_time"),
             func.max(base.c.timestamp).label("last_time"),
         )
         .group_by(base.c.object_id, base.c.object_name, base.c.address)
-        .order_by(func.count().desc())
+        .order_by(func.count(func.distinct(base.c.alarm_id)).desc())
         .limit(200000)
     )
     agg = agg_stmt.subquery("agg")
 
     rn_stmt = select(
         base.c.object_id.label("object_id"),
-        base.c.event_id.label("event_id"),
+        base.c.alarm_id.label("alarm_id"),
         base.c.result_text.label("result_text"),
         base.c.meter_count.label("meter_count"),
         base.c.timestamp.label("timestamp"),
@@ -571,7 +572,7 @@ async def generate_objects_by_code_report(
     last_note = (
         select(
             rn.c.object_id.label("object_id"),
-            rn.c.event_id.label("last_event_id"),
+            rn.c.alarm_id.label("last_event_id"),
             rn.c.result_text.label("last_result_text"),
             rn.c.meter_count.label("last_meter_count"),
         )
@@ -1358,9 +1359,10 @@ async def generate_pcn_ledger_xlsx(
     # Select one representative action_time per (event_id, operator) for the chosen action.
     # Then group in Python into shifts because SQL bucketing differs between SQLite/Postgres.
     act = (actionName or "").strip()
+    alarm_id_expr = func.coalesce(Event.parent_event_id, EventAction.event_id)
     stmt = (
         select(
-            EventAction.event_id,
+            alarm_id_expr.label("alarm_id"),
             EventAction.operator_name,
             func.min(EventAction.action_time).label("ts"),
         )
@@ -1369,7 +1371,7 @@ async def generate_pcn_ledger_xlsx(
         .where(Event.type == "alarm")
         .where(EventAction.operator_name.is_not(None))
         .where(EventAction.action_time >= window_start)
-        .group_by(EventAction.event_id, EventAction.operator_name)
+        .group_by(alarm_id_expr, EventAction.operator_name)
     )
 
     if exact_window:
@@ -2289,11 +2291,11 @@ async def list_event_codes(
         select(
             Event.code.label("code"),
             func.max(Event.code_text).label("codeText"),
-            func.count().label("count"),
+            func.count(func.distinct(func.coalesce(Event.parent_event_id, Event.id))).label("count"),
         )
         .where(Event.code.isnot(None))
         .group_by(Event.code)
-        .order_by(func.count().desc())
+        .order_by(func.count(func.distinct(func.coalesce(Event.parent_event_id, Event.id))).desc())
         .limit(limit)
     )
 
@@ -2377,6 +2379,7 @@ async def export_objects_by_code(
     base_stmt = (
         select(
             Event.id.label("event_id"),
+            func.coalesce(Event.parent_event_id, Event.id).label("alarm_id"),
             Event.object_id.label("object_id"),
             obj_name.label("object_name"),
             obj_addr.label("address"),
@@ -2395,7 +2398,7 @@ async def export_objects_by_code(
             base.c.object_id,
             base.c.object_name,
             base.c.address,
-            func.count().label("events_count"),
+            func.count(func.distinct(base.c.alarm_id)).label("events_count"),
             func.min(base.c.timestamp).label("first_time"),
             func.max(base.c.timestamp).label("last_time"),
         )
@@ -2407,7 +2410,7 @@ async def export_objects_by_code(
 
     rn_stmt = select(
         base.c.object_id.label("object_id"),
-        base.c.event_id.label("event_id"),
+        base.c.alarm_id.label("alarm_id"),
         base.c.result_text.label("result_text"),
         base.c.meter_count.label("meter_count"),
         base.c.timestamp.label("timestamp"),
@@ -2417,7 +2420,7 @@ async def export_objects_by_code(
     last_note = (
         select(
             rn.c.object_id.label("object_id"),
-            rn.c.event_id.label("last_event_id"),
+            rn.c.alarm_id.label("last_event_id"),
             rn.c.result_text.label("last_result_text"),
             rn.c.meter_count.label("last_meter_count"),
         )
