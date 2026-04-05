@@ -69,29 +69,6 @@ def _action_name_matches(col, patterns: list[str]):
     # Patterns should include % wildcards.
     return or_(*[col.ilike(p) for p in patterns])
 
-def _not_action_name_matches(col, patterns: list[str]):
-    # Negation helper; treats NULL as "no match" (i.e. passes the filter).
-    return or_(col.is_(None), and_(*[(~col.ilike(p)) for p in patterns]))
-
-def _non_gbr_force_name(col):
-    # Exclude forces that are not GBR trips but can appear in the same field.
-    # Examples from users: "Оповещение х/о", "Физохрана".
-    return _action_name_matches(
-        col,
-        [
-            "%оповещ%",
-            "%х/о%",
-            "%хоз%",
-            "%физохран%",
-            "%физ%охран%",
-        ],
-    )
-
-def _gbr_context_mention(col):
-    # Some installations use shorter/variant action names; require at least a hint
-    # that the action is about a response group (GBR).
-    return _action_name_matches(col, ["%гбр%", "%груп%", "%реаг%", "%экипаж%"])
-
 
 def _gbr_called_match(col):
     return _action_name_matches(
@@ -117,13 +94,7 @@ def _gbr_called_match(col):
 
 
 def _gbr_called_loose_match(col):
-    # Loose match must still look like a response-group action; otherwise it catches
-    # unrelated forces like physical security / housekeeping notifications.
-    return and_(
-        _action_name_matches(col, ["%Вызван%", "%Направ%", "%Отправ%", "%Выезд%", "%Следу%"]),
-        _gbr_context_mention(col),
-        _not_action_name_matches(col, ["%физохран%", "%оповещ%", "%х/о%"]),
-    )
+    return _action_name_matches(col, ["%Вызван%", "%Направ%", "%Отправ%", "%Выезд%", "%Следу%"])
 
 
 def _gbr_arrived_match(col):
@@ -140,10 +111,7 @@ def _gbr_arrived_match(col):
 
 
 def _gbr_arrived_loose_match(col):
-    return and_(
-        _action_name_matches(col, ["%Прибыт%", "%Прибыл%", "%На объект%", "%Доех%"]),
-        _not_action_name_matches(col, ["%физохран%", "%оповещ%", "%х/о%"]),
-    )
+    return _action_name_matches(col, ["%Прибыт%", "%Прибыл%", "%На объект%", "%Доех%"]) 
 
 
 def _gbr_cancelled_match(col):
@@ -161,10 +129,7 @@ def _gbr_cancelled_match(col):
 
 
 def _gbr_cancelled_loose_match(col):
-    return and_(
-        _action_name_matches(col, ["%Отмен%", "%Отбой%", "%Ложн%тревог%", "%Ложный%"]),
-        _not_action_name_matches(col, ["%физохран%", "%оповещ%", "%х/о%"]),
-    )
+    return _action_name_matches(col, ["%Отмен%", "%Отбой%", "%Ложн%тревог%", "%Ложный%"]) 
 
 
 def _xlsx_response(data: bytes, filename: str) -> Response:
@@ -738,16 +703,30 @@ async def gbr_trips(
     dt_from = _parse_dt(date_from)
     dt_to = _parse_dt(date_to)
 
+    # Exclude non-GBR dispatch types that may still carry gbr_name in raw data.
+    # These are NOT GBR trips and must not be counted in the GBR report.
+    # Examples from ops:
+    # - "Оповещение х/о" (not a trip)
+    # - "Физохрана" (physical security, not a GBR trip)
+    non_gbr_exclude = and_(
+        # Notify responsible person (Х/О) is not a GBR trip
+        ~EventAction.action_name.ilike("%оповещ%х/о%"),
+        ~EventAction.action_name.ilike("%х/о%"),
+        # Physical security is not a GBR trip
+        ~EventAction.action_name.ilike("%физохран%"),
+        ~EventAction.action_name.ilike("%физ%охран%"),
+    )
+
     # Match actions robustly but avoid false positives.
     # We use a strict match (mentions group/GBR/react) with a fallback loose match.
     called_match_strict = _gbr_called_match(EventAction.action_name)
-    called_match_loose = _gbr_called_loose_match(EventAction.action_name)
+    called_match_loose = and_(_gbr_called_loose_match(EventAction.action_name), non_gbr_exclude)
 
     arrived_match_strict = _gbr_arrived_match(EventAction.action_name)
-    arrived_match_loose = _gbr_arrived_loose_match(EventAction.action_name)
+    arrived_match_loose = and_(_gbr_arrived_loose_match(EventAction.action_name), non_gbr_exclude)
 
     cancelled_match_strict = _gbr_cancelled_match(EventAction.action_name)
-    cancelled_match_loose = _gbr_cancelled_loose_match(EventAction.action_name)
+    cancelled_match_loose = and_(_gbr_cancelled_loose_match(EventAction.action_name), non_gbr_exclude)
 
     any_trip_match = or_(
         called_match_strict,
@@ -788,7 +767,7 @@ async def gbr_trips(
             last_action_ts,
         )
         .where(EventAction.gbr_name.is_not(None))
-        .where(_not_action_name_matches(EventAction.gbr_name, ["%оповещ%", "%х/о%", "%хоз%", "%физохран%", "%физ%охран%"]))
+        .where(any_trip_match)
         .group_by(EventAction.event_id, EventAction.gbr_name)
     )
 

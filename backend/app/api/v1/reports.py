@@ -772,52 +772,95 @@ async def generate_gbr_raport_xlsx(
     trips["data"] = rows_all
     trips["total"] = total
 
-    # Deduplicate: same agency alarm id can be synced multiple times as separate local event_ids
-    # (or multiple "сработки" can be reflected in actions). For the "Рапорт ГБР" we need
-    # 1 тревога = 1 выезд (per экипаж), so collapse by (gbrName, agencyEventId).
-    def _parse_iso_naive(value: str | None) -> datetime | None:
-        if not value:
-            return None
+    # Business rule: 1 тревога = 1 выезд, even if multiple triggers/records exist.
+    # Deduplicate by (gbrName + agencyEventId) when possible, fallback to eventId.
+    def _pick_better(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+        # Prefer record that has arrivedAt; then cancelledAt; then calledAt.
+        def _rank(x: dict[str, Any]) -> tuple[int, int, int, int]:
+            return (
+                1 if x.get("arrivedAt") else 0,
+                1 if x.get("cancelledAt") else 0,
+                1 if x.get("calledAt") else 0,
+                1 if x.get("lastActionAt") else 0,
+            )
+
+        best = a if _rank(a) >= _rank(b) else b
+        other = b if best is a else a
+
+        # Merge: keep earliest calledAt, earliest arrivedAt/cancelledAt, latest lastActionAt.
+        def _min_ts(x: str | None, y: str | None) -> str | None:
+            if not x:
+                return y
+            if not y:
+                return x
+            return x if x <= y else y
+
+        def _max_ts(x: str | None, y: str | None) -> str | None:
+            if not x:
+                return y
+            if not y:
+                return x
+            return x if x >= y else y
+
+        best["calledAt"] = _min_ts(best.get("calledAt"), other.get("calledAt"))
+        best["arrivedAt"] = _min_ts(best.get("arrivedAt"), other.get("arrivedAt"))
+        best["cancelledAt"] = _min_ts(best.get("cancelledAt"), other.get("cancelledAt"))
+        best["lastActionAt"] = _max_ts(best.get("lastActionAt"), other.get("lastActionAt"))
+
+        # Fill missing descriptive fields.
+        for k in [
+            "objectId",
+            "objectName",
+            "clientName",
+            "responsibleName",
+            "calledOperator",
+            "meterCount",
+            "resultText",
+            "tripStatus",
+            "agencyEventId",
+            "eventId",
+        ]:
+            if not best.get(k) and other.get(k):
+                best[k] = other.get(k)
+
+        # Recompute travelSeconds if we now have better timestamps.
         try:
-            v = str(value).strip()
-            if v.endswith("Z"):
-                v = v[:-1] + "+00:00"
-            dt = datetime.fromisoformat(v)
-            if dt.tzinfo is not None:
-                return dt.astimezone().replace(tzinfo=None)
-            return dt
+            ca = best.get("calledAt")
+            aa = best.get("arrivedAt")
+            if ca and aa:
+                ca_dt = datetime.fromisoformat(str(ca))
+                aa_dt = datetime.fromisoformat(str(aa))
+                best["travelSeconds"] = abs((aa_dt - ca_dt).total_seconds())
         except Exception:
-            return None
+            pass
+        return best
 
-    deduped: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in list(trips.get("data") or []):
-        try:
-            gbr = str(item.get("gbrName") or "").strip()
-            agency_id = str(item.get("agencyEventId") or "").strip()
-            if not gbr:
-                continue
-            if not agency_id:
-                # Fallback: keep unique local event id if agency id is absent.
-                agency_id = str(item.get("eventId") or "").strip() or str(uuid4())
-            key = (gbr.lower(), agency_id)
+    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows_all:
+        gbr = str(r.get("gbrName") or "").strip().lower()
+        alarm_id = str(r.get("agencyEventId") or r.get("eventId") or "").strip()
+        if not alarm_id:
+            # keep as-is (no stable key)
+            alarm_id = f"__row__{len(dedup)}"
+        key = (gbr, alarm_id)
+        if key in dedup:
+            dedup[key] = _pick_better(dedup[key], r)
+        else:
+            dedup[key] = r
 
-            prev = deduped.get(key)
-            if prev is None:
-                deduped[key] = item
-                continue
+    rows_all = list(dedup.values())
+    # Stable ordering: by calledAt desc (like analytics), then arrived/cancelled.
+    def _sort_key(x: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(x.get("calledAt") or ""),
+            str(x.get("arrivedAt") or ""),
+            str(x.get("cancelledAt") or ""),
+        )
 
-            prev_called = _parse_iso_naive(str(prev.get("calledAt") or ""))
-            cur_called = _parse_iso_naive(str(item.get("calledAt") or ""))
-            # Prefer the earliest call time as representative.
-            if prev_called is None:
-                deduped[key] = item
-            elif cur_called is not None and cur_called < prev_called:
-                deduped[key] = item
-        except Exception:
-            continue
+    rows_all.sort(key=_sort_key, reverse=True)
 
-    trips["data"] = list(deduped.values())
-    trips["total"] = len(trips["data"])
+    trips["data"] = rows_all
+    trips["total"] = len(rows_all)
 
     # Build XLSX similarly to analytics export
     from io import BytesIO
