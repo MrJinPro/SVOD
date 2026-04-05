@@ -772,6 +772,53 @@ async def generate_gbr_raport_xlsx(
     trips["data"] = rows_all
     trips["total"] = total
 
+    # Deduplicate: same agency alarm id can be synced multiple times as separate local event_ids
+    # (or multiple "сработки" can be reflected in actions). For the "Рапорт ГБР" we need
+    # 1 тревога = 1 выезд (per экипаж), so collapse by (gbrName, agencyEventId).
+    def _parse_iso_naive(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            v = str(value).strip()
+            if v.endswith("Z"):
+                v = v[:-1] + "+00:00"
+            dt = datetime.fromisoformat(v)
+            if dt.tzinfo is not None:
+                return dt.astimezone().replace(tzinfo=None)
+            return dt
+        except Exception:
+            return None
+
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in list(trips.get("data") or []):
+        try:
+            gbr = str(item.get("gbrName") or "").strip()
+            agency_id = str(item.get("agencyEventId") or "").strip()
+            if not gbr:
+                continue
+            if not agency_id:
+                # Fallback: keep unique local event id if agency id is absent.
+                agency_id = str(item.get("eventId") or "").strip() or str(uuid4())
+            key = (gbr.lower(), agency_id)
+
+            prev = deduped.get(key)
+            if prev is None:
+                deduped[key] = item
+                continue
+
+            prev_called = _parse_iso_naive(str(prev.get("calledAt") or ""))
+            cur_called = _parse_iso_naive(str(item.get("calledAt") or ""))
+            # Prefer the earliest call time as representative.
+            if prev_called is None:
+                deduped[key] = item
+            elif cur_called is not None and cur_called < prev_called:
+                deduped[key] = item
+        except Exception:
+            continue
+
+    trips["data"] = list(deduped.values())
+    trips["total"] = len(trips["data"])
+
     # Build XLSX similarly to analytics export
     from io import BytesIO
     from openpyxl import Workbook
