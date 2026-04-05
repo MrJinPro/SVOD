@@ -958,6 +958,7 @@ async def build_alarm_messages_xlsx_bytes(
 def _event_to_out(e: Event) -> dict[str, Any]:
     return {
         "id": e.id,
+        "parentEventId": getattr(e, "parent_event_id", None),
         "timestamp": e.timestamp.isoformat(),
         "type": e.type,
         "objectId": e.object_id,

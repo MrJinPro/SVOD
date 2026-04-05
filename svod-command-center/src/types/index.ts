@@ -5,6 +5,7 @@ export type EventType = 'intrusion' | 'alarm' | 'access' | 'patrol' | 'incident'
 
 export interface Event {
   id: string;
+  parentEventId?: string | null;
   timestamp: string;
   type: EventType;
   objectId?: string | null;
