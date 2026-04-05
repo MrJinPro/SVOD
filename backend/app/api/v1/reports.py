@@ -1161,6 +1161,15 @@ async def generate_pcn_ledger_xlsx(
         le=24 * 60,
         description="Grace minutes added after lastSeenAt to close non-ended presence sessions",
     ),
+    handoverMinutes: int = Query(
+        default=60,
+        ge=0,
+        le=6 * 60,
+        description=(
+            "Minutes before shift start treated as handover overlap. "
+            "Used to attribute early actions (e.g. 19:48 or 08:30) to the operator's actual shift."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
@@ -1291,6 +1300,7 @@ async def generate_pcn_ledger_xlsx(
     # Presence (who was logged in / "in the system")
     # Used to compute the dispatcher count per shift (staffing), independent from actions.
     presence_ops_by_shift: dict[tuple[date_type, str], set[str]] = {}
+    presence_seconds_by_shift_op: dict[tuple[date_type, str, str], int] = {}
     try:
         from app.models.user_presence_session import UserPresenceSession
 
@@ -1354,24 +1364,97 @@ async def generate_pcn_ledger_xlsx(
                 key = (sd, sh, op)
                 presence_seconds[key] = presence_seconds.get(key, 0) + sec
 
+            presence_seconds_by_shift_op = dict(presence_seconds)
+
         for (sd, sh, op), sec in presence_seconds.items():
             if min_seconds <= 0 or sec >= min_seconds:
                 presence_ops_by_shift.setdefault((sd, sh), set()).add(op)
     except Exception:
         # Presence is optional; fallback to action-based dispatcher count.
         presence_ops_by_shift = {}
+        presence_seconds_by_shift_op = {}
+
+    # Build a lightweight fallback signal from actions: whether operator clearly worked a shift
+    # (after its official start) on a given shift_date.
+    has_day_actions_after_start: dict[tuple[date_type, str], bool] = {}
+    has_night_actions_after_start: dict[tuple[date_type, str], bool] = {}
+    for _event_id, op, ts in rows:
+        if not isinstance(ts, datetime) or not op:
+            continue
+        op_s = str(op)
+        t = ts.time()
+        d = ts.date()
+        # day shift evidence: actions during day shift after day_start
+        if t >= day_start and t < night_start:
+            has_day_actions_after_start[(d, op_s)] = True
+        # night shift evidence: actions after night_start (same calendar day)
+        if t >= night_start:
+            has_night_actions_after_start[(d, op_s)] = True
+
+    def _presence_sec(sd: date_type, sh: str, op: str) -> int:
+        return int(presence_seconds_by_shift_op.get((sd, sh, op), 0) or 0)
+
+    handover = timedelta(minutes=int(handoverMinutes))
+    # Overlap windows that frequently cause mis-attribution when operators arrive early.
+    # Example: 19:00–20:00 belongs to "handover" between day->night.
+    # Example: 08:00–09:00 belongs to "handover" between night->day.
+    def _in_evening_handover(t: time_type) -> bool:
+        if handover <= timedelta(0):
+            return False
+        start = (datetime.combine(date_type(2000, 1, 1), night_start) - handover).time()
+        return t >= start and t < night_start
+
+    def _in_morning_handover(t: time_type) -> bool:
+        if handover <= timedelta(0):
+            return False
+        start = (datetime.combine(date_type(2000, 1, 1), day_start) - handover).time()
+        return t >= start and t < day_start
 
     # Aggregate counts per (shift_date, shift_name, operator)
     counts: dict[tuple[date_type, str, str], int] = {}
     for event_id, op, ts in rows:
         if not isinstance(ts, datetime) or not op:
             continue
+        op_s = str(op)
         shift_date, shift_name = _shift_bucket(ts, day_start=day_start, night_start=night_start)
+
+        # Fix: avoid double-counting operators across shifts during handover periods.
+        # If an operator arrives early, their first alarms in the overlap hour should be attributed
+        # to the shift they actually worked (based on presence overlap; fallback to actions).
+        t = ts.time()
+        d = ts.date()
+
+        # Evening handover (day->night): [night_start - handover, night_start)
+        # If operator mostly belongs to the night shift of the same date, move those early actions to night.
+        if shift_name == "день" and shift_date == d and _in_evening_handover(t):
+            day_sec = _presence_sec(d, "день", op_s)
+            night_sec = _presence_sec(d, "ночь", op_s)
+            prefer_night = night_sec > day_sec
+            if not prefer_night and day_sec == 0 and night_sec == 0:
+                prefer_night = bool(has_night_actions_after_start.get((d, op_s)))
+            if prefer_night:
+                shift_date, shift_name = (d, "ночь")
+
+        # Morning handover (night->day): [day_start - handover, day_start)
+        # Base bucket assigns these actions to previous night's shift. If operator actually worked the day shift,
+        # move those early actions to the day shift of the same calendar date.
+        elif shift_name == "ночь" and _in_morning_handover(t):
+            prev_night_date = d - timedelta(days=1)
+            # Only consider reassigning from (prev_night_date, ночь) to (d, день)
+            if shift_date == prev_night_date:
+                day_sec = _presence_sec(d, "день", op_s)
+                night_sec = _presence_sec(prev_night_date, "ночь", op_s)
+                prefer_day = day_sec > night_sec
+                if not prefer_day and day_sec == 0 and night_sec == 0:
+                    prefer_day = bool(has_day_actions_after_start.get((d, op_s)))
+                if prefer_day:
+                    shift_date, shift_name = (d, "день")
+
         if clamp_shift_dates is not None:
             dmin, dmax = clamp_shift_dates
             if shift_date < dmin or shift_date > dmax:
                 continue
-        key = (shift_date, shift_name, str(op))
+        key = (shift_date, shift_name, op_s)
         counts[key] = counts.get(key, 0) + 1
 
     # Totals per shift
@@ -1548,7 +1631,7 @@ async def generate_pcn_ledger_xlsx(
         [
             "Формула: % = (тревоги оператора * 100) / (все тревоги смены). ",
             "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n",
-            f"Границы смен: день с {dayStart or '08:00'}, ночь с {nightStart or '20:00'}. ",
+            f"Границы смен: день с {dayStart or '09:00'}, ночь с {nightStart or '20:00'}. ",
             f"Отработка тревоги: действие '{actionName or ''}'. ",
             f"Диспетчеры в смену: {ds} (auto/actions = до 5 операторов по архивным действиям; presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
             "ФИО скрыты. " if hideOperatorNames else "",
