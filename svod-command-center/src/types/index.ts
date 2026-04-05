@@ -325,6 +325,25 @@ export interface GbrArchiveTripsResponse {
   rows: GbrArchiveTripRow[];
 }
 
+export interface GbrArchiveSummaryRow {
+  groupId: number | null;
+  gbrName: string;
+  tripsCount: number;
+  objectsCount: number;
+  totalDurationSeconds: number;
+  avgDurationSeconds: number | null;
+  minDurationSeconds: number | null;
+  maxDurationSeconds: number | null;
+  firstStartTime: string | null;
+  lastStartTime: string | null;
+}
+
+export interface GbrArchiveSummaryResponse {
+  snapshotAt: string | null;
+  totalTrips: number;
+  rows: GbrArchiveSummaryRow[];
+}
+
 export interface ObjectEventsSummaryResponse {
   objectId: string;
   total: number;

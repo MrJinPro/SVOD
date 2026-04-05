@@ -249,6 +249,148 @@ async def gbr_archive_trips(
         raise HTTPException(status_code=500, detail=f"Не удалось прочитать историю выездов ГБР: {e}")
 
 
+@router.get("/gbr/archive-summary")
+async def gbr_archive_summary(
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+    gbr_name: str | None = Query(default=None, alias="gbrName"),
+    panel_id: str | None = Query(default=None, alias="panelId"),
+    limit: int = Query(default=5000, ge=1, le=20000),
+    _perm: Any = Depends(require_permissions("analytics:read")),
+) -> dict[str, Any]:
+    """Сводка по экипажам ГБР из ArchiveGroupResponse.
+
+    Это более надёжный источник для пункта 5, чем eventservice:
+    считаем реальные архивные выезды и их длительность по каждому экипажу.
+    """
+
+    url = (settings.agency_database_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="AGENCY_DATABASE_URL не задан (нужно sqlite:///.../agency_raw.db или mssql+pyodbc://...)")
+
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not (scheme.startswith("sqlite") or scheme.startswith("mssql")):
+        raise HTTPException(
+            status_code=400,
+            detail="Эндпоинт /analytics/gbr/archive-summary поддерживает только AGENCY_DATABASE_URL=sqlite:///... или mssql+pyodbc://...",
+        )
+
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    if date_from and dt_from is None:
+        raise HTTPException(status_code=400, detail="Некорректный dateFrom (ожидается ISO дата/время)")
+    if date_to and dt_to is None:
+        raise HTTPException(status_code=400, detail="Некорректный dateTo (ожидается ISO дата/время)")
+
+    try:
+        if scheme.startswith("mssql"):
+            payload = await asyncio.to_thread(
+                fetch_gbr_archive_trips_mssql,
+                url,
+                date_from=dt_from,
+                date_to=dt_to,
+                group_id=None,
+                panel_id=panel_id,
+                limit=limit,
+            )
+        else:
+            payload = await asyncio.to_thread(
+                fetch_gbr_archive_trips_sqlite,
+                url,
+                date_from=dt_from,
+                date_to=dt_to,
+                group_id=None,
+                panel_id=panel_id,
+                limit=limit,
+            )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Не удалось построить сводку выездов ГБР: {e}")
+
+    rows = list(payload.get("rows") or [])
+
+    gbr_name_norm = (gbr_name or "").strip().lower()
+    if gbr_name_norm:
+        rows = [r for r in rows if str(r.get("GroupName") or "").strip().lower() == gbr_name_norm]
+
+    summary: dict[tuple[int | None, str], dict[str, Any]] = {}
+    for row in rows:
+        group_id = row.get("Group_id")
+        group_name = str(row.get("GroupName") or "").strip() or (f"Группа #{group_id}" if group_id else "Не указан")
+        key = (int(group_id) if group_id is not None else None, group_name)
+        start_time = row.get("StartTime")
+        duration = row.get("DurationSeconds")
+        try:
+            duration_sec = int(duration) if duration is not None else None
+        except Exception:
+            duration_sec = None
+
+        item = summary.setdefault(
+            key,
+            {
+                "groupId": key[0],
+                "gbrName": group_name,
+                "tripsCount": 0,
+                "objectsCount": 0,
+                "totalDurationSeconds": 0,
+                "avgDurationSeconds": None,
+                "minDurationSeconds": None,
+                "maxDurationSeconds": None,
+                "firstStartTime": None,
+                "lastStartTime": None,
+                "_objects": set(),
+                "_durations_count": 0,
+            },
+        )
+
+        item["tripsCount"] += 1
+        panel = str(row.get("Panel_id") or "").strip()
+        if panel:
+            item["_objects"].add(panel)
+
+        if isinstance(start_time, datetime):
+            current_first = item["firstStartTime"]
+            current_last = item["lastStartTime"]
+            if current_first is None or start_time < current_first:
+                item["firstStartTime"] = start_time
+            if current_last is None or start_time > current_last:
+                item["lastStartTime"] = start_time
+
+        if duration_sec is not None and duration_sec >= 0:
+            item["totalDurationSeconds"] += duration_sec
+            item["_durations_count"] += 1
+            if item["minDurationSeconds"] is None or duration_sec < item["minDurationSeconds"]:
+                item["minDurationSeconds"] = duration_sec
+            if item["maxDurationSeconds"] is None or duration_sec > item["maxDurationSeconds"]:
+                item["maxDurationSeconds"] = duration_sec
+
+    result_rows: list[dict[str, Any]] = []
+    for item in summary.values():
+        item["objectsCount"] = len(item.pop("_objects"))
+        durations_count = int(item.pop("_durations_count") or 0)
+        if durations_count > 0:
+            item["avgDurationSeconds"] = round(float(item["totalDurationSeconds"]) / durations_count, 2)
+        else:
+            item["avgDurationSeconds"] = None
+
+        first_start = item.get("firstStartTime")
+        last_start = item.get("lastStartTime")
+        item["firstStartTime"] = first_start.isoformat() if isinstance(first_start, datetime) else None
+        item["lastStartTime"] = last_start.isoformat() if isinstance(last_start, datetime) else None
+        result_rows.append(item)
+
+    result_rows.sort(key=lambda r: (-int(r.get("tripsCount") or 0), str(r.get("gbrName") or "")))
+
+    return {
+        "snapshotAt": payload.get("snapshotAt"),
+        "totalTrips": len(rows),
+        "rows": result_rows,
+    }
+
+
 @router.get("/alarms/stands")
 async def alarms_stands(
     date_from: str | None = Query(default=None, alias="dateFrom"),

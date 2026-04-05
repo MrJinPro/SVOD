@@ -22,7 +22,7 @@ import { apiFetchRaw } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import { Download, RefreshCw, RotateCcw, Filter } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { AnalyticsFiltersResponse, GbrTripsResponse } from '@/types';
+import type { AnalyticsFiltersResponse, GbrArchiveSummaryResponse, GbrTripsResponse } from '@/types';
 import type { DateRange } from 'react-day-picker';
 
 type Draft = {
@@ -141,6 +141,29 @@ export default function GbrReports() {
     total: 0,
     limit: 200,
     offset: 0,
+  });
+
+  const summaryPath = useMemo(() => {
+    const params = new URLSearchParams();
+
+    if (applied.dateFrom) params.set('dateFrom', toStartOfDayIso(applied.dateFrom));
+    if (applied.dateTo) params.set('dateTo', toEndOfDayIso(applied.dateTo));
+    if (applied.gbrName !== 'all') params.set('gbrName', applied.gbrName);
+    if (applied.objectId.trim()) params.set('panelId', applied.objectId.trim());
+    params.set('limit', '5000');
+
+    return `/analytics/gbr/archive-summary?${params.toString()}`;
+  }, [applied]);
+
+  const {
+    data: archiveSummary,
+    isLoading: archiveSummaryLoading,
+    error: archiveSummaryError,
+    refetch: refetchArchiveSummary,
+  } = useApiGet<GbrArchiveSummaryResponse>(summaryPath, {
+    snapshotAt: null,
+    totalTrips: 0,
+    rows: [],
   });
 
   const totalPages = Math.max(1, Math.ceil((trips.total || 0) / (trips.limit || 200)));
@@ -301,6 +324,77 @@ export default function GbrReports() {
           {forbiddenHint && <div className="mt-2 text-sm text-destructive">{forbiddenHint}</div>}
           {filtersError && !forbiddenHint && <div className="mt-2 text-sm text-destructive">Ошибка фильтров: {filtersError}</div>}
         </div>
+
+        <Card className="p-0 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+            <div>
+              <div className="text-base font-semibold text-foreground">Сводка по экипажам</div>
+              <div className="text-sm text-muted-foreground">
+                Источник: ArchiveGroupResponse. Здесь считаются реальные архивные выезды и длительность по каждому ГБР.
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+              <div>Всего выездов: {archiveSummary.totalTrips || 0}</div>
+              <div>Экипажей: {(archiveSummary.rows || []).length}</div>
+              <div>Снимок: {archiveSummary.snapshotAt ? new Date(archiveSummary.snapshotAt).toLocaleString('ru-RU') : '—'}</div>
+              <Button variant="outline" size="sm" className="gap-2" onClick={refetchArchiveSummary}>
+                <RefreshCw className="h-4 w-4" />
+                Обновить сводку
+              </Button>
+            </div>
+          </div>
+
+          {archiveSummaryError && !forbiddenHint ? (
+            <div className="px-4 pb-4 text-sm text-destructive">Ошибка сводки ГБР: {archiveSummaryError}</div>
+          ) : null}
+
+          <div className="overflow-auto border-t border-border">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead className="bg-muted/50 text-muted-foreground">
+                <tr>
+                  <th className="text-left font-medium px-3 py-2">ГБР</th>
+                  <th className="text-right font-medium px-3 py-2">Выездов</th>
+                  <th className="text-right font-medium px-3 py-2">Объектов</th>
+                  <th className="text-right font-medium px-3 py-2">Общее время</th>
+                  <th className="text-right font-medium px-3 py-2">Среднее</th>
+                  <th className="text-right font-medium px-3 py-2">Мин</th>
+                  <th className="text-right font-medium px-3 py-2">Макс</th>
+                  <th className="text-left font-medium px-3 py-2">Первый выезд</th>
+                  <th className="text-left font-medium px-3 py-2">Последний выезд</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(archiveSummary.rows || []).map((row) => (
+                  <tr key={`${row.groupId || 'na'}:${row.gbrName}`} className="border-t border-border">
+                    <td className="px-3 py-2 font-medium text-foreground">{row.gbrName}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{row.tripsCount}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{row.objectsCount}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatDuration(row.totalDurationSeconds)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatDuration(row.avgDurationSeconds)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatDuration(row.minDurationSeconds)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatDuration(row.maxDurationSeconds)}</td>
+                    <td className="px-3 py-2 tabular-nums">{row.firstStartTime ? row.firstStartTime.replace('T', ' ').slice(0, 19) : '—'}</td>
+                    <td className="px-3 py-2 tabular-nums">{row.lastStartTime ? row.lastStartTime.replace('T', ' ').slice(0, 19) : '—'}</td>
+                  </tr>
+                ))}
+                {!archiveSummaryLoading && (archiveSummary.rows || []).length === 0 && (
+                  <tr>
+                    <td className="px-3 py-6 text-muted-foreground" colSpan={9}>
+                      Нет архивных выездов по выбранным фильтрам
+                    </td>
+                  </tr>
+                )}
+                {archiveSummaryLoading && (
+                  <tr>
+                    <td className="px-3 py-6 text-muted-foreground" colSpan={9}>
+                      Загрузка сводки…
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
 
         <Card className="p-0 overflow-hidden">
           <div className="p-4">
