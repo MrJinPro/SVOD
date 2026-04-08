@@ -99,26 +99,43 @@ def _parse_hhmm(value: str, *, default: time_type) -> time_type:
         return default
 
 
+def _time_to_minutes(value: time_type) -> int:
+    return int(value.hour) * 60 + int(value.minute)
+
+
+def _minutes_to_time(value: int) -> time_type:
+    total = int(value) % (24 * 60)
+    return time_type(hour=total // 60, minute=total % 60)
+
+
 def _shift_bucket(
     ts: datetime,
     *,
     day_start: time_type,
+    day_end: time_type,
     night_start: time_type,
+    night_end: time_type,
 ) -> tuple[date_type, str]:
     """Returns (shift_date, shift_name).
 
-    day shift: [day_start, night_start)
-    night shift: [night_start, next_day day_start)
+    day shift: [day_start, day_end)
+    night shift: [night_start, next_day night_end)
 
-    If ts time is before day_start it is counted to previous day's night shift.
+    Gaps between day/night windows are attributed to the upcoming shift, not to the
+    previous one. This prevents wide handover windows from dragging operators into
+    both shifts at once.
     """
 
     t = ts.time()
     d = ts.date()
+    if day_start <= t < day_end:
+        return (d, "день")
     if t >= night_start:
         return (d, "ночь")
-    if t >= day_start:
-        return (d, "день")
+    if t < night_end:
+        return (d - timedelta(days=1), "ночь")
+    if day_end <= t < night_start:
+        return (d, "ночь")
     return (d - timedelta(days=1), "ночь")
 
 
@@ -1262,7 +1279,9 @@ async def generate_pcn_ledger_xlsx(
     dateFrom: str = Query(description="YYYY-MM-DD"),
     dateTo: str = Query(description="YYYY-MM-DD"),
     dayStart: str | None = Query(default="08:45", description="HH:MM (start of day shift)"),
+    dayEnd: str | None = Query(default=None, description="HH:MM (end of day shift)"),
     nightStart: str | None = Query(default="19:50", description="HH:MM (start of night shift)"),
+    nightEnd: str | None = Query(default=None, description="HH:MM (end of night shift)"),
     actionName: str | None = Query(default="Прием на обработку", description="EventAction.action_name match"),
     operatorQuery: str | None = Query(default=None, description="Filter by operator name (substring)"),
     hideOperatorNames: bool = Query(
@@ -1343,6 +1362,18 @@ async def generate_pcn_ledger_xlsx(
 
     day_start = _parse_hhmm(dayStart or "", default=time_type(8, 45))
     night_start = _parse_hhmm(nightStart or "", default=time_type(19, 50))
+    default_day_end = _minutes_to_time(_time_to_minutes(night_start) - 5)
+    day_end = _parse_hhmm(dayEnd or "", default=default_day_end)
+    night_end = _parse_hhmm(nightEnd or "", default=day_start)
+
+    day_start_m = _time_to_minutes(day_start)
+    day_end_m = _time_to_minutes(day_end)
+    night_start_m = _time_to_minutes(night_start)
+    night_end_m = _time_to_minutes(night_end)
+    if not (day_start_m < day_end_m <= night_start_m):
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid day shift window"})
+    if night_end_m > day_start_m:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid night shift window"})
 
     exact_window = dt_from is not None or dt_to is not None
     if exact_window:
@@ -1482,9 +1513,9 @@ async def generate_pcn_ledger_xlsx(
         d = presence_span_start
         while d <= presence_span_end:
             day_s = datetime.combine(d, day_start)
-            day_e = datetime.combine(d, night_start)
+            day_e = datetime.combine(d, day_end)
             night_s = datetime.combine(d, night_start)
-            night_e = datetime.combine(d + timedelta(days=1), day_start)
+            night_e = datetime.combine(d + timedelta(days=1), night_end)
             shift_windows.append((d, "день", day_s, day_e))
             shift_windows.append((d, "ночь", night_s, night_e))
             d = d + timedelta(days=1)
@@ -1522,81 +1553,19 @@ async def generate_pcn_ledger_xlsx(
         presence_ops_by_shift = {}
         presence_seconds_by_shift_op = {}
 
-    # Build a lightweight fallback signal from actions: whether operator clearly worked a shift
-    # (after its official start) on a given shift_date.
-    has_day_actions_after_start: dict[tuple[date_type, str], bool] = {}
-    has_night_actions_after_start: dict[tuple[date_type, str], bool] = {}
-    for _event_id, op, ts in rows:
-        if not isinstance(ts, datetime) or not op:
-            continue
-        op_s = str(op)
-        t = ts.time()
-        d = ts.date()
-        # day shift evidence: actions during day shift after day_start
-        if t >= day_start and t < night_start:
-            has_day_actions_after_start[(d, op_s)] = True
-        # night shift evidence: actions after night_start (same calendar day)
-        if t >= night_start:
-            has_night_actions_after_start[(d, op_s)] = True
-
-    def _presence_sec(sd: date_type, sh: str, op: str) -> int:
-        return int(presence_seconds_by_shift_op.get((sd, sh, op), 0) or 0)
-
-    handover = timedelta(minutes=int(handoverMinutes))
-    # Overlap windows that frequently cause mis-attribution when operators arrive early.
-    # Example: 19:00–20:00 belongs to "handover" between day->night.
-    # Example: 08:00–09:00 belongs to "handover" between night->day.
-    def _in_evening_handover(t: time_type) -> bool:
-        if handover <= timedelta(0):
-            return False
-        start = (datetime.combine(date_type(2000, 1, 1), night_start) - handover).time()
-        return t >= start and t < night_start
-
-    def _in_morning_handover(t: time_type) -> bool:
-        if handover <= timedelta(0):
-            return False
-        start = (datetime.combine(date_type(2000, 1, 1), day_start) - handover).time()
-        return t >= start and t < day_start
-
     # Aggregate counts per (shift_date, shift_name, operator)
     counts: dict[tuple[date_type, str, str], int] = {}
     for event_id, op, ts in rows:
         if not isinstance(ts, datetime) or not op:
             continue
         op_s = str(op)
-        shift_date, shift_name = _shift_bucket(ts, day_start=day_start, night_start=night_start)
-
-        # Fix: avoid double-counting operators across shifts during handover periods.
-        # If an operator arrives early, their first alarms in the overlap hour should be attributed
-        # to the shift they actually worked (based on presence overlap; fallback to actions).
-        t = ts.time()
-        d = ts.date()
-
-        # Evening handover (day->night): [night_start - handover, night_start)
-        # If operator mostly belongs to the night shift of the same date, move those early actions to night.
-        if shift_name == "день" and shift_date == d and _in_evening_handover(t):
-            day_sec = _presence_sec(d, "день", op_s)
-            night_sec = _presence_sec(d, "ночь", op_s)
-            prefer_night = night_sec > day_sec
-            if not prefer_night and day_sec == 0 and night_sec == 0:
-                prefer_night = bool(has_night_actions_after_start.get((d, op_s)))
-            if prefer_night:
-                shift_date, shift_name = (d, "ночь")
-
-        # Morning handover (night->day): [day_start - handover, day_start)
-        # Base bucket assigns these actions to previous night's shift. If operator actually worked the day shift,
-        # move those early actions to the day shift of the same calendar date.
-        elif shift_name == "ночь" and _in_morning_handover(t):
-            prev_night_date = d - timedelta(days=1)
-            # Only consider reassigning from (prev_night_date, ночь) to (d, день)
-            if shift_date == prev_night_date:
-                day_sec = _presence_sec(d, "день", op_s)
-                night_sec = _presence_sec(prev_night_date, "ночь", op_s)
-                prefer_day = day_sec > night_sec
-                if not prefer_day and day_sec == 0 and night_sec == 0:
-                    prefer_day = bool(has_day_actions_after_start.get((d, op_s)))
-                if prefer_day:
-                    shift_date, shift_name = (d, "день")
+        shift_date, shift_name = _shift_bucket(
+            ts,
+            day_start=day_start,
+            day_end=day_end,
+            night_start=night_start,
+            night_end=night_end,
+        )
 
         if clamp_shift_dates is not None:
             dmin, dmax = clamp_shift_dates
@@ -1658,9 +1627,9 @@ async def generate_pcn_ledger_xlsx(
         total_for_sheet = int(total_used or total)
 
         if sh == "день":
-            shift_window = f"{day_start.strftime('%H:%M')}–{night_start.strftime('%H:%M')}"
+            shift_window = f"{day_start.strftime('%H:%M')}–{day_end.strftime('%H:%M')}"
         else:
-            shift_window = f"{night_start.strftime('%H:%M')}–{day_start.strftime('%H:%M')}"
+            shift_window = f"{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')}"
 
         control_rows.append(
             {
@@ -1779,7 +1748,7 @@ async def generate_pcn_ledger_xlsx(
         [
             "Формула: % = (тревоги оператора * 100) / (все тревоги смены). ",
             "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n",
-            f"Границы смен: день с {dayStart or '08:45'}, ночь с {nightStart or '19:50'}. ",
+            f"Рабочие окна смен: день {day_start.strftime('%H:%M')}–{day_end.strftime('%H:%M')}, ночь {night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')}. ",
             f"Отработка тревоги: действие '{actionName or ''}'. ",
             f"Диспетчеры в смену: {ds} (auto/actions = до 5 операторов по архивным действиям; presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
             f"Исключены нетиповые результаты: {', '.join(_PCN_EXCLUDED_ALARM_PATTERNS)}. ",
@@ -1808,8 +1777,8 @@ async def generate_pcn_ledger_xlsx(
         11,
         2,
         clean_excel_text(
-            f"Дневная смена: {day_start.strftime('%H:%M')}–{night_start.strftime('%H:%M')} | "
-            f"Ночная смена: {night_start.strftime('%H:%M')}–{day_start.strftime('%H:%M')}"
+            f"Дневная смена: {day_start.strftime('%H:%M')}–{day_end.strftime('%H:%M')} | "
+            f"Ночная смена: {night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')}"
         ),
     ).alignment = Alignment(horizontal="center")
     ws.cell(11, 2).font = Font(size=10)
@@ -1976,7 +1945,9 @@ async def generate_pcn_ledger_xlsx(
                 "dateFrom": dateFrom,
                 "dateTo": dateTo,
                 "dayStart": dayStart,
+                "dayEnd": day_end.strftime('%H:%M'),
                 "nightStart": nightStart,
+                "nightEnd": night_end.strftime('%H:%M'),
                 "actionName": actionName,
                 "operatorQuery": operatorQuery,
                 "hideOperatorNames": hideOperatorNames,
