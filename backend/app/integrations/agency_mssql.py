@@ -985,7 +985,7 @@ def fetch_gbr_archive_trips(
 
         if limit <= 0:
                 limit = 1
-        limit = min(int(limit), 5000)
+        limit = min(int(limit), 50000)
 
         snapshot_at = datetime.utcnow()
 

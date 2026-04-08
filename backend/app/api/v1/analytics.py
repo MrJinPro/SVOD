@@ -132,6 +132,137 @@ def _gbr_cancelled_loose_match(col):
     return _action_name_matches(col, ["%Отмен%", "%Отбой%", "%Ложн%тревог%", "%Ложный%"]) 
 
 
+_GBR_ARCHIVE_CANCEL_PATTERNS = (
+    "отмен",
+    "ложн",
+    "свобод",
+)
+
+
+def _gbr_archive_is_cancelled(status_reason: object) -> bool:
+    text = str(status_reason or "").strip().lower()
+    if not text:
+        return False
+    return any(pattern in text for pattern in _GBR_ARCHIVE_CANCEL_PATTERNS)
+
+
+def _gbr_archive_row_to_trip(row: dict[str, Any]) -> dict[str, Any]:
+    archive_id = str(row.get("id") or "").strip()
+    called_at = row.get("StartTime")
+    raw_end = row.get("EndTime")
+    status_reason = str(row.get("StatusReason") or "").strip() or None
+    cancelled = _gbr_archive_is_cancelled(status_reason)
+    arrived_at = raw_end if raw_end is not None and not cancelled else None
+    cancelled_at = raw_end if raw_end is not None and cancelled else None
+
+    if arrived_at is not None:
+        trip_status = "На объекте"
+    elif cancelled_at is not None:
+        trip_status = "Свободна"
+    else:
+        trip_status = "На выезде"
+
+    object_name = str(row.get("ObjectName") or "").strip() or None
+    object_address = str(row.get("ObjectAddress") or "").strip() or None
+    duration_seconds = row.get("DurationSeconds")
+    try:
+        duration_value = float(duration_seconds) if duration_seconds is not None else None
+    except Exception:
+        duration_value = None
+
+    return {
+        "eventId": f"archive:{archive_id}" if archive_id else "archive:unknown",
+        "agencyEventId": archive_id or None,
+        "gbrName": str(row.get("GroupName") or "").strip() or "Не указан",
+        "calledAt": called_at.isoformat() if isinstance(called_at, datetime) else None,
+        "arrivedAt": arrived_at.isoformat() if isinstance(arrived_at, datetime) else None,
+        "cancelledAt": cancelled_at.isoformat() if isinstance(cancelled_at, datetime) else None,
+        "lastActionAt": raw_end.isoformat() if isinstance(raw_end, datetime) else (called_at.isoformat() if isinstance(called_at, datetime) else None),
+        "objectId": str(row.get("Panel_id") or "").strip() or None,
+        "objectName": object_address or object_name,
+        "clientName": object_name,
+        "responsibleName": None,
+        "calledOperator": None,
+        "travelSeconds": duration_value,
+        "resultText": status_reason,
+        "meterCount": None,
+        "timeMeterCount": None,
+        "tripStatus": trip_status,
+    }
+
+
+async def _fetch_gbr_archive_trips_payload(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    object_id: str | None,
+    max_rows: int,
+) -> dict[str, Any] | None:
+    url = (settings.agency_database_url or "").strip()
+    if not url:
+        return None
+
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if not (scheme.startswith("sqlite") or scheme.startswith("mssql")):
+        return None
+
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    limit = max(1, min(int(max_rows), 50000))
+
+    if scheme.startswith("mssql"):
+        return await asyncio.to_thread(
+            fetch_gbr_archive_trips_mssql,
+            url,
+            date_from=dt_from,
+            date_to=dt_to,
+            group_id=None,
+            panel_id=(object_id or None),
+            limit=limit,
+        )
+
+    return await asyncio.to_thread(
+        fetch_gbr_archive_trips_sqlite,
+        url,
+        date_from=dt_from,
+        date_to=dt_to,
+        group_id=None,
+        panel_id=(object_id or None),
+        limit=limit,
+    )
+
+
+def _filter_gbr_archive_trips(
+    rows: list[dict[str, Any]],
+    *,
+    gbr_name: str | None,
+    status: str | None,
+) -> list[dict[str, Any]]:
+    gbr_name_norm = (gbr_name or "").strip().lower()
+    status_norm = (status or "all").strip().lower()
+
+    items = [_gbr_archive_row_to_trip(row) for row in rows]
+    if gbr_name_norm:
+        items = [item for item in items if str(item.get("gbrName") or "").strip().lower() == gbr_name_norm]
+
+    if status_norm in {"all", "arrived"}:
+        items = [item for item in items if item.get("arrivedAt")]
+    elif status_norm == "cancelled":
+        items = [item for item in items if item.get("cancelledAt") and not item.get("arrivedAt")]
+    elif status_norm == "called":
+        items = [item for item in items if item.get("calledAt") and not item.get("arrivedAt") and not item.get("cancelledAt")]
+
+    items.sort(
+        key=lambda item: (
+            str(item.get("calledAt") or ""),
+            str(item.get("arrivedAt") or ""),
+            str(item.get("cancelledAt") or ""),
+        ),
+        reverse=True,
+    )
+    return items
+
+
 def _xlsx_response(data: bytes, filename: str) -> Response:
     return Response(
         content=data,
@@ -841,6 +972,26 @@ async def gbr_trips(
 
     Возвращает поездки (event_id + gbr_name) с временами и, если есть, объектом из таблицы events.
     """
+
+    try:
+        archive_payload = await _fetch_gbr_archive_trips_payload(
+            date_from=date_from,
+            date_to=date_to,
+            object_id=object_id,
+            max_rows=50000,
+        )
+    except Exception:
+        archive_payload = None
+
+    if archive_payload is not None:
+        filtered = _filter_gbr_archive_trips(
+            list(archive_payload.get("rows") or []),
+            gbr_name=gbr_name,
+            status=status,
+        )
+        total = len(filtered)
+        page = filtered[int(offset) : int(offset) + int(limit)]
+        return {"data": page, "total": total, "limit": int(limit), "offset": int(offset)}
 
     dt_from = _parse_dt(date_from)
     dt_to = _parse_dt(date_to)
