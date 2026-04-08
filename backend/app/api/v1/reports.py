@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, case, func, or_, select
 
 from app.api.v1.deps import get_current_user
+from app.core.config import settings
 from app.db.session import get_session
 from app.services.report_service import export_daily_report_csv, today_str
 from app.models.event_action import EventAction
@@ -38,6 +39,13 @@ _PCN_EXCLUDED_ALARM_PATTERNS = (
     "х/о оповещ",
     "х/о на связи",
     "оповещен начальник караула",
+)
+
+
+_GBR_ARCHIVE_CANCEL_PATTERNS = (
+    "отмен",
+    "ложн",
+    "свобод",
 )
 
 
@@ -213,6 +221,53 @@ def _pcn_ledger_title(
     if operator_label:
         return f"Ведомость учета работы оператора ПЦН ({operator_label}) {period_label}"
     return f"Ведомость учета работы операторов ПЦН {period_label}"
+
+
+def _gbr_archive_is_cancelled(status_reason: object) -> bool:
+    text = str(status_reason or "").strip().lower()
+    if not text:
+        return False
+    return any(pattern in text for pattern in _GBR_ARCHIVE_CANCEL_PATTERNS)
+
+
+def _gbr_archive_row_to_trip(row: dict[str, object]) -> dict[str, object]:
+    archive_id = str(row.get("id") or "").strip()
+    called_at = row.get("StartTime")
+    raw_end = row.get("EndTime")
+    status_reason = str(row.get("StatusReason") or "").strip() or None
+    cancelled = _gbr_archive_is_cancelled(status_reason)
+    arrived_at = raw_end if raw_end is not None and not cancelled else None
+    cancelled_at = raw_end if raw_end is not None and cancelled else None
+
+    if cancelled:
+        trip_status = "Свободна"
+    elif arrived_at is not None:
+        trip_status = "На объекте"
+    else:
+        trip_status = "На выезде"
+
+    object_name = str(row.get("ObjectName") or "").strip() or None
+    object_address = str(row.get("ObjectAddress") or "").strip() or None
+
+    return {
+        "eventId": f"archive:{archive_id}" if archive_id else "archive:unknown",
+        "agencyEventId": archive_id or None,
+        "gbrName": str(row.get("GroupName") or "").strip() or "Не указан",
+        "calledAt": called_at.isoformat() if isinstance(called_at, datetime) else None,
+        "arrivedAt": arrived_at.isoformat() if isinstance(arrived_at, datetime) else None,
+        "cancelledAt": cancelled_at.isoformat() if isinstance(cancelled_at, datetime) else None,
+        "lastActionAt": raw_end.isoformat() if isinstance(raw_end, datetime) else (called_at.isoformat() if isinstance(called_at, datetime) else None),
+        "objectId": str(row.get("Panel_id") or "").strip() or None,
+        "objectName": object_address or object_name,
+        "clientName": object_name,
+        "responsibleName": None,
+        "calledOperator": None,
+        "travelSeconds": row.get("DurationSeconds"),
+        "meterCount": None,
+        "timeMeterCount": None,
+        "resultText": status_reason,
+        "tripStatus": trip_status,
+    }
 
 
 def _backend_root_dir() -> Path:
@@ -794,56 +849,89 @@ async def generate_gbr_raport_xlsx(
     if not from_dt or not to_dt:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
 
-    # Reuse analytics logic (no HTTP call)
-    from app.api.v1.analytics import gbr_trips  # local import to avoid circular deps
+    # Prefer ArchiveGroupResponse for the main GBR report. It is more reliable than
+    # eventservice-derived actions for actual trip history. Fallback to gbr_trips if
+    # archive data is unavailable in the current environment.
+    from app.api.v1.analytics import gbr_archive_trips, gbr_trips  # local import to avoid circular deps
 
     page_size = 2000
     max_rows = 50000
-    trips = await gbr_trips(
-        date_from=dateFrom,
-        date_to=dateTo,
-        gbr_name=(gbrName or None),
-        object_id=(objectId or None),
-        limit=page_size,
-        offset=0,
-        session=session,
-        _perm=current,
-    )
+    trips_source = "eventservice"
+    rows_all: list[dict[str, Any]] = []
+    total = 0
 
-    total = int(trips.get("total") or 0)
-    if max_rows and total > max_rows:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "TOO_MANY_ROWS",
-                "message": f"Слишком много строк для рапорта: {total}. Сузьте период/фильтры.",
-            },
-        )
-
-    rows_all: list[dict[str, Any]] = list(trips.get("data") or [])
-    if total > len(rows_all) and len(rows_all) >= page_size:
-        offset = page_size
-        while len(rows_all) < total:
-            out = await gbr_trips(
+    url = (settings.agency_database_url or "").strip()
+    scheme = (url.split(":", 1)[0] or "").lower()
+    if url and (scheme.startswith("sqlite") or scheme.startswith("mssql")):
+        try:
+            archive_payload = await gbr_archive_trips(
                 date_from=dateFrom,
                 date_to=dateTo,
-                gbr_name=(gbrName or None),
-                object_id=(objectId or None),
-                limit=page_size,
-                offset=offset,
-                session=session,
+                group_id=None,
+                panel_id=(objectId or None),
+                limit=max_rows,
                 _perm=current,
             )
-            batch = out.get("data") or []
-            if not batch:
-                break
-            rows_all.extend(batch)
-            offset += page_size
-            if len(batch) < page_size:
-                break
+            archive_rows = list(archive_payload.get("rows") or [])
+            if (gbrName or "").strip():
+                wanted = (gbrName or "").strip().lower()
+                archive_rows = [r for r in archive_rows if str(r.get("GroupName") or "").strip().lower() == wanted]
 
-    trips["data"] = rows_all
-    trips["total"] = total
+            rows_all = [
+                _gbr_archive_row_to_trip(r)
+                for r in archive_rows
+                if not _gbr_archive_is_cancelled(r.get("StatusReason"))
+            ]
+            rows_all.sort(key=lambda x: str(x.get("calledAt") or ""), reverse=True)
+            total = len(rows_all)
+            trips_source = "archive"
+        except Exception:
+            rows_all = []
+            total = 0
+
+    if trips_source != "archive":
+        trips = await gbr_trips(
+            date_from=dateFrom,
+            date_to=dateTo,
+            gbr_name=(gbrName or None),
+            object_id=(objectId or None),
+            limit=page_size,
+            offset=0,
+            session=session,
+            _perm=current,
+        )
+
+        total = int(trips.get("total") or 0)
+        if max_rows and total > max_rows:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "TOO_MANY_ROWS",
+                    "message": f"Слишком много строк для рапорта: {total}. Сузьте период/фильтры.",
+                },
+            )
+
+        rows_all = list(trips.get("data") or [])
+        if total > len(rows_all) and len(rows_all) >= page_size:
+            offset = page_size
+            while len(rows_all) < total:
+                out = await gbr_trips(
+                    date_from=dateFrom,
+                    date_to=dateTo,
+                    gbr_name=(gbrName or None),
+                    object_id=(objectId or None),
+                    limit=page_size,
+                    offset=offset,
+                    session=session,
+                    _perm=current,
+                )
+                batch = out.get("data") or []
+                if not batch:
+                    break
+                rows_all.extend(batch)
+                offset += page_size
+                if len(batch) < page_size:
+                    break
 
     # Business rule: 1 тревога = 1 выезд, even if multiple triggers/records exist.
     # Deduplicate by (gbrName + agencyEventId) when possible, fallback to eventId.
@@ -1093,7 +1181,7 @@ async def generate_gbr_raport_xlsx(
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         storage_path=str(path),
         params_json=json.dumps(
-            {"dateFrom": dateFrom, "dateTo": dateTo, "gbrName": gbrName, "objectId": objectId},
+            {"dateFrom": dateFrom, "dateTo": dateTo, "gbrName": gbrName, "objectId": objectId, "source": trips_source},
             ensure_ascii=False,
         ),
         error_message=None,
