@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -475,6 +476,7 @@ async def build_events_raport_xlsx_bytes(
     from io import BytesIO
 
     from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
     from openpyxl.utils import get_column_letter
     from openpyxl.styles import Alignment, Border, Font, Side
 
@@ -762,12 +764,20 @@ async def build_alarm_messages_xlsx_bytes(
     from io import BytesIO
 
     from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
     from openpyxl.utils import get_column_letter
     from openpyxl.styles import Alignment, Border, Font, Side
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Тревожные сообщения"
+
+    def clean_excel_text(value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return re.sub(ILLEGAL_CHARACTERS_RE, "", value)
+        return value
 
     columns = [
         "Дата тревоги",
@@ -800,7 +810,7 @@ async def build_alarm_messages_xlsx_bytes(
     ]
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
-    ws.cell(row=1, column=1, value="Тревожные сообщения").font = Font(bold=True, size=14)
+    ws.cell(row=1, column=1, value=clean_excel_text("Тревожные сообщения")).font = Font(bold=True, size=14)
     ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
 
     dt_from = _parse_dt(dateFrom) if dateFrom else None
@@ -814,7 +824,7 @@ async def build_alarm_messages_xlsx_bytes(
         period_text = f"До: {dt_to.strftime('%d.%m.%Y %H:%M')}"
 
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
-    ws.cell(row=2, column=1, value=period_text).alignment = Alignment(horizontal="center")
+    ws.cell(row=2, column=1, value=clean_excel_text(period_text)).alignment = Alignment(horizontal="center")
 
     header_row = 4
     thin = Side(style="thin", color="000000")
@@ -827,7 +837,7 @@ async def build_alarm_messages_xlsx_bytes(
         ws.column_dimensions[get_column_letter(i)].width = w
 
     for col_idx, title in enumerate(columns, start=1):
-        c = ws.cell(row=header_row, column=col_idx, value=title)
+        c = ws.cell(row=header_row, column=col_idx, value=clean_excel_text(title))
         c.font = Font(bold=True)
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = border
@@ -941,7 +951,7 @@ async def build_alarm_messages_xlsx_bytes(
         ]
 
         for col_idx, v in enumerate(values, start=1):
-            c = ws.cell(row=row_idx, column=col_idx, value=v)
+            c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
 

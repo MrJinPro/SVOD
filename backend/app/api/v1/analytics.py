@@ -982,7 +982,9 @@ async def gbr_trips(
     )
 
     status_norm = (status or "all").strip().lower()
-    if status_norm == "arrived":
+    if status_norm == "all":
+        q = q.where(sq.c.arrived_ts.is_not(None))
+    elif status_norm == "arrived":
         q = q.where(sq.c.arrived_ts.is_not(None))
     elif status_norm == "cancelled":
         q = q.where(sq.c.arrived_ts.is_(None)).where(sq.c.cancelled_ts.is_not(None))
@@ -1058,7 +1060,9 @@ async def gbr_trips(
         .where(or_(sq.c.called_ts.is_not(None), sq.c.arrived_ts.is_not(None), sq.c.cancelled_ts.is_not(None)))
     )
 
-    if status_norm == "arrived":
+    if status_norm == "all":
+        count_inner = count_inner.where(sq.c.arrived_ts.is_not(None))
+    elif status_norm == "arrived":
         count_inner = count_inner.where(sq.c.arrived_ts.is_not(None))
     elif status_norm == "cancelled":
         count_inner = count_inner.where(sq.c.arrived_ts.is_(None)).where(sq.c.cancelled_ts.is_not(None))

@@ -26,6 +26,21 @@ from app.models.report import Report
 router = APIRouter(prefix="/reports")
 
 
+_PCN_EXCLUDED_ALARM_PATTERNS = (
+    "тревога при открытии",
+    "тревога при закрытии",
+    "на объекте работает инженер",
+    "тревожная кнопка - проверка ответственных",
+    "тревожная кнопка проверка ответственных",
+    "отмена тревоги",
+    "отмена группы",
+    "групповая обработка",
+    "х/о оповещ",
+    "х/о на связи",
+    "оповещен начальник караула",
+)
+
+
 def _agency_event_id(event_id: str | None) -> str | None:
     """Extract agency numeric event id from stored local id.
 
@@ -149,6 +164,40 @@ def _pcn_ledger_payout(
     return int(pay3)
 
 
+def _pcn_excluded_alarm_predicate() -> object:
+    checks: list[object] = [func.trim(func.coalesce(Event.result_text, "")) == "-"]
+    for pattern in _PCN_EXCLUDED_ALARM_PATTERNS:
+        like = f"%{pattern}%"
+        checks.extend(
+            [
+                func.lower(func.coalesce(Event.result_text, "")).like(like),
+                func.lower(func.coalesce(Event.description, "")).like(like),
+                func.lower(func.coalesce(Event.state_name, "")).like(like),
+            ]
+        )
+    return or_(*checks)
+
+
+def _pcn_ledger_title(
+    period_start_date: date_type,
+    period_end_date: date_type,
+    operator_query: str | None,
+) -> str:
+    operator_label = (operator_query or "").strip()
+    if (
+        period_start_date.year == period_end_date.year
+        and period_start_date.month == period_end_date.month
+        and period_start_date.day == 1
+    ):
+        period_label = f"за {period_start_date.strftime('%m.%Y')}г."
+    else:
+        period_label = f"за период {period_start_date.isoformat()}–{period_end_date.isoformat()}"
+
+    if operator_label:
+        return f"Ведомость учета работы оператора ПЦН ({operator_label}) {period_label}"
+    return f"Ведомость учета работы операторов ПЦН {period_label}"
+
+
 def _backend_root_dir() -> Path:
     # backend/app/api/v1/reports.py -> parents[3] == backend/
     return Path(__file__).resolve().parents[3]
@@ -188,7 +237,13 @@ def _as_report_out_dict(r: Report) -> dict:
     elif rt == "pcnLedger":
         ps = str(r.period_start or "").strip()
         pe = str(r.period_end or "").strip()
-        title = f"Ведомость по тревогам (ПЦН) {ps}–{pe}" if ps and pe else "Ведомость по тревогам (ПЦН)"
+        operator = str(params.get("operatorQuery") or "").strip()
+        if operator and ps and pe:
+            title = f"Ведомость ПЦН по оператору {operator} {ps}–{pe}"
+        elif operator:
+            title = f"Ведомость ПЦН по оператору {operator}"
+        else:
+            title = f"Ведомость по тревогам (ПЦН) {ps}–{pe}" if ps and pe else "Ведомость по тревогам (ПЦН)"
     elif rt == "eventsRaportXlsx":
         ps = str(r.period_start or "").strip()
         pe = str(r.period_end or "").strip()
@@ -1206,8 +1261,8 @@ async def generate_alarm_messages_xlsx(
 async def generate_pcn_ledger_xlsx(
     dateFrom: str = Query(description="YYYY-MM-DD"),
     dateTo: str = Query(description="YYYY-MM-DD"),
-    dayStart: str | None = Query(default="09:00", description="HH:MM (start of day shift)"),
-    nightStart: str | None = Query(default="20:00", description="HH:MM (start of night shift)"),
+    dayStart: str | None = Query(default="08:45", description="HH:MM (start of day shift)"),
+    nightStart: str | None = Query(default="19:50", description="HH:MM (start of night shift)"),
     actionName: str | None = Query(default="Прием на обработку", description="EventAction.action_name match"),
     operatorQuery: str | None = Query(default=None, description="Filter by operator name (substring)"),
     hideOperatorNames: bool = Query(
@@ -1286,8 +1341,8 @@ async def generate_pcn_ledger_xlsx(
     if dt_to is None:
         d_to = _parse_date(dateTo) or (_parse_dt(dateTo).date() if _parse_dt(dateTo) else None)
 
-    day_start = _parse_hhmm(dayStart or "", default=time_type(9, 0))
-    night_start = _parse_hhmm(nightStart or "", default=time_type(20, 0))
+    day_start = _parse_hhmm(dayStart or "", default=time_type(8, 45))
+    night_start = _parse_hhmm(nightStart or "", default=time_type(19, 50))
 
     exact_window = dt_from is not None or dt_to is not None
     if exact_window:
@@ -1369,6 +1424,7 @@ async def generate_pcn_ledger_xlsx(
         .select_from(EventAction)
         .join(Event, Event.id == EventAction.event_id)
         .where(Event.type == "alarm")
+        .where(~_pcn_excluded_alarm_predicate())
         .where(EventAction.operator_name.is_not(None))
         .where(EventAction.action_time >= window_start)
         .group_by(alarm_id_expr, EventAction.operator_name)
@@ -1723,9 +1779,10 @@ async def generate_pcn_ledger_xlsx(
         [
             "Формула: % = (тревоги оператора * 100) / (все тревоги смены). ",
             "Выплата определяется по порогам выше (по числу диспетчеров в смену).\n",
-            f"Границы смен: день с {dayStart or '09:00'}, ночь с {nightStart or '20:00'}. ",
+            f"Границы смен: день с {dayStart or '08:45'}, ночь с {nightStart or '19:50'}. ",
             f"Отработка тревоги: действие '{actionName or ''}'. ",
             f"Диспетчеры в смену: {ds} (auto/actions = до 5 операторов по архивным действиям; presence>= {int(minPresenceMinutes)} мин, grace {int(presenceGraceMinutes)} мин). ",
+            f"Исключены нетиповые результаты: {', '.join(_PCN_EXCLUDED_ALARM_PATTERNS)}. ",
             "ФИО скрыты. " if hideOperatorNames else "",
             "Сравнение presence/actions — на листе 'Контроль'.",
         ]
@@ -1735,16 +1792,7 @@ async def generate_pcn_ledger_xlsx(
 
     # Title
     ws.merge_cells(start_row=9, start_column=2, end_row=9, end_column=10)
-    if (
-        period_start_date.year == period_end_date.year
-        and period_start_date.month == period_end_date.month
-        and period_start_date.day == 1
-    ):
-        title = f"Ведомость учета работы операторов ПЦН за {period_start_date.strftime('%m.%Y')}г."
-    else:
-        title = (
-            f"Ведомость учета работы операторов ПЦН за период {period_start_date.isoformat()}–{period_end_date.isoformat()}"
-        )
+    title = _pcn_ledger_title(period_start_date, period_end_date, operatorQuery)
     ws.cell(9, 2, clean_excel_text(title)).font = Font(bold=True, size=12)
     ws.cell(9, 2).alignment = Alignment(horizontal="center")
 
