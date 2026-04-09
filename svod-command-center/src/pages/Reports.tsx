@@ -3,7 +3,6 @@ import { ReportsTable } from '@/components/reports/ReportsTable';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -221,6 +220,84 @@ function EventCodeCombobox({
   );
 }
 
+function OperatorsMultiSelect({
+  options,
+  value,
+  onChange,
+}: {
+  options: string[];
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const selected = useMemo(
+    () => options.filter((item) => value.includes(item)),
+    [options, value],
+  );
+
+  const buttonLabel = useMemo(() => {
+    if (selected.length === 0) return 'Выберите операторов смены';
+    if (selected.length <= 2) return selected.join(', ');
+    return `${selected.slice(0, 2).join(', ')} +${selected.length - 2}`;
+  }, [selected]);
+
+  const toggle = (name: string) => {
+    if (value.includes(name)) {
+      onChange(value.filter((item) => item !== name));
+      return;
+    }
+    onChange([...value, name].sort((a, b) => a.localeCompare(b, 'ru')));
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between bg-background"
+        >
+          <span className="truncate text-left">{buttonLabel}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[420px] max-w-[calc(100vw-2rem)] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Поиск оператора…" />
+          <CommandList>
+            <CommandEmpty>Операторы не найдены</CommandEmpty>
+            <CommandGroup>
+              {value.length > 0 ? (
+                <CommandItem
+                  value="__clear__"
+                  onSelect={() => onChange([])}
+                >
+                  <div className="text-sm text-muted-foreground">Снять выбор</div>
+                </CommandItem>
+              ) : null}
+              {options.map((name) => {
+                const checked = value.includes(name);
+                return (
+                  <CommandItem
+                    key={name}
+                    value={name}
+                    onSelect={() => toggle(name)}
+                  >
+                    <Check className={cn('mr-2 h-4 w-4', checked ? 'opacity-100' : 'opacity-0')} />
+                    <span className="truncate">{name}</span>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export default function Reports() {
   const { data: reports, refetch } = useApiGet('/reports', []);
 
@@ -239,7 +316,7 @@ export default function Reports() {
   const [createKind, setCreateKind] = useState<CreateReportKind>('objectsByCode');
 
   const [pcnOperatorQuery, setPcnOperatorQuery] = useState('');
-  const [pcnManualOperators, setPcnManualOperators] = useState('');
+  const [pcnManualOperators, setPcnManualOperators] = useState<string[]>([]);
   const [pcnHideOperatorNames, setPcnHideOperatorNames] = useState(false);
   const [pcnPay0, setPcnPay0] = useState('0');
   const [pcnPay1, setPcnPay1] = useState('330');
@@ -434,8 +511,7 @@ export default function Reports() {
         const params = new URLSearchParams();
         appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
-        for (const line of pcnManualOperators.split(/\r?\n|,|;/)) {
-          const name = line.trim();
+        for (const name of pcnManualOperators) {
           if (name) params.append('manualOperators', name);
         }
         if (pcnHideOperatorNames) params.set('hideOperatorNames', 'true');
@@ -906,13 +982,15 @@ export default function Reports() {
                     </div>
 
                     <div className="space-y-1 min-w-[320px] flex-1">
-                      <div className="text-sm text-muted-foreground">Операторы смены вручную (опционально)</div>
-                      <Textarea
-                        className="min-h-[96px] bg-background"
-                        placeholder={'По одному ФИО на строку\nИванова Е.Р.\nСередкина ...'}
+                      <div className="text-sm text-muted-foreground">Операторы смены из базы (опционально)</div>
+                      <OperatorsMultiSelect
+                        options={analyticsFilters?.operators || []}
                         value={pcnManualOperators}
-                        onChange={(e) => setPcnManualOperators(e.target.value)}
+                        onChange={setPcnManualOperators}
                       />
+                      <div className="text-xs text-muted-foreground">
+                        Если выбрать операторов здесь, ведомость возьмёт состав смены из списка, а не будет определять его автоматически.
+                      </div>
                     </div>
 
                     <div className="space-y-1">

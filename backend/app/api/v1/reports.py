@@ -241,6 +241,37 @@ def _is_real_gbr_name(value: object) -> bool:
     return any(text.startswith(prefix) for prefix in _GBR_REAL_NAME_PREFIXES)
 
 
+def _resolve_manual_operator_names(
+    requested_names: set[str],
+    candidate_names: set[str],
+) -> tuple[set[str], set[str]]:
+    resolved: set[str] = set()
+    unresolved: set[str] = set()
+
+    normalized_candidates = {
+        candidate: str(candidate or "").strip().lower()
+        for candidate in candidate_names
+        if str(candidate or "").strip()
+    }
+
+    for raw_name in requested_names:
+        wanted = str(raw_name or "").strip()
+        if not wanted:
+            continue
+        wanted_norm = wanted.lower()
+        matches = {
+            candidate
+            for candidate, candidate_norm in normalized_candidates.items()
+            if wanted_norm == candidate_norm or wanted_norm in candidate_norm or candidate_norm in wanted_norm
+        }
+        if matches:
+            resolved.update(matches)
+        else:
+            unresolved.add(wanted)
+
+    return resolved, unresolved
+
+
 def _pcn_ledger_title(
     period_start_date: date_type,
     period_end_date: date_type,
@@ -1744,6 +1775,10 @@ async def generate_pcn_ledger_xlsx(
         total = int(shift_totals.get((sd, sh)) or 0)
         ops_from_actions = shift_ops.get((sd, sh)) or set()
         ops_from_presence = presence_ops_by_shift.get((sd, sh)) or set()
+        manual_matched_ops, manual_unmatched_ops = _resolve_manual_operator_names(
+            manual_operator_names,
+            set(map(str, ops_from_actions)) | set(map(str, ops_from_presence)),
+        )
 
         # Operators for this shift by accepted alarm actions.
         alarms_by_op: dict[str, int] = {}
@@ -1768,8 +1803,8 @@ async def generate_pcn_ledger_xlsx(
         # For PЦН business logic we primarily care about who actually handled alarms
         # in the shift. Presence remains auxiliary/debug information on the control sheet.
         if manual_operator_names:
-            used_ops = set(manual_operator_names)
-            dispatchers = len(used_ops)
+            used_ops = set(manual_matched_ops)
+            dispatchers = len(manual_operator_names)
         elif ds == "presence":
             used_ops = set(effective_presence_ops)
             dispatchers = dispatchers_presence
@@ -1782,7 +1817,7 @@ async def generate_pcn_ledger_xlsx(
             dispatchers = len(used_ops)
 
         total_used = sum(int(alarms_by_op.get(op, 0) or 0) for op in used_ops)
-        total_for_sheet = int(total_used if manual_operator_names else (total_used or total))
+        total_for_sheet = int(total if manual_operator_names else (total_used or total))
 
         if sh == "день":
             shift_window = f"{day_start.strftime('%H:%M')}–{day_end.strftime('%H:%M')}"
@@ -1801,12 +1836,17 @@ async def generate_pcn_ledger_xlsx(
                 "dispatchersActions": dispatchers_actions,
                 "operatorsActions": ", ".join(ranked_action_ops),
                 "dispatchersUsed": dispatchers,
-                "operatorsUsed": ", ".join(sorted(map(str, used_ops), key=str.lower)),
+                "operatorsUsed": ", ".join(
+                    sorted(
+                        list(map(str, used_ops)) + list(map(str, manual_unmatched_ops)),
+                        key=str.lower,
+                    )
+                ),
             }
         )
 
         if manual_operator_names:
-            op_names = set(manual_operator_names)
+            op_names = set(manual_matched_ops) | set(manual_unmatched_ops)
         elif ds == "presence":
             if includePresenceOnly:
                 op_names = set(effective_presence_ops)
