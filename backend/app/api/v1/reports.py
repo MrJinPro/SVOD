@@ -28,13 +28,18 @@ from app.models.report import Report
 router = APIRouter(prefix="/reports")
 
 
+_PCN_EXCLUDED_ALARM_EXACT_VALUES = (
+    "-",
+    "отмена тревоги",
+)
+
+
 _PCN_EXCLUDED_ALARM_PATTERNS = (
     "тревога при открытии",
     "тревога при закрытии",
     "на объекте работает инженер",
     "тревожная кнопка - проверка ответственных",
     "тревожная кнопка проверка ответственных",
-    "отмена тревоги",
     "отмена группы",
     "групповая обработка",
     "х/о оповещ",
@@ -47,6 +52,13 @@ _GBR_ARCHIVE_CANCEL_PATTERNS = (
     "отмен",
     "ложн",
     "свобод",
+)
+
+
+_GBR_REAL_NAME_PREFIXES = (
+    "булат",
+    "гром",
+    "накат",
 )
 
 
@@ -191,7 +203,8 @@ def _pcn_ledger_payout(
 
 
 def _pcn_excluded_alarm_predicate() -> Any:
-    checks: list[Any] = [func.trim(func.coalesce(Event.result_text, "")) == "-"]
+    normalized_result = func.lower(func.trim(func.coalesce(Event.result_text, "")))
+    checks: list[Any] = [normalized_result.in_(_PCN_EXCLUDED_ALARM_EXACT_VALUES)]
     for pattern in _PCN_EXCLUDED_ALARM_PATTERNS:
         like = f"%{pattern}%"
         checks.extend(
@@ -202,6 +215,30 @@ def _pcn_excluded_alarm_predicate() -> Any:
             ]
         )
     return or_(*checks)
+
+
+def _pcn_accept_action_predicate(action_name: str | None) -> Any:
+    checks: list[Any] = [
+        EventAction.action_name == "Прием на обработку",
+        EventAction.action_name.ilike("%прин%в обработ%"),
+        EventAction.action_name.ilike("%прием%обработ%"),
+    ]
+    act = str(action_name or "").strip()
+    if act:
+        checks.extend(
+            [
+                EventAction.action_name == act,
+                EventAction.action_name.ilike(f"%{act}%"),
+            ]
+        )
+    return or_(*checks)
+
+
+def _is_real_gbr_name(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(text.startswith(prefix) for prefix in _GBR_REAL_NAME_PREFIXES)
 
 
 def _pcn_ledger_title(
@@ -280,10 +317,16 @@ def _reports_store_dir() -> Path:
     return _backend_root_dir() / "reports_store"
 
 
+def _safe_report_filename(filename: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', '_', str(filename or '').strip())
+    name = re.sub(r'\s+', ' ', name).strip(' .')
+    return name or 'report.xlsx'
+
+
 def _write_report_file(report_id: str, filename: str, content: bytes) -> Path:
     store = _reports_store_dir()
     store.mkdir(parents=True, exist_ok=True)
-    safe_name = filename.replace("/", "_").replace("\\", "_")
+    safe_name = _safe_report_filename(filename)
     path = store / f"{report_id}-{safe_name}"
     path.write_bytes(content)
     return path
@@ -683,7 +726,7 @@ async def generate_objects_by_code_report(
             func.max(base.c.timestamp).label("last_time"),
         )
         .group_by(base.c.object_id, base.c.object_name, base.c.address)
-        .order_by(func.count(func.distinct(base.c.alarm_id)).desc())
+        .order_by(func.min(base.c.timestamp).asc(), base.c.object_name.asc())
         .limit(200000)
     )
     agg = agg_stmt.subquery("agg")
@@ -875,6 +918,7 @@ async def generate_gbr_raport_xlsx(
                 _perm=current,
             )
             archive_rows = list(archive_payload.get("rows") or [])
+            archive_rows = [r for r in archive_rows if _is_real_gbr_name(r.get("GroupName"))]
             if (gbrName or "").strip():
                 wanted = (gbrName or "").strip().lower()
                 archive_rows = [r for r in archive_rows if str(r.get("GroupName") or "").strip().lower() == wanted]
@@ -1020,7 +1064,7 @@ async def generate_gbr_raport_xlsx(
             str(x.get("cancelledAt") or ""),
         )
 
-    rows_all.sort(key=_sort_key, reverse=True)
+    rows_all.sort(key=_sort_key)
 
     trips["data"] = rows_all
     trips["total"] = len(rows_all)
@@ -1374,6 +1418,7 @@ async def generate_pcn_ledger_xlsx(
     nightEnd: str | None = Query(default=None, description="HH:MM (end of night shift)"),
     actionName: str | None = Query(default="Прием на обработку", description="EventAction.action_name match"),
     operatorQuery: str | None = Query(default=None, description="Filter by operator name (substring)"),
+    manualOperators: list[str] | None = Query(default=None, description="Repeatable operator full names for the whole shift"),
     hideOperatorNames: bool = Query(
         default=False,
         description="If true, operator names are hidden in XLSX (personal data protection)",
@@ -1468,6 +1513,7 @@ async def generate_pcn_ledger_xlsx(
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid night shift window"})
 
     exact_window = dt_from is not None or dt_to is not None
+    selected_shift_keys: set[tuple[date_type, str]] | None = None
     if exact_window:
         if dt_from is None or dt_to is None or dt_to < dt_from:
             raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
@@ -1484,6 +1530,16 @@ async def generate_pcn_ledger_xlsx(
         # shift_bucket can produce (ts.date() - 1) for times before dayStart.
         presence_span_start = window_start.date() - timedelta(days=1)
         presence_span_end = window_end.date()
+        if (window_end - window_start) <= timedelta(hours=16):
+            selected_shift_keys = {
+                _shift_bucket(
+                    window_start,
+                    day_start=day_start,
+                    day_end=day_end,
+                    night_start=night_start,
+                    night_end=night_end,
+                )
+            }
     else:
         if not d_from or not d_to or d_to < d_from:
             raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
@@ -1534,6 +1590,13 @@ async def generate_pcn_ledger_xlsx(
         except Exception:
             continue
 
+    manual_operator_names = {
+        part.strip()
+        for raw in (manualOperators or [])
+        for part in re.split(r"[\r\n,;]+", str(raw or ""))
+        if part.strip()
+    }
+
     # Select one representative action_time per (event_id, operator) for the chosen action.
     # Then group in Python into shifts because SQL bucketing differs between SQLite/Postgres.
     act = (actionName or "").strip()
@@ -1558,9 +1621,7 @@ async def generate_pcn_ledger_xlsx(
     else:
         stmt = stmt.where(EventAction.action_time < window_end)
 
-    if act:
-        # Prefer exact match but allow substring match for robustness.
-        stmt = stmt.where(or_(EventAction.action_name == act, EventAction.action_name.ilike(f"%{act}%")))
+    stmt = stmt.where(_pcn_accept_action_predicate(act))
 
     oq = (operatorQuery or "").strip()
     if oq:
@@ -1675,6 +1736,8 @@ async def generate_pcn_ledger_xlsx(
 
     # Build ordered output rows
     ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
+    if selected_shift_keys is not None:
+        ordered_shifts = [key for key in ordered_shifts if key in selected_shift_keys]
     out_rows: list[dict[str, Any]] = []
     control_rows: list[dict[str, Any]] = []
     for sd, sh in ordered_shifts:
@@ -1704,7 +1767,10 @@ async def generate_pcn_ledger_xlsx(
         # Dispatcher count source selection.
         # For PЦН business logic we primarily care about who actually handled alarms
         # in the shift. Presence remains auxiliary/debug information on the control sheet.
-        if ds == "presence":
+        if manual_operator_names:
+            used_ops = set(manual_operator_names)
+            dispatchers = len(used_ops)
+        elif ds == "presence":
             used_ops = set(effective_presence_ops)
             dispatchers = dispatchers_presence
         elif ds == "actions":
@@ -1716,7 +1782,7 @@ async def generate_pcn_ledger_xlsx(
             dispatchers = len(used_ops)
 
         total_used = sum(int(alarms_by_op.get(op, 0) or 0) for op in used_ops)
-        total_for_sheet = int(total_used or total)
+        total_for_sheet = int(total_used if manual_operator_names else (total_used or total))
 
         if sh == "день":
             shift_window = f"{day_start.strftime('%H:%M')}–{day_end.strftime('%H:%M')}"
@@ -1739,7 +1805,9 @@ async def generate_pcn_ledger_xlsx(
             }
         )
 
-        if ds == "presence":
+        if manual_operator_names:
+            op_names = set(manual_operator_names)
+        elif ds == "presence":
             if includePresenceOnly:
                 op_names = set(effective_presence_ops)
             else:
@@ -2028,7 +2096,7 @@ async def generate_pcn_ledger_xlsx(
         period_end=pe,
         generated_at=datetime.utcnow().isoformat(timespec="seconds"),
         status="generated",
-        events_count=sum(int(v or 0) for v in shift_totals.values()) if shift_totals else 0,
+        events_count=sum(int(x.get("totalAlarmsUsed") or 0) for x in control_rows) if control_rows else 0,
         critical_count=0,
         file_name=filename,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2043,6 +2111,7 @@ async def generate_pcn_ledger_xlsx(
                 "nightEnd": night_end.strftime('%H:%M'),
                 "actionName": actionName,
                 "operatorQuery": operatorQuery,
+                "manualOperators": sorted(manual_operator_names, key=str.lower),
                 "hideOperatorNames": hideOperatorNames,
                 "payouts": {"pay0": pay0, "pay1": pay1, "pay2": pay2, "pay3": pay3},
                 "thresholds": {
@@ -2517,7 +2586,7 @@ async def export_objects_by_code(
             func.max(base.c.timestamp).label("last_time"),
         )
         .group_by(base.c.object_id, base.c.object_name, base.c.address)
-        .order_by(base.c.object_name.asc())
+        .order_by(func.min(base.c.timestamp).asc(), base.c.object_name.asc())
         .limit(limit)
     )
     agg = agg_stmt.subquery("agg")

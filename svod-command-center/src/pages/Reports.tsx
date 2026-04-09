@@ -3,6 +3,7 @@ import { ReportsTable } from '@/components/reports/ReportsTable';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -238,6 +239,7 @@ export default function Reports() {
   const [createKind, setCreateKind] = useState<CreateReportKind>('objectsByCode');
 
   const [pcnOperatorQuery, setPcnOperatorQuery] = useState('');
+  const [pcnManualOperators, setPcnManualOperators] = useState('');
   const [pcnHideOperatorNames, setPcnHideOperatorNames] = useState(false);
   const [pcnPay0, setPcnPay0] = useState('0');
   const [pcnPay1, setPcnPay1] = useState('330');
@@ -432,6 +434,10 @@ export default function Reports() {
         const params = new URLSearchParams();
         appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
+        for (const line of pcnManualOperators.split(/\r?\n|,|;/)) {
+          const name = line.trim();
+          if (name) params.append('manualOperators', name);
+        }
         if (pcnHideOperatorNames) params.set('hideOperatorNames', 'true');
 
         // Shifts: configurable boundaries (Settings -> localStorage)
@@ -896,6 +902,16 @@ export default function Reports() {
                         placeholder="ФИО или часть"
                         value={pcnOperatorQuery}
                         onChange={(e) => setPcnOperatorQuery(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1 min-w-[320px] flex-1">
+                      <div className="text-sm text-muted-foreground">Операторы смены вручную (опционально)</div>
+                      <Textarea
+                        className="min-h-[96px] bg-background"
+                        placeholder={'По одному ФИО на строку\nИванова Е.Р.\nСередкина ...'}
+                        value={pcnManualOperators}
+                        onChange={(e) => setPcnManualOperators(e.target.value)}
                       />
                     </div>
 

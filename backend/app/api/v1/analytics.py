@@ -139,6 +139,20 @@ _GBR_ARCHIVE_CANCEL_PATTERNS = (
 )
 
 
+_GBR_REAL_NAME_PREFIXES = (
+    "булат",
+    "гром",
+    "накат",
+)
+
+
+def _is_real_gbr_name(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(text.startswith(prefix) for prefix in _GBR_REAL_NAME_PREFIXES)
+
+
 def _gbr_archive_is_cancelled(status_reason: object) -> bool:
     text = str(status_reason or "").strip().lower()
     if not text:
@@ -191,6 +205,84 @@ def _gbr_archive_row_to_trip(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _merge_gbr_trip_items(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    def _rank(item: dict[str, Any]) -> tuple[int, int, int, int]:
+        return (
+            1 if item.get("arrivedAt") else 0,
+            1 if item.get("cancelledAt") else 0,
+            1 if item.get("calledAt") else 0,
+            1 if item.get("lastActionAt") else 0,
+        )
+
+    best = a if _rank(a) >= _rank(b) else b
+    other = b if best is a else a
+
+    def _min_ts(x: str | None, y: str | None) -> str | None:
+        if not x:
+            return y
+        if not y:
+            return x
+        return x if x <= y else y
+
+    def _max_ts(x: str | None, y: str | None) -> str | None:
+        if not x:
+            return y
+        if not y:
+            return x
+        return x if x >= y else y
+
+    best["calledAt"] = _min_ts(best.get("calledAt"), other.get("calledAt"))
+    best["arrivedAt"] = _min_ts(best.get("arrivedAt"), other.get("arrivedAt"))
+    best["cancelledAt"] = _min_ts(best.get("cancelledAt"), other.get("cancelledAt"))
+    best["lastActionAt"] = _max_ts(best.get("lastActionAt"), other.get("lastActionAt"))
+
+    for key in [
+        "eventId",
+        "agencyEventId",
+        "gbrName",
+        "objectId",
+        "objectName",
+        "clientName",
+        "responsibleName",
+        "calledOperator",
+        "resultText",
+        "meterCount",
+        "timeMeterCount",
+        "tripStatus",
+    ]:
+        if not best.get(key) and other.get(key):
+            best[key] = other.get(key)
+
+    try:
+        called_at = best.get("calledAt")
+        arrived_at = best.get("arrivedAt")
+        if called_at and arrived_at:
+            called_dt = datetime.fromisoformat(str(called_at))
+            arrived_dt = datetime.fromisoformat(str(arrived_at))
+            best["travelSeconds"] = abs((arrived_dt - called_dt).total_seconds())
+    except Exception:
+        pass
+
+    return best
+
+
+def _dedupe_gbr_trip_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in items:
+        if not _is_real_gbr_name(item.get("gbrName")):
+            continue
+        gbr_name = str(item.get("gbrName") or "").strip().lower()
+        alarm_id = str(item.get("agencyEventId") or item.get("eventId") or "").strip()
+        if not alarm_id:
+            alarm_id = f"__row__{len(dedup)}"
+        key = (gbr_name, alarm_id)
+        if key in dedup:
+            dedup[key] = _merge_gbr_trip_items(dedup[key], item)
+        else:
+            dedup[key] = item
+    return list(dedup.values())
+
+
 async def _fetch_gbr_archive_trips_payload(
     *,
     date_from: str | None,
@@ -241,7 +333,7 @@ def _filter_gbr_archive_trips(
     gbr_name_norm = (gbr_name or "").strip().lower()
     status_norm = (status or "all").strip().lower()
 
-    items = [_gbr_archive_row_to_trip(row) for row in rows]
+    items = _dedupe_gbr_trip_items([_gbr_archive_row_to_trip(row) for row in rows])
     if gbr_name_norm:
         items = [item for item in items if str(item.get("gbrName") or "").strip().lower() == gbr_name_norm]
 
@@ -258,7 +350,6 @@ def _filter_gbr_archive_trips(
             str(item.get("arrivedAt") or ""),
             str(item.get("cancelledAt") or ""),
         ),
-        reverse=True,
     )
     return items
 
@@ -902,10 +993,15 @@ async def analytics_filters(
         await session.execute(select(func.min(EventAction.action_time), func.max(EventAction.action_time)))
     ).one()
 
+    real_gbr_names = sorted(
+        {str(g).strip() for g in gbr_names if g and _is_real_gbr_name(g)},
+        key=str.lower,
+    )
+
     return {
         "operators": [o for o in operators if o],
         "actionNames": [a for a in action_names if a],
-        "gbrNames": [g for g in gbr_names if g],
+        "gbrNames": real_gbr_names,
         "dateMin": min_ts.isoformat() if isinstance(min_ts, datetime) else None,
         "dateMax": max_ts.isoformat() if isinstance(max_ts, datetime) else None,
     }
@@ -1070,6 +1166,14 @@ async def gbr_trips(
         base = base.where(EventAction.action_time <= dt_to)
     if gbr_name:
         base = base.where(EventAction.gbr_name == gbr_name)
+    else:
+        base = base.where(
+            or_(
+                EventAction.gbr_name.ilike("Булат%"),
+                EventAction.gbr_name.ilike("Гром%"),
+                EventAction.gbr_name.ilike("Накат%"),
+            )
+        )
 
     sq = base.subquery("gbr_trips")
 
@@ -1127,7 +1231,7 @@ async def gbr_trips(
         .outerjoin(Event, Event.id == sq.c.event_id)
         .outerjoin(resp_sq, resp_sq.c.object_id == Event.object_id)
         .where(or_(sq.c.called_ts.is_not(None), sq.c.arrived_ts.is_not(None), sq.c.cancelled_ts.is_not(None)))
-        .order_by(sq.c.called_ts.desc())
+        .order_by(sq.c.called_ts.asc(), sq.c.event_id.asc())
         .offset(offset)
         .limit(limit)
     )

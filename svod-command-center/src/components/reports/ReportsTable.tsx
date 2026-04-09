@@ -303,9 +303,9 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
       location: 'Адрес',
       address: 'Адрес',
 
-      events: 'Количество событий',
-      events_count: 'Количество событий',
-      eventsCount: 'Количество событий',
+      events: 'Количество тревог',
+      events_count: 'Количество тревог',
+      eventsCount: 'Количество тревог',
 
       event_code: 'Код события',
       eventCode: 'Код события',
@@ -580,7 +580,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
             <TableHead className="text-muted-foreground font-medium">Тип отчёта</TableHead>
             <TableHead className="text-muted-foreground font-medium">Период</TableHead>
             <TableHead className="text-muted-foreground font-medium">Дата генерации</TableHead>
-            <TableHead className="text-muted-foreground font-medium">Событий</TableHead>
+            <TableHead className="text-muted-foreground font-medium">Количество</TableHead>
             <TableHead className="text-muted-foreground font-medium">Критических</TableHead>
             <TableHead className="text-muted-foreground font-medium">Статус</TableHead>
             <TableHead className="w-[150px]"></TableHead>
