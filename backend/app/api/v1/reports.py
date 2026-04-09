@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 
 from datetime import datetime
@@ -189,8 +190,8 @@ def _pcn_ledger_payout(
     return int(pay3)
 
 
-def _pcn_excluded_alarm_predicate() -> object:
-    checks: list[object] = [func.trim(func.coalesce(Event.result_text, "")) == "-"]
+def _pcn_excluded_alarm_predicate() -> Any:
+    checks: list[Any] = [func.trim(func.coalesce(Event.result_text, "")) == "-"]
     for pattern in _PCN_EXCLUDED_ALARM_PATTERNS:
         like = f"%{pattern}%"
         checks.extend(
@@ -457,7 +458,7 @@ def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
     reader = csv.reader(lines, delimiter=";")
 
     wb = Workbook()
-    ws = wb.active
+    ws = cast(Any, wb.active)
     ws.title = "Report"
     for r_idx, row in enumerate(reader, start=1):
         for c_idx, v in enumerate(row, start=1):
@@ -616,7 +617,7 @@ async def generate_objects_by_code_report(
         elif parsed_d:
             dt_to = datetime.combine(parsed_d, datetime.max.time())
 
-    filters: list[object] = [Event.code == eventCode.strip()]
+    filters: list[Any] = [Event.code == eventCode.strip()]
     if dt_from is not None:
         filters.append(Event.timestamp >= dt_from)
     if dt_to is not None:
@@ -727,7 +728,7 @@ async def generate_objects_by_code_report(
     rows = (await session.execute(stmt)).all()
 
     wb = Workbook()
-    ws = wb.active
+    ws = cast(Any, wb.active)
     ws.title = "Объекты"
 
     headers = [
@@ -859,6 +860,7 @@ async def generate_gbr_raport_xlsx(
     trips_source = "eventservice"
     rows_all: list[dict[str, Any]] = []
     total = 0
+    trips: dict[str, Any] = {"data": rows_all, "total": total}
 
     url = (settings.agency_database_url or "").strip()
     scheme = (url.split(":", 1)[0] or "").lower()
@@ -1029,7 +1031,7 @@ async def generate_gbr_raport_xlsx(
     from openpyxl.styles import Alignment, Border, Font, Side
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
-    def clean_excel_text(value: object) -> object:
+    def clean_excel_text(value: object) -> Any:
         if value is None:
             return ""
         if isinstance(value, str):
@@ -1059,7 +1061,7 @@ async def generate_gbr_raport_xlsx(
     ]
 
     wb = Workbook()
-    ws = wb.active
+    ws = cast(Any, wb.active)
     ws.title = "Рапорт"
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
@@ -1444,9 +1446,11 @@ async def generate_pcn_ledger_xlsx(
     d_from: date_type | None = None
     d_to: date_type | None = None
     if dt_from is None:
-        d_from = _parse_date(dateFrom) or (_parse_dt(dateFrom).date() if _parse_dt(dateFrom) else None)
+        parsed_from_dt = _parse_dt(dateFrom)
+        d_from = _parse_date(dateFrom) or (parsed_from_dt.date() if parsed_from_dt else None)
     if dt_to is None:
-        d_to = _parse_date(dateTo) or (_parse_dt(dateTo).date() if _parse_dt(dateTo) else None)
+        parsed_to_dt = _parse_dt(dateTo)
+        d_to = _parse_date(dateTo) or (parsed_to_dt.date() if parsed_to_dt else None)
 
     day_start = _parse_hhmm(dayStart or "", default=time_type(8, 45))
     night_start = _parse_hhmm(nightStart or "", default=time_type(19, 50))
@@ -1671,8 +1675,8 @@ async def generate_pcn_ledger_xlsx(
 
     # Build ordered output rows
     ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
-    out_rows: list[dict[str, object]] = []
-    control_rows: list[dict[str, object]] = []
+    out_rows: list[dict[str, Any]] = []
+    control_rows: list[dict[str, Any]] = []
     for sd, sh in ordered_shifts:
         total = int(shift_totals.get((sd, sh)) or 0)
         ops_from_actions = shift_ops.get((sd, sh)) or set()
@@ -1780,7 +1784,7 @@ async def generate_pcn_ledger_xlsx(
             },
         ) from e
 
-    def clean_excel_text(value: object) -> object:
+    def clean_excel_text(value: object) -> Any:
         if value is None:
             return ""
         if isinstance(value, str):
@@ -1788,7 +1792,7 @@ async def generate_pcn_ledger_xlsx(
         return value
 
     wb = Workbook()
-    ws = wb.active
+    ws = cast(Any, wb.active)
     ws.title = "Ведомость"
 
     thin = Side(style="thin", color="D0D0D0")
@@ -1854,7 +1858,8 @@ async def generate_pcn_ledger_xlsx(
     ws.cell(9, 2).alignment = Alignment(horizontal="center")
 
     ws.merge_cells(start_row=10, start_column=2, end_row=10, end_column=10)
-    scope_bits = [f"Оператор: {operatorQuery.strip()}" if (operatorQuery or "").strip() else "Оператор: все"]
+    operator_label = (operatorQuery or "").strip()
+    scope_bits = [f"Оператор: {operator_label}" if operator_label else "Оператор: все"]
     if hideOperatorNames:
         scope_bits.append("ФИО скрыты")
     ws.cell(10, 2, clean_excel_text(" | ".join(scope_bits))).alignment = Alignment(horizontal="center")
@@ -1894,7 +1899,7 @@ async def generate_pcn_ledger_xlsx(
     # Group by shift
     from collections import defaultdict
 
-    grouped: dict[tuple[date_type, str], list[dict[str, object]]] = defaultdict(list)
+    grouped: dict[tuple[date_type, str], list[dict[str, Any]]] = defaultdict(list)
     for r in out_rows:
         grouped[(r["date"], r["shift"])].append(r)
 
@@ -2281,7 +2286,7 @@ async def export_phrase_counts(
         if parsed:
             dt_to = parsed
 
-    filters: list[object] = []
+    filters: list[Any] = []
     if dt_from is not None:
         filters.append(Event.timestamp >= dt_from)
     if dt_to is not None:
@@ -2331,7 +2336,7 @@ async def export_phrase_counts(
     from openpyxl.styles import Alignment, Font
 
     wb = Workbook()
-    ws = wb.active
+    ws = cast(Any, wb.active)
     ws.title = "Фразы"
 
     headers = [
@@ -2442,19 +2447,21 @@ async def export_objects_by_code(
         dt_to = datetime(year, 12, 31, 23, 59, 59, 999999)
 
     if dateFrom:
+        parsed_date = _parse_date(dateFrom)
         parsed = _parse_dt(dateFrom) or (
-            datetime.combine(_parse_date(dateFrom), datetime.min.time()) if _parse_date(dateFrom) else None
+            datetime.combine(parsed_date, datetime.min.time()) if parsed_date else None
         )
         if parsed:
             dt_from = parsed
     if dateTo:
+        parsed_date = _parse_date(dateTo)
         parsed = _parse_dt(dateTo) or (
-            datetime.combine(_parse_date(dateTo), datetime.max.time()) if _parse_date(dateTo) else None
+            datetime.combine(parsed_date, datetime.max.time()) if parsed_date else None
         )
         if parsed:
             dt_to = parsed
 
-    filters: list[object] = [Event.code == eventCode]
+    filters: list[Any] = [Event.code == eventCode]
     if dt_from is not None:
         filters.append(Event.timestamp >= dt_from)
     if dt_to is not None:
@@ -2560,7 +2567,7 @@ async def export_objects_by_code(
     from openpyxl.styles import Alignment, Font
 
     wb = Workbook()
-    ws = wb.active
+    ws = cast(Any, wb.active)
     ws.title = "Объекты"
 
     headers = [
