@@ -152,16 +152,27 @@ def _looks_like_operator_display_name(value: object) -> bool:
         return False
 
     normalized = text.lower()
-    if normalized in {"null", "none", "unknown", "system", "admin"}:
+    if normalized in {"null", "none", "unknown", "system", "admin", "система"}:
         return False
 
-    # Drop numeric ids/logins like 79021711223.
-    compact = re.sub(r"[\s()\-]+", "", text)
-    if compact.isdigit():
+    if any(ch.isdigit() for ch in text):
         return False
 
-    # Keep only values that look like a human-readable operator name.
-    return bool(re.search(r"[A-Za-zА-Яа-яЁё]", text))
+    blacklist_patterns = (
+        r"\bсистема\b",
+        r"\bсмена\b",
+        r"\bинженер\b",
+        r"\bingener\b",
+        r"\boperator\b",
+        r"\badmin\b",
+        r"\btest\b",
+        r"\bunknown\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in blacklist_patterns):
+        return False
+
+    # For operator-facing selectors/reports keep only human-readable names in Cyrillic.
+    return bool(re.search(r"[А-Яа-яЁё]", text))
 
 
 def _is_real_gbr_name(value: object) -> bool:
@@ -850,7 +861,7 @@ async def operators_live(
         avgHandlingSeconds,
         handledEvents,
     ) in rows:
-        if not operator:
+        if not operator or not _looks_like_operator_display_name(operator):
             continue
 
         last_dt: datetime | None = last_action_at if isinstance(last_action_at, datetime) else None
@@ -963,6 +974,8 @@ async def operators_handling_time(
     rows = (await session.execute(agg)).all()
     out: list[dict[str, Any]] = []
     for operator, events, avg_s, min_s, max_s in rows:
+        if not _looks_like_operator_display_name(operator):
+            continue
         out.append(
             {
                 "operator": operator,
@@ -1065,7 +1078,11 @@ async def operators_activity(
         q = q.where(EventAction.operator_name == operator)
 
     rows = (await session.execute(q)).all()
-    return [{"bucket": b, "operator": o, "actions": int(c or 0)} for (b, o, c) in rows]
+    return [
+        {"bucket": b, "operator": o, "actions": int(c or 0)}
+        for (b, o, c) in rows
+        if _looks_like_operator_display_name(o)
+    ]
 
 
 @router.get("/gbr/trips")
