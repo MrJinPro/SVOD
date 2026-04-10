@@ -227,14 +227,21 @@ function OperatorsMultiSelect({
 }: {
   options: string[];
   value: string[];
-  onChange: (next: string[]) => void;
+  onChange: React.Dispatch<React.SetStateAction<string[]>>;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
 
   const selected = useMemo(
     () => options.filter((item) => value.includes(item)),
     [options, value],
   );
+
+  const filteredOptions = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase('ru');
+    if (!needle) return options;
+    return options.filter((item) => item.toLocaleLowerCase('ru').includes(needle));
+  }, [options, query]);
 
   const buttonLabel = useMemo(() => {
     if (selected.length === 0) return 'Выберите операторов смены';
@@ -243,11 +250,12 @@ function OperatorsMultiSelect({
   }, [selected]);
 
   const toggle = (name: string) => {
-    if (value.includes(name)) {
-      onChange(value.filter((item) => item !== name));
-      return;
-    }
-    onChange([...value, name].sort((a, b) => a.localeCompare(b, 'ru')));
+    onChange((prev) => {
+      if (prev.includes(name)) {
+        return prev.filter((item) => item !== name);
+      }
+      return [...prev, name].sort((a, b) => a.localeCompare(b, 'ru'));
+    });
   };
 
   return (
@@ -265,7 +273,11 @@ function OperatorsMultiSelect({
       </PopoverTrigger>
       <PopoverContent className="w-[420px] max-w-[calc(100vw-2rem)] p-0" align="start">
         <Command>
-          <CommandInput placeholder="Поиск оператора…" />
+          <CommandInput
+            placeholder="Поиск оператора…"
+            value={query}
+            onValueChange={setQuery}
+          />
           <CommandList>
             <CommandEmpty>Операторы не найдены</CommandEmpty>
             <CommandGroup>
@@ -277,15 +289,20 @@ function OperatorsMultiSelect({
                   <div className="text-sm text-muted-foreground">Снять выбор</div>
                 </CommandItem>
               ) : null}
-              {options.map((name) => {
+              {filteredOptions.map((name) => {
                 const checked = value.includes(name);
                 return (
                   <CommandItem
                     key={name}
                     value={name}
-                    onSelect={() => toggle(name)}
+                    onSelect={(currentValue) => {
+                      if (currentValue) toggle(name);
+                    }}
                   >
-                    <Check className={cn('mr-2 h-4 w-4', checked ? 'opacity-100' : 'opacity-0')} />
+                    <Checkbox
+                      checked={checked}
+                      className="mr-2 pointer-events-none"
+                    />
                     <span className="truncate">{name}</span>
                   </CommandItem>
                 );
