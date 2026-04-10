@@ -652,8 +652,8 @@ async def build_alarm_messages_xlsx_bytes(
         stmt = stmt.where(where)
     events_rows: list[Event] = (await session.execute(stmt)).scalars().all()
 
-    event_ids = [e.id for e in events_rows if e.id]
-    object_ids = sorted({e.object_id for e in events_rows if getattr(e, "object_id", None)})
+    event_ids = [str(e.id) for e in events_rows if e.id]
+    object_ids = sorted({str(e.object_id) for e in events_rows if getattr(e, "object_id", None)}, key=str)
 
     called_match_strict = or_(
         EventAction.action_name.ilike("%Вызван%груп%"),

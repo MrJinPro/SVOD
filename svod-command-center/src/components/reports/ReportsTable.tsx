@@ -39,6 +39,45 @@ function reorderRows(rows: string[][], from: number, to: number): string[][] {
   return rows.map((r) => reorder(r, from, to));
 }
 
+function parseSortableCellValue(value: string): number | string {
+  const text = String(value || '').trim();
+  if (!text || text === '—') return '';
+
+  const isoCandidate = text.includes(' ') ? text.replace(' ', 'T') : text;
+  const isoTs = Date.parse(isoCandidate);
+  if (!Number.isNaN(isoTs)) return isoTs;
+
+  const ruDateMatch = text.match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (ruDateMatch) {
+    const [, dd, mm, yyyy, hh = '00', min = '00', ss = '00'] = ruDateMatch;
+    const ruTs = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(min), Number(ss));
+    if (!Number.isNaN(ruTs)) return ruTs;
+  }
+
+  const numericCandidate = text.replace(/\s+/g, '').replace(',', '.');
+  if (/^-?\d+(?:\.\d+)?$/.test(numericCandidate)) {
+    const parsedNumber = Number(numericCandidate);
+    if (!Number.isNaN(parsedNumber)) return parsedNumber;
+  }
+
+  return text.toLocaleLowerCase('ru');
+}
+
+function compareTableCells(a: string, b: string): number {
+  const left = parseSortableCellValue(a);
+  const right = parseSortableCellValue(b);
+
+  if (left === '' && right === '') return 0;
+  if (left === '') return 1;
+  if (right === '') return -1;
+
+  if (typeof left === 'number' && typeof right === 'number') {
+    return left - right;
+  }
+
+  return String(left).localeCompare(String(right), 'ru', { numeric: true, sensitivity: 'base' });
+}
+
 function SheetViewer({
   titleLines,
   columns,
@@ -55,6 +94,7 @@ function SheetViewer({
   const [viewRows, setViewRows] = useState<string[][]>([]);
   const [colWidths, setColWidths] = useState<number[]>([]);
   const [zoom, setZoom] = useState<number>(100);
+  const [sortState, setSortState] = useState<{ index: number; direction: 'asc' | 'desc' } | null>(null);
   const dragFromRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -63,6 +103,7 @@ function SheetViewer({
     const base = (columns || []).map((c) => clamp(Math.max(120, String(c || '').length * 10), 90, 420));
     setColWidths(base);
     setZoom(100);
+    setSortState(null);
   }, [columns, rows]);
 
   const totalWidth = useMemo(() => colWidths.reduce((a, b) => a + (b || 0), 0), [colWidths]);
@@ -118,6 +159,27 @@ function SheetViewer({
     setViewColumns((prev) => reorder(prev, fromIdx, toIdx));
     setColWidths((prev) => reorder(prev, fromIdx, toIdx));
     setViewRows((prev) => reorderRows(prev, fromIdx, toIdx));
+    setSortState((prev) => {
+      if (!prev) return prev;
+      if (prev.index === fromIdx) return { ...prev, index: toIdx };
+      if (fromIdx < prev.index && prev.index <= toIdx) return { ...prev, index: prev.index - 1 };
+      if (toIdx <= prev.index && prev.index < fromIdx) return { ...prev, index: prev.index + 1 };
+      return prev;
+    });
+  };
+
+  const sortByColumn = (index: number) => {
+    setSortState((prev) => {
+      const direction = prev && prev.index === index && prev.direction === 'asc' ? 'desc' : 'asc';
+      setViewRows((currentRows) => {
+        const sortedRows = currentRows.slice().sort((left, right) => {
+          const result = compareTableCells(left?.[index] || '', right?.[index] || '');
+          return direction === 'asc' ? result : -result;
+        });
+        return sortedRows;
+      });
+      return { index, direction };
+    });
   };
 
   const zoomStyle: any = useMemo(() => ({ zoom: zoom / 100 }), [zoom]);
@@ -165,7 +227,7 @@ function SheetViewer({
           </Button>
           <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-1">
             <ArrowLeftRight className="h-3.5 w-3.5" />
-            Перетаскивайте заголовки столбцов
+            Клик по заголовку сортирует, перетаскивание меняет порядок столбцов
           </div>
         </div>
       </div>
@@ -197,16 +259,24 @@ function SheetViewer({
                     <thead>
                       <tr className="border-b border-border bg-muted/40">
                         {viewColumns.map((c, idx) => (
-                            <th
+                          <th
                             key={`${c}-${idx}`}
-                              className="relative text-left font-medium px-3 py-2 whitespace-nowrap select-none"
+                            className="relative text-left font-medium px-3 py-2 whitespace-nowrap select-none"
                             draggable
                             onDragStart={() => onDragStartHeader(idx)}
                             onDragOver={(e) => e.preventDefault()}
                             onDrop={() => onDropHeader(idx)}
                             title="Перетащите, чтобы поменять порядок"
                           >
-                            {c || ''}
+                            <button
+                              type="button"
+                              className="max-w-[calc(100%-0.5rem)] truncate pr-3 text-left"
+                              onClick={() => sortByColumn(idx)}
+                              title="Нажмите, чтобы отсортировать"
+                            >
+                              {c || ''}
+                              {sortState?.index === idx ? (sortState.direction === 'asc' ? ' ^' : ' v') : ''}
+                            </button>
                             <div
                               className="absolute right-0 top-0 h-full w-2 cursor-col-resize"
                               onPointerDown={(e) => onStartResize(idx, e)}
@@ -404,7 +474,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
         );
         const json = (await res.json()) as any;
 
-        if (json?.kind === 'gbr' || report.type === 'gbrRaportXlsx') {
+        if (json?.kind === 'gbr') {
           setPreviewMode('gbr');
           const data = json as GbrTripsResponse;
           setPreviewRows(data?.data || []);

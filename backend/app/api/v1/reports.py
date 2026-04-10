@@ -14,7 +14,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from starlette.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import Integer, and_, case, cast as sql_cast, func, or_, select
 
 from app.api.v1.deps import get_current_user
 from app.core.config import settings
@@ -74,6 +74,34 @@ def _agency_event_id(event_id: str | None) -> str | None:
     if len(parts) >= 3:
         return parts[-1] or None
     return None
+
+
+def _numeric_event_id_predicate(dialect_name: str | None) -> Any:
+    if (dialect_name or "").lower() == "postgresql":
+        return Event.id.op("~")(r"^\d+$")
+
+    return and_(Event.id.op("GLOB")("[0-9]*"), ~Event.id.op("GLOB")("*[^0-9]*"))
+
+
+def _event_date_key_expr(dialect_name: str | None) -> Any:
+    if (dialect_name or "").lower() == "sqlite":
+        return sql_cast(func.strftime("%Y%m%d", Event.timestamp), Integer)
+    return sql_cast(func.to_char(Event.timestamp, "YYYYMMDD"), Integer)
+
+
+def _event_action_to_event_join_condition(dialect_name: str | None) -> Any:
+    raw_id_expr = case(
+        (_numeric_event_id_predicate(dialect_name), sql_cast(Event.id, Integer)),
+        else_=None,
+    )
+    return or_(
+        EventAction.event_id == Event.id,
+        and_(
+            raw_id_expr.is_not(None),
+            EventAction.raw_event_id == raw_id_expr,
+            EventAction.date_key == _event_date_key_expr(dialect_name),
+        ),
+    )
 
 
 def _ensure_reports_manage_perm(current: dict) -> None:
@@ -297,6 +325,24 @@ def _gbr_archive_is_cancelled(status_reason: object) -> bool:
     if not text:
         return False
     return any(pattern in text for pattern in _GBR_ARCHIVE_CANCEL_PATTERNS)
+
+
+def _gbr_trip_dedupe_key(row: dict[str, Any]) -> tuple[str, ...] | None:
+    gbr_name = str(row.get("gbrName") or "").strip().lower()
+    agency_event_id = str(row.get("agencyEventId") or "").strip()
+    if gbr_name and agency_event_id:
+        return ("agency", gbr_name, agency_event_id)
+
+    object_id = str(row.get("objectId") or "").strip()
+    ts = str(row.get("calledAt") or row.get("lastActionAt") or row.get("arrivedAt") or row.get("cancelledAt") or "").strip()
+    if gbr_name and object_id and ts:
+        return ("object-time", gbr_name, object_id, ts[:16])
+
+    event_id = str(row.get("eventId") or "").strip()
+    if gbr_name and event_id:
+        return ("event", gbr_name, event_id)
+
+    return None
 
 
 def _gbr_archive_row_to_trip(row: dict[str, object]) -> dict[str, object]:
@@ -1011,7 +1057,7 @@ async def generate_gbr_raport_xlsx(
                     break
 
     # Business rule: 1 тревога = 1 выезд, even if multiple triggers/records exist.
-    # Deduplicate by (gbrName + agencyEventId) when possible, fallback to eventId.
+    # Prefer a stable agency alarm id, then fall back to crew+object+time, then event id.
     def _pick_better(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         # Prefer record that has arrivedAt; then cancelledAt; then calledAt.
         def _rank(x: dict[str, Any]) -> tuple[int, int, int, int]:
@@ -1073,14 +1119,11 @@ async def generate_gbr_raport_xlsx(
             pass
         return best
 
-    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    dedup: dict[tuple[str, ...], dict[str, Any]] = {}
     for r in rows_all:
-        gbr = str(r.get("gbrName") or "").strip().lower()
-        alarm_id = str(r.get("agencyEventId") or r.get("eventId") or "").strip()
-        if not alarm_id:
-            # keep as-is (no stable key)
-            alarm_id = f"__row__{len(dedup)}"
-        key = (gbr, alarm_id)
+        key = _gbr_trip_dedupe_key(r)
+        if key is None:
+            continue
         if key in dedup:
             dedup[key] = _pick_better(dedup[key], r)
         else:
@@ -1133,6 +1176,7 @@ async def generate_gbr_raport_xlsx(
         "Параметр (MeterCount)",
         "Пометка оператора (Result_Text)",
         "Статус",
+        "Результат выезда",
     ]
 
     wb = Workbook()
@@ -1159,7 +1203,7 @@ async def generate_gbr_raport_xlsx(
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18, 16, 28, 45, 14]
+    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18, 16, 28, 45, 14, 26]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(ord('A') + i - 1)].width = w
 
@@ -1220,11 +1264,19 @@ async def generate_gbr_raport_xlsx(
             r.get("meterCount") or "",
             r.get("resultText") or "",
             r.get("tripStatus") or "",
+            r.get("resultText") or r.get("tripStatus") or "",
         ]
         for col_idx, v in enumerate(values, start=1):
             c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    summary_row_idx = start_row + len(rows)
+    ws.merge_cells(start_row=summary_row_idx, start_column=1, end_row=summary_row_idx, end_column=len(columns))
+    summary_cell = ws.cell(summary_row_idx, 1, value=clean_excel_text(f"Итого отработанных тревог: {len(rows)}"))
+    summary_cell.font = Font(bold=True)
+    summary_cell.alignment = Alignment(horizontal="right", vertical="center")
+    summary_cell.border = border
 
     ws.freeze_panes = ws["A6"]
     ws.page_setup.orientation = "landscape"
@@ -1252,7 +1304,7 @@ async def generate_gbr_raport_xlsx(
         period_end=pe,
         generated_at=datetime.utcnow().isoformat(timespec="seconds"),
         status="generated",
-        events_count=len(rows),
+        events_count=len(rows_all),
         critical_count=0,
         file_name=filename,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1628,23 +1680,36 @@ async def generate_pcn_ledger_xlsx(
         if part.strip()
     }
 
-    # Select one representative action_time per (event_id, operator) for the chosen action.
-    # Then group in Python into shifts because SQL bucketing differs between SQLite/Postgres.
+    try:
+        dialect_name = getattr(getattr(session.get_bind(), "dialect", None), "name", None)
+    except Exception:
+        dialect_name = None
+
+    # Load accepted operator actions together with alarm details.
+    # We intentionally resolve EventAction -> Event via both exact id and raw_event_id/date_key,
+    # because some agency imports do not persist the same local Event.id shape.
     act = (actionName or "").strip()
-    alarm_id_expr = func.coalesce(Event.parent_event_id, EventAction.event_id)
+    alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
     stmt = (
         select(
             alarm_id_expr.label("alarm_id"),
-            EventAction.operator_name,
-            func.min(EventAction.action_time).label("ts"),
+            Event.id.label("event_id"),
+            EventAction.operator_name.label("operator_name"),
+            EventAction.action_time.label("ts"),
+            Event.object_id.label("object_id"),
+            func.coalesce(Object.name, Event.object_name).label("object_name"),
+            func.coalesce(Object.address, Event.location).label("address"),
+            Event.meter_count.label("meter_count"),
+            Event.result_text.label("result_text"),
         )
         .select_from(EventAction)
-        .join(Event, Event.id == EventAction.event_id)
+        .join(Event, _event_action_to_event_join_condition(dialect_name))
+        .outerjoin(Object, Object.id == Event.object_id)
         .where(Event.type == "alarm")
         .where(~_pcn_excluded_alarm_predicate())
         .where(EventAction.operator_name.is_not(None))
         .where(EventAction.action_time >= window_start)
-        .group_by(alarm_id_expr, EventAction.operator_name)
+        .order_by(EventAction.action_time.asc(), Event.id.asc())
     )
 
     if exact_window:
@@ -1737,10 +1802,17 @@ async def generate_pcn_ledger_xlsx(
         presence_ops_by_shift = {}
         presence_seconds_by_shift_op = {}
 
-    # Aggregate counts per (shift_date, shift_name, operator)
-    counts: dict[tuple[date_type, str, str], int] = {}
-    for event_id, op, ts in rows:
+    # Aggregate unique alarms per shift and operator.
+    operator_alarm_ids: dict[tuple[date_type, str, str], set[str]] = {}
+    shift_alarm_ids: dict[tuple[date_type, str], set[str]] = {}
+    shift_alarm_details: dict[tuple[date_type, str, str], dict[str, Any]] = {}
+    detail_event_ids: set[str] = set()
+
+    for alarm_id, event_id, op, ts, object_id, object_name, address, meter_count, result_text in rows:
         if not isinstance(ts, datetime) or not op:
+            continue
+        alarm_id_s = str(alarm_id or event_id or "").strip()
+        if not alarm_id_s:
             continue
         op_s = str(op)
         shift_date, shift_name = _shift_bucket(
@@ -1755,15 +1827,81 @@ async def generate_pcn_ledger_xlsx(
             dmin, dmax = clamp_shift_dates
             if shift_date < dmin or shift_date > dmax:
                 continue
-        key = (shift_date, shift_name, op_s)
-        counts[key] = counts.get(key, 0) + 1
+        operator_alarm_ids.setdefault((shift_date, shift_name, op_s), set()).add(alarm_id_s)
+        shift_alarm_ids.setdefault((shift_date, shift_name), set()).add(alarm_id_s)
+        detail_key = (shift_date, shift_name, alarm_id_s)
+        detail = shift_alarm_details.get(detail_key)
+        if detail is None:
+            detail = {
+                "alarmId": alarm_id_s,
+                "eventId": str(event_id or "").strip() or None,
+                "acceptedAt": ts,
+                "objectId": str(object_id or "").strip(),
+                "objectName": str(object_name or "").strip(),
+                "address": str(address or "").strip(),
+                "meterCount": str(meter_count or "").strip(),
+                "resultText": str(result_text or "").strip(),
+                "operators": {op_s},
+            }
+            shift_alarm_details[detail_key] = detail
+        else:
+            detail["operators"].add(op_s)
+            accepted_at = detail.get("acceptedAt")
+            if isinstance(accepted_at, datetime) and ts < accepted_at:
+                detail["acceptedAt"] = ts
+            if not detail.get("objectId") and object_id:
+                detail["objectId"] = str(object_id or "").strip()
+            if not detail.get("objectName") and object_name:
+                detail["objectName"] = str(object_name or "").strip()
+            if not detail.get("address") and address:
+                detail["address"] = str(address or "").strip()
+            if not detail.get("meterCount") and meter_count:
+                detail["meterCount"] = str(meter_count or "").strip()
+            if not detail.get("resultText") and result_text:
+                detail["resultText"] = str(result_text or "").strip()
+
+        if event_id:
+            detail_event_ids.add(str(event_id))
+
+    counts: dict[tuple[date_type, str, str], int] = {
+        key: len(alarm_ids)
+        for key, alarm_ids in operator_alarm_ids.items()
+    }
 
     # Totals per shift
-    shift_totals: dict[tuple[date_type, str], int] = {}
+    shift_totals: dict[tuple[date_type, str], int] = {
+        key: len(alarm_ids)
+        for key, alarm_ids in shift_alarm_ids.items()
+    }
     shift_ops: dict[tuple[date_type, str], set[str]] = {}
     for (sd, sh, op), c in counts.items():
-        shift_totals[(sd, sh)] = shift_totals.get((sd, sh), 0) + int(c or 0)
         shift_ops.setdefault((sd, sh), set()).add(op)
+
+    alarm_trip_meta_by_event_id: dict[str, dict[str, str]] = {}
+    if detail_event_ids:
+        called_match = or_(
+            EventAction.action_name.ilike("%Вызван%"),
+            EventAction.action_name.ilike("%Вызов%"),
+            EventAction.action_name.ilike("%Направ%"),
+            EventAction.action_name.ilike("%Отправ%"),
+            EventAction.action_name.ilike("%Выезд%"),
+            EventAction.action_name.ilike("%Следу%"),
+        )
+        trip_stmt = (
+            select(
+                EventAction.event_id,
+                func.coalesce(
+                    func.min(case((called_match, EventAction.gbr_name), else_=None)),
+                    func.min(EventAction.gbr_name),
+                ).label("gbr_name"),
+            )
+            .where(EventAction.event_id.in_(sorted(detail_event_ids)))
+            .group_by(EventAction.event_id)
+        )
+        for event_id, gbr_name in (await session.execute(trip_stmt)).all():
+            alarm_trip_meta_by_event_id[str(event_id)] = {
+                "gbrName": str(gbr_name or "").strip(),
+            }
 
     # Build ordered output rows
     ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
@@ -1771,6 +1909,7 @@ async def generate_pcn_ledger_xlsx(
         ordered_shifts = [key for key in ordered_shifts if key in selected_shift_keys]
     out_rows: list[dict[str, Any]] = []
     control_rows: list[dict[str, Any]] = []
+    detail_rows: list[dict[str, Any]] = []
     for sd, sh in ordered_shifts:
         total = int(shift_totals.get((sd, sh)) or 0)
         ops_from_actions = shift_ops.get((sd, sh)) or set()
@@ -1873,6 +2012,44 @@ async def generate_pcn_ledger_xlsx(
                     "payout": payout,
                     "bonus": bonus,
                     "total": payout + bonus,
+                }
+            )
+
+        manual_filter_ops = set(manual_matched_ops) if manual_operator_names else set()
+        shift_details = [
+            detail
+            for (detail_sd, detail_sh, _alarm_id), detail in shift_alarm_details.items()
+            if detail_sd == sd and detail_sh == sh
+        ]
+        shift_details.sort(
+            key=lambda item: (
+                (lambda accepted_at: accepted_at.isoformat() if isinstance(accepted_at, datetime) else "")(
+                    item.get("acceptedAt")
+                ),
+                str(item.get("objectId") or ""),
+            )
+        )
+
+        for detail in shift_details:
+            detail_ops_raw = detail.get("operators")
+            detail_ops = set(detail_ops_raw) if isinstance(detail_ops_raw, set) else set()
+            if manual_filter_ops and detail_ops.isdisjoint(manual_filter_ops):
+                continue
+            event_id = str(detail.get("eventId") or "").strip()
+            trip_meta = alarm_trip_meta_by_event_id.get(event_id, {})
+            detail_rows.append(
+                {
+                    "date": sd,
+                    "shift": sh,
+                    "acceptedAt": detail.get("acceptedAt"),
+                    "objectId": detail.get("objectId") or "",
+                    "objectName": detail.get("objectName") or "",
+                    "address": detail.get("address") or "",
+                    "meterCount": detail.get("meterCount") or "",
+                    "gbrName": trip_meta.get("gbrName") or "",
+                    "resultText": detail.get("resultText") or "",
+                    "operators": ", ".join(sorted(detail_ops, key=str.lower)),
+                    "alarmId": detail.get("alarmId") or "",
                 }
             )
 
@@ -2119,6 +2296,65 @@ async def generate_pcn_ledger_xlsx(
         # If something goes wrong, do not fail the report generation.
         pass
 
+    try:
+        ws3 = wb.create_sheet("Тревоги")
+        ws3_headers = [
+            "Дата",
+            "Смена",
+            "Принята",
+            "№ объекта",
+            "Название",
+            "Адрес",
+            "№ шлейфа",
+            "ГБР",
+            "Результат",
+            "Оператор(ы)",
+            "ID тревоги",
+        ]
+        for idx, h in enumerate(ws3_headers, start=1):
+            cell = ws3.cell(1, idx, clean_excel_text(h))
+            cell.font = Font(bold=True)
+            cell.alignment = center
+            cell.border = border
+
+        row_idx = 2
+        for item in detail_rows:
+            accepted_at = item.get("acceptedAt")
+            values = [
+                item.get("date"),
+                item.get("shift") or "",
+                accepted_at.strftime("%d.%m.%Y %H:%M:%S") if isinstance(accepted_at, datetime) else "",
+                item.get("objectId") or "",
+                item.get("objectName") or "",
+                item.get("address") or "",
+                item.get("meterCount") or "",
+                item.get("gbrName") or "",
+                item.get("resultText") or "",
+                item.get("operators") or "",
+                item.get("alarmId") or "",
+            ]
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws3.cell(row_idx, col_idx, clean_excel_text(value))
+                cell.border = border
+                cell.alignment = center if col_idx not in {5, 6, 9, 10, 11} else Alignment(horizontal="left", vertical="center", wrap_text=True)
+            if isinstance(item.get("date"), date_type):
+                ws3.cell(row_idx, 1).number_format = "DD.MM.YYYY"
+            row_idx += 1
+
+        ws3.column_dimensions["A"].width = 12
+        ws3.column_dimensions["B"].width = 10
+        ws3.column_dimensions["C"].width = 20
+        ws3.column_dimensions["D"].width = 14
+        ws3.column_dimensions["E"].width = 34
+        ws3.column_dimensions["F"].width = 42
+        ws3.column_dimensions["G"].width = 14
+        ws3.column_dimensions["H"].width = 18
+        ws3.column_dimensions["I"].width = 36
+        ws3.column_dimensions["J"].width = 28
+        ws3.column_dimensions["K"].width = 20
+    except Exception:
+        pass
+
     bio = BytesIO()
     wb.save(bio)
     data = bio.getvalue()
@@ -2279,39 +2515,6 @@ async def preview_report(
     ).scalars().first()
     if r is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Report not found"})
-
-    # Special preview for analytics-based GBR report (old behavior)
-    if str(r.type) == "gbrRaportXlsx":
-        have = set(map(str, current.get("permissions") or []))
-        if "analytics:read" not in have and current.get("role") != "admin":
-            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
-
-        params = {}
-        try:
-            if r.params_json:
-                params = json.loads(r.params_json)
-        except Exception:
-            params = {}
-
-        from app.api.v1.analytics import gbr_trips  # local import
-
-        date_from = str(params.get("dateFrom") or "")
-        date_to = str(params.get("dateTo") or "")
-        gbr_name = params.get("gbrName")
-        object_id = params.get("objectId")
-
-        out = await gbr_trips(
-            date_from=date_from,
-            date_to=date_to,
-            gbr_name=(str(gbr_name) if gbr_name else None),
-            object_id=(str(object_id) if object_id else None),
-            limit=2000,
-            offset=0,
-            session=session,
-            _perm=current,
-        )
-        out["kind"] = "gbr"
-        return out
 
     # Generic preview for stored files (CSV/XLSX)
     if not r.storage_path or not r.file_name:
