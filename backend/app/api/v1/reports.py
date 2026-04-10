@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Iterator, cast
 from uuid import uuid4
 
 from datetime import datetime
@@ -398,6 +398,11 @@ def _safe_report_filename(filename: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', '_', str(filename or '').strip())
     name = re.sub(r'\s+', ' ', name).strip(' .')
     return name or 'report.xlsx'
+
+
+def _iter_chunks[T](values: list[T], chunk_size: int = 1000) -> Iterator[list[T]]:
+    for i in range(0, len(values), chunk_size):
+        yield values[i : i + chunk_size]
 
 
 def _write_report_file(report_id: str, filename: str, content: bytes) -> Path:
@@ -1685,45 +1690,163 @@ async def generate_pcn_ledger_xlsx(
     except Exception:
         dialect_name = None
 
-    # Load accepted operator actions together with alarm details.
-    # We intentionally resolve EventAction -> Event via both exact id and raw_event_id/date_key,
-    # because some agency imports do not persist the same local Event.id shape.
+    # Load only relevant actions first. Resolving EventAction -> Event in a second step
+    # is much cheaper on large production datasets than a single OR-join across whole tables.
     act = (actionName or "").strip()
-    alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
-    stmt = (
+    action_stmt = (
         select(
-            alarm_id_expr.label("alarm_id"),
-            Event.id.label("event_id"),
+            EventAction.event_id.label("event_id"),
+            EventAction.raw_event_id.label("raw_event_id"),
+            EventAction.date_key.label("date_key"),
             EventAction.operator_name.label("operator_name"),
             EventAction.action_time.label("ts"),
-            Event.object_id.label("object_id"),
-            func.coalesce(Object.name, Event.object_name).label("object_name"),
-            func.coalesce(Object.address, Event.location).label("address"),
-            Event.meter_count.label("meter_count"),
-            Event.result_text.label("result_text"),
         )
         .select_from(EventAction)
-        .join(Event, _event_action_to_event_join_condition(dialect_name))
-        .outerjoin(Object, Object.id == Event.object_id)
-        .where(Event.type == "alarm")
-        .where(~_pcn_excluded_alarm_predicate())
         .where(EventAction.operator_name.is_not(None))
         .where(EventAction.action_time >= window_start)
-        .order_by(EventAction.action_time.asc(), Event.id.asc())
     )
 
     if exact_window:
-        stmt = stmt.where(EventAction.action_time <= window_end)
+        action_stmt = action_stmt.where(EventAction.action_time <= window_end)
     else:
-        stmt = stmt.where(EventAction.action_time < window_end)
+        action_stmt = action_stmt.where(EventAction.action_time < window_end)
 
-    stmt = stmt.where(_pcn_accept_action_predicate(act))
+    action_stmt = action_stmt.where(_pcn_accept_action_predicate(act))
 
     oq = (operatorQuery or "").strip()
     if oq:
-        stmt = stmt.where(EventAction.operator_name.ilike(f"%{oq}%"))
+        action_stmt = action_stmt.where(EventAction.operator_name.ilike(f"%{oq}%"))
 
-    rows = (await session.execute(stmt)).all()
+    action_stmt = action_stmt.order_by(EventAction.action_time.asc(), EventAction.event_id.asc())
+    action_rows = (await session.execute(action_stmt)).all()
+
+    exact_event_ids = sorted({str(event_id) for event_id, *_rest in action_rows if event_id})
+    events_by_id: dict[str, dict[str, Any]] = {}
+    for chunk in _iter_chunks(exact_event_ids):
+        events_stmt = (
+            select(
+                Event.id,
+                Event.parent_event_id,
+                Event.object_id,
+                Event.object_name,
+                Event.location,
+                Event.meter_count,
+                Event.result_text,
+            )
+            .where(Event.id.in_(chunk))
+            .where(Event.type == "alarm")
+            .where(~_pcn_excluded_alarm_predicate())
+        )
+        for event_id, parent_event_id, object_id, object_name, location, meter_count, result_text in (
+            await session.execute(events_stmt)
+        ).all():
+            events_by_id[str(event_id)] = {
+                "eventId": str(event_id),
+                "parentEventId": str(parent_event_id or "").strip() or None,
+                "objectId": str(object_id or "").strip(),
+                "objectName": str(object_name or "").strip(),
+                "address": str(location or "").strip(),
+                "meterCount": str(meter_count or "").strip(),
+                "resultText": str(result_text or "").strip(),
+            }
+
+    unresolved_pairs = {
+        (int(raw_event_id), int(date_key))
+        for event_id, raw_event_id, date_key, _operator_name, _ts in action_rows
+        if raw_event_id is not None and date_key is not None and str(event_id or "") not in events_by_id
+    }
+    events_by_raw_key: dict[tuple[int, int], dict[str, Any]] = {}
+    if unresolved_pairs:
+        raw_ids = sorted({raw_event_id for raw_event_id, _date_key in unresolved_pairs})
+        raw_date_keys = sorted({date_key for _raw_event_id, date_key in unresolved_pairs})
+        numeric_event_id_expr = sql_cast(Event.id, Integer)
+        date_key_expr = _event_date_key_expr(dialect_name)
+
+        for date_key in raw_date_keys:
+            for raw_chunk in _iter_chunks(raw_ids):
+                raw_stmt = (
+                    select(
+                        Event.id,
+                        Event.parent_event_id,
+                        Event.object_id,
+                        Event.object_name,
+                        Event.location,
+                        Event.meter_count,
+                        Event.result_text,
+                        numeric_event_id_expr.label("raw_event_id"),
+                        date_key_expr.label("date_key"),
+                    )
+                    .where(Event.type == "alarm")
+                    .where(~_pcn_excluded_alarm_predicate())
+                    .where(_numeric_event_id_predicate(dialect_name))
+                    .where(date_key_expr == date_key)
+                    .where(numeric_event_id_expr.in_(list(raw_chunk)))
+                )
+                for (
+                    event_id,
+                    parent_event_id,
+                    object_id,
+                    object_name,
+                    location,
+                    meter_count,
+                    result_text,
+                    raw_event_id,
+                    resolved_date_key,
+                ) in (await session.execute(raw_stmt)).all():
+                    events_by_raw_key[(int(raw_event_id), int(resolved_date_key))] = {
+                        "eventId": str(event_id),
+                        "parentEventId": str(parent_event_id or "").strip() or None,
+                        "objectId": str(object_id or "").strip(),
+                        "objectName": str(object_name or "").strip(),
+                        "address": str(location or "").strip(),
+                        "meterCount": str(meter_count or "").strip(),
+                        "resultText": str(result_text or "").strip(),
+                    }
+
+    object_ids = sorted(
+        {
+            event_data["objectId"]
+            for event_data in list(events_by_id.values()) + list(events_by_raw_key.values())
+            if event_data.get("objectId")
+        }
+    )
+    objects_by_id: dict[str, tuple[str, str]] = {}
+    for chunk in _iter_chunks(object_ids):
+        obj_stmt = select(Object.id, Object.name, Object.address).where(Object.id.in_(chunk))
+        for object_id, object_name, address in (await session.execute(obj_stmt)).all():
+            objects_by_id[str(object_id)] = (str(object_name or "").strip(), str(address or "").strip())
+
+    rows: list[tuple[str, str, str, datetime, str, str, str, str, str]] = []
+    for event_id, raw_event_id, date_key, op, ts in action_rows:
+        event_data = events_by_id.get(str(event_id or "").strip())
+        if event_data is None and raw_event_id is not None and date_key is not None:
+            event_data = events_by_raw_key.get((int(raw_event_id), int(date_key)))
+        if event_data is None:
+            continue
+
+        object_id = str(event_data.get("objectId") or "").strip()
+        object_name = str(event_data.get("objectName") or "").strip()
+        address = str(event_data.get("address") or "").strip()
+        if object_id in objects_by_id:
+            obj_name, obj_address = objects_by_id[object_id]
+            object_name = obj_name or object_name
+            address = obj_address or address
+
+        resolved_event_id = str(event_data.get("eventId") or "").strip()
+        alarm_id = str(event_data.get("parentEventId") or resolved_event_id).strip()
+        rows.append(
+            (
+                alarm_id,
+                resolved_event_id,
+                str(op or "").strip(),
+                ts,
+                object_id,
+                object_name,
+                address,
+                str(event_data.get("meterCount") or "").strip(),
+                str(event_data.get("resultText") or "").strip(),
+            )
+        )
 
     # Presence (who was logged in / "in the system")
     # Used to compute the dispatcher count per shift (staffing), independent from actions.
