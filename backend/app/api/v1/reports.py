@@ -660,6 +660,15 @@ def _preview_table_from_xlsx_bytes(content: bytes, max_rows: int = 200, max_cols
         if any("№ объекта" in x or "номер объекта" in x for x in low):
             header_idx = i
             break
+        if (
+            any(x == "дата" for x in low)
+            and any("количество диспетчеров" in x for x in low)
+            and any(x == "смена" for x in low)
+            and any(x == "фио" for x in low)
+            and any(x == "тревоги" for x in low)
+        ):
+            header_idx = i
+            break
         if _non_empty_count(r) >= 3 and any(x in {"адрес", "гбр", "вызов", "прибыл", "оператор"} for x in low):
             header_idx = i
             break

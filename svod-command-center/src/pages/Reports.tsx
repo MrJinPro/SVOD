@@ -51,6 +51,30 @@ function formatLocalYYYYMMDD(d: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function appendPcnDateRangeParams(
+  params: URLSearchParams,
+  opts: {
+    dateRange?: { from: Date | null; to: Date | null } | DateRange | undefined;
+    timeFrom?: string;
+    timeTo?: string;
+  }
+) {
+  const from = opts.dateRange?.from ?? opts.dateRange?.to ?? null;
+  const to = opts.dateRange?.to ?? opts.dateRange?.from ?? null;
+  if (!from || !to) return;
+
+  const fromTime = (opts.timeFrom || '').trim();
+  const toTime = (opts.timeTo || '').trim();
+
+  if ((!fromTime || fromTime === '00:00') && (!toTime || toTime === '23:59')) {
+    params.set('dateFrom', formatLocalYYYYMMDD(from));
+    params.set('dateTo', formatLocalYYYYMMDD(to));
+    return;
+  }
+
+  appendEventDateRangeParams(params, opts);
+}
+
 type EventCodeItem = {
   code: string;
   codeText?: string | null;
@@ -526,7 +550,7 @@ export default function Reports() {
           return;
         }
         const params = new URLSearchParams();
-        appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
+        appendPcnDateRangeParams(params, { dateRange, timeFrom, timeTo });
         if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
         for (const name of pcnManualOperators) {
           if (name) params.append('manualOperators', name);
