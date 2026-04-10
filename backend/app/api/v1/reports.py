@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
-from typing import Any, Iterator, cast
+from typing import Any, Awaitable, Callable, Iterator, cast
 from uuid import uuid4
 
 from datetime import datetime
@@ -18,7 +19,7 @@ from sqlalchemy import Integer, and_, case, cast as sql_cast, func, or_, select
 
 from app.api.v1.deps import get_current_user
 from app.core.config import settings
-from app.db.session import get_session
+from app.db.session import SessionLocal, get_session
 from app.services.report_service import export_daily_report_csv, today_str
 from app.models.event_action import EventAction
 from app.models.event import Event
@@ -414,6 +415,118 @@ def _write_report_file(report_id: str, filename: str, content: bytes) -> Path:
     return path
 
 
+def _utcnow_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+async def _create_pending_report(
+    session: AsyncSession,
+    *,
+    report_id: str,
+    report_type: str,
+    period_start: str,
+    period_end: str,
+    params: dict[str, Any],
+) -> Report:
+    r = Report(
+        id=report_id,
+        type=report_type,
+        period_start=period_start,
+        period_end=period_end,
+        generated_at=_utcnow_iso(),
+        status="pending",
+        events_count=0,
+        critical_count=0,
+        file_name=None,
+        mime_type=None,
+        storage_path=None,
+        params_json=json.dumps(params, ensure_ascii=False),
+        error_message=None,
+    )
+    session.add(r)
+    await session.commit()
+    await session.refresh(r)
+    return r
+
+
+async def _mark_report_failed(report_id: str, error: Exception | str, *, session: AsyncSession) -> None:
+    r = await session.get(Report, report_id)
+    if r is None:
+        return
+    r.status = "failed"
+    r.error_message = str(error)
+    r.generated_at = _utcnow_iso()
+    await session.commit()
+
+
+def _start_report_worker(
+    *,
+    report_id: str,
+    worker: Callable[[AsyncSession], Awaitable[Any]],
+) -> None:
+    async def _runner() -> None:
+        async with SessionLocal() as session:
+            try:
+                await worker(session)
+            except Exception as e:  # noqa: BLE001
+                await _mark_report_failed(report_id, e, session=session)
+
+    asyncio.create_task(_runner())
+
+
+async def _store_generated_report(
+    session: AsyncSession,
+    *,
+    report_id: str,
+    report_type: str,
+    period_start: str,
+    period_end: str,
+    filename: str,
+    mime_type: str,
+    content: bytes,
+    events_count: int,
+    critical_count: int,
+    params: dict[str, Any],
+) -> dict:
+    path = _write_report_file(report_id, filename, content)
+
+    r = await session.get(Report, report_id)
+    if r is None:
+        r = Report(
+            id=report_id,
+            type=report_type,
+            period_start=period_start,
+            period_end=period_end,
+            generated_at=_utcnow_iso(),
+            status="generated",
+            events_count=int(events_count or 0),
+            critical_count=int(critical_count or 0),
+            file_name=filename,
+            mime_type=mime_type,
+            storage_path=str(path),
+            params_json=json.dumps(params, ensure_ascii=False),
+            error_message=None,
+        )
+        session.add(r)
+    else:
+        r.type = report_type
+        r.period_start = period_start
+        r.period_end = period_end
+        r.generated_at = _utcnow_iso()
+        r.status = "generated"
+        r.events_count = int(events_count or 0)
+        r.critical_count = int(critical_count or 0)
+        r.file_name = filename
+        r.mime_type = mime_type
+        r.storage_path = str(path)
+        r.params_json = json.dumps(params, ensure_ascii=False)
+        r.error_message = None
+
+    await session.commit()
+    await session.refresh(r)
+    return _as_report_out_dict(r)
+
+
 def _as_report_out_dict(r: Report) -> dict:
     params: dict = {}
     try:
@@ -715,6 +828,7 @@ async def generate_objects_by_code_report(
     year: int | None = Query(default=None, ge=1970, le=2100, description="Год (если указан — задаёт период)"),
     clientName: str | None = Query(default=None, description="Контрагент/клиент (поиск по подстроке)"),
     objectQuery: str | None = Query(default=None, description="Поиск по объекту/адресу/ID"),
+    reportId: str | None = None,
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
@@ -741,6 +855,46 @@ async def generate_objects_by_code_report(
             dt_to = parsed_dt
         elif parsed_d:
             dt_to = datetime.combine(parsed_d, datetime.max.time())
+
+    ps = (dt_from.date().isoformat() if dt_from else (str(year) if year else ""))
+    pe = (dt_to.date().isoformat() if dt_to else (str(year) if year else ""))
+    if not ps:
+        ps = date_type.today().isoformat()
+    if not pe:
+        pe = ps
+
+    if reportId is None:
+        report_id = str(uuid4())
+        pending = await _create_pending_report(
+            session,
+            report_id=report_id,
+            report_type="objectsByCode",
+            period_start=ps,
+            period_end=pe,
+            params={
+                "eventCode": eventCode.strip(),
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "year": year,
+                "clientName": clientName,
+                "objectQuery": objectQuery,
+            },
+        )
+        _start_report_worker(
+            report_id=report_id,
+            worker=lambda bg_session: generate_objects_by_code_report(
+                eventCode=eventCode,
+                dateFrom=dateFrom,
+                dateTo=dateTo,
+                year=year,
+                clientName=clientName,
+                objectQuery=objectQuery,
+                reportId=report_id,
+                session=bg_session,
+                _current=_current,
+            ),
+        )
+        return _as_report_out_dict(pending)
 
     filters: list[Any] = [Event.code == eventCode.strip()]
     if dt_from is not None:
@@ -914,46 +1068,28 @@ async def generate_objects_by_code_report(
     wb.save(out)
     xlsx = out.getvalue()
 
-    # Determine period strings for list
-    ps = (dt_from.date().isoformat() if dt_from else (str(year) if year else ""))
-    pe = (dt_to.date().isoformat() if dt_to else (str(year) if year else ""))
-    if not ps:
-        ps = date_type.today().isoformat()
-    if not pe:
-        pe = ps
-
-    report_id = str(uuid4())
+    report_id = reportId or str(uuid4())
     filename = f"objects-by-code-{eventCode.strip()}-{ps}-{pe}.xlsx"
-    path = _write_report_file(report_id, filename, xlsx)
-
-    r = Report(
-        id=report_id,
-        type="objectsByCode",
+    return await _store_generated_report(
+        session,
+        report_id=report_id,
+        report_type="objectsByCode",
         period_start=ps,
         period_end=pe,
-        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
-        status="generated",
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content=xlsx,
         events_count=sum(int(x[3] or 0) for x in rows) if rows else 0,
         critical_count=0,
-        file_name=filename,
-        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        storage_path=str(path),
-        params_json=json.dumps(
-            {
-                "eventCode": eventCode.strip(),
-                "dateFrom": dateFrom,
-                "dateTo": dateTo,
-                "year": year,
-                "clientName": clientName,
-                "objectQuery": objectQuery,
-            },
-            ensure_ascii=False,
-        ),
-        error_message=None,
+        params={
+            "eventCode": eventCode.strip(),
+            "dateFrom": dateFrom,
+            "dateTo": dateTo,
+            "year": year,
+            "clientName": clientName,
+            "objectQuery": objectQuery,
+        },
     )
-    session.add(r)
-    await session.commit()
-    return _as_report_out_dict(r)
 
 
 @router.post("/generate/gbr-raport-xlsx")
@@ -962,6 +1098,7 @@ async def generate_gbr_raport_xlsx(
     dateTo: str = Query(description="ISO datetime"),
     gbrName: str | None = Query(default=None),
     objectId: str | None = Query(default=None),
+    reportId: str | None = None,
     session: AsyncSession = Depends(get_session),
     current: dict = Depends(get_current_user),
 ) -> dict:
@@ -974,6 +1111,33 @@ async def generate_gbr_raport_xlsx(
     to_dt = _parse_dt(dateTo)
     if not from_dt or not to_dt:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    ps = from_dt.date().isoformat()
+    pe = to_dt.date().isoformat()
+    if reportId is None:
+        report_id = str(uuid4())
+        pending = await _create_pending_report(
+            session,
+            report_id=report_id,
+            report_type="gbrRaportXlsx",
+            period_start=ps,
+            period_end=pe,
+            params={"dateFrom": dateFrom, "dateTo": dateTo, "gbrName": gbrName, "objectId": objectId},
+        )
+        current_snapshot = dict(current)
+        _start_report_worker(
+            report_id=report_id,
+            worker=lambda bg_session: generate_gbr_raport_xlsx(
+                dateFrom=dateFrom,
+                dateTo=dateTo,
+                gbrName=gbrName,
+                objectId=objectId,
+                reportId=report_id,
+                session=bg_session,
+                current=current_snapshot,
+            ),
+        )
+        return _as_report_out_dict(pending)
 
     # Prefer ArchiveGroupResponse for the main GBR report. It is more reliable than
     # eventservice-derived actions for actual trip history. Fallback to gbr_trips if
@@ -1292,37 +1456,25 @@ async def generate_gbr_raport_xlsx(
     wb.save(out)
     data = out.getvalue()
 
-    report_id = str(uuid4())
-    ps = from_dt.date().isoformat()
-    pe = to_dt.date().isoformat()
+    report_id = reportId or str(uuid4())
     gbr_part = (gbrName or "").strip()
     if gbr_part:
         filename = f"raport-gbr-{gbr_part}-{ps}-{pe}.xlsx"
     else:
         filename = f"raport-gbr-{ps}-{pe}.xlsx"
-    path = _write_report_file(report_id, filename, data)
-
-    r = Report(
-        id=report_id,
-        type="gbrRaportXlsx",
+    return await _store_generated_report(
+        session,
+        report_id=report_id,
+        report_type="gbrRaportXlsx",
         period_start=ps,
         period_end=pe,
-        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
-        status="generated",
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content=data,
         events_count=len(rows_all),
         critical_count=0,
-        file_name=filename,
-        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        storage_path=str(path),
-        params_json=json.dumps(
-            {"dateFrom": dateFrom, "dateTo": dateTo, "gbrName": gbrName, "objectId": objectId, "source": trips_source},
-            ensure_ascii=False,
-        ),
-        error_message=None,
+        params={"dateFrom": dateFrom, "dateTo": dateTo, "gbrName": gbrName, "objectId": objectId, "source": trips_source},
     )
-    session.add(r)
-    await session.commit()
-    return _as_report_out_dict(r)
 
 
 @router.post("/generate/events-raport-xlsx")
@@ -1342,6 +1494,7 @@ async def generate_events_raport_xlsx(
         description="Show only events that have an operator comment (Result_Text)",
     ),
     limit: int = Query(50000, ge=1, le=200000),
+    reportId: str | None = None,
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
@@ -1349,6 +1502,53 @@ async def generate_events_raport_xlsx(
     to_dt = _parse_dt(dateTo)
     if not from_dt or not to_dt or to_dt < from_dt:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    ps = from_dt.date().isoformat()
+    pe = to_dt.date().isoformat()
+    if reportId is None:
+        report_id = str(uuid4())
+        pending = await _create_pending_report(
+            session,
+            report_id=report_id,
+            report_type="eventsRaportXlsx",
+            period_start=ps,
+            period_end=pe,
+            params={
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "type": type,
+                "objectId": objectId,
+                "severity": severity,
+                "status": status,
+                "search": search,
+                "includeNoise": includeNoise,
+                "includeSystem": includeSystem,
+                "includeCancelled": includeCancelled,
+                "onlyWithOperatorComment": onlyWithOperatorComment,
+                "limit": limit,
+            },
+        )
+        _start_report_worker(
+            report_id=report_id,
+            worker=lambda bg_session: generate_events_raport_xlsx(
+                dateFrom=dateFrom,
+                dateTo=dateTo,
+                type=type,
+                objectId=objectId,
+                severity=severity,
+                status=status,
+                search=search,
+                includeNoise=includeNoise,
+                includeSystem=includeSystem,
+                includeCancelled=includeCancelled,
+                onlyWithOperatorComment=onlyWithOperatorComment,
+                limit=limit,
+                reportId=report_id,
+                session=bg_session,
+                _current=_current,
+            ),
+        )
+        return _as_report_out_dict(pending)
 
     # Reuse events raport builder (no HTTP call)
     from app.api.v1.events import build_events_raport_xlsx_bytes
@@ -1369,46 +1569,34 @@ async def generate_events_raport_xlsx(
         session=session,
     )
 
-    report_id = str(uuid4())
-    ps = from_dt.date().isoformat()
-    pe = to_dt.date().isoformat()
+    report_id = reportId or str(uuid4())
     filename = f"raport-events-{ps}-{pe}.xlsx"
-    path = _write_report_file(report_id, filename, xlsx)
-
-    r = Report(
-        id=report_id,
-        type="eventsRaportXlsx",
+    return await _store_generated_report(
+        session,
+        report_id=report_id,
+        report_type="eventsRaportXlsx",
         period_start=ps,
         period_end=pe,
-        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
-        status="generated",
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content=xlsx,
         events_count=int(events_count or 0),
         critical_count=0,
-        file_name=filename,
-        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        storage_path=str(path),
-        params_json=json.dumps(
-            {
-                "dateFrom": dateFrom,
-                "dateTo": dateTo,
-                "type": type,
-                "objectId": objectId,
-                "severity": severity,
-                "status": status,
-                "search": search,
-                "includeNoise": includeNoise,
-                "includeSystem": includeSystem,
-                "includeCancelled": includeCancelled,
-                "onlyWithOperatorComment": onlyWithOperatorComment,
-                "limit": limit,
-            },
-            ensure_ascii=False,
-        ),
-        error_message=None,
+        params={
+            "dateFrom": dateFrom,
+            "dateTo": dateTo,
+            "type": type,
+            "objectId": objectId,
+            "severity": severity,
+            "status": status,
+            "search": search,
+            "includeNoise": includeNoise,
+            "includeSystem": includeSystem,
+            "includeCancelled": includeCancelled,
+            "onlyWithOperatorComment": onlyWithOperatorComment,
+            "limit": limit,
+        },
     )
-    session.add(r)
-    await session.commit()
-    return _as_report_out_dict(r)
 
 
 @router.post("/generate/alarm-messages-xlsx")
@@ -1428,6 +1616,7 @@ async def generate_alarm_messages_xlsx(
         description="Show only events that have an operator comment (Result_Text)",
     ),
     limit: int = Query(50000, ge=1, le=200000),
+    reportId: str | None = None,
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
@@ -1435,6 +1624,53 @@ async def generate_alarm_messages_xlsx(
     to_dt = _parse_dt(dateTo)
     if not from_dt or not to_dt or to_dt < from_dt:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    ps = from_dt.date().isoformat()
+    pe = to_dt.date().isoformat()
+    if reportId is None:
+        report_id = str(uuid4())
+        pending = await _create_pending_report(
+            session,
+            report_id=report_id,
+            report_type="alarmMessages",
+            period_start=ps,
+            period_end=pe,
+            params={
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "type": type,
+                "objectId": objectId,
+                "severity": severity,
+                "status": status,
+                "search": search,
+                "includeNoise": includeNoise,
+                "includeSystem": includeSystem,
+                "includeCancelled": includeCancelled,
+                "onlyWithOperatorComment": onlyWithOperatorComment,
+                "limit": limit,
+            },
+        )
+        _start_report_worker(
+            report_id=report_id,
+            worker=lambda bg_session: generate_alarm_messages_xlsx(
+                dateFrom=dateFrom,
+                dateTo=dateTo,
+                type=type,
+                objectId=objectId,
+                severity=severity,
+                status=status,
+                search=search,
+                includeNoise=includeNoise,
+                includeSystem=includeSystem,
+                includeCancelled=includeCancelled,
+                onlyWithOperatorComment=onlyWithOperatorComment,
+                limit=limit,
+                reportId=report_id,
+                session=bg_session,
+                _current=_current,
+            ),
+        )
+        return _as_report_out_dict(pending)
 
     from app.api.v1.events import build_alarm_messages_xlsx_bytes
 
@@ -1454,46 +1690,34 @@ async def generate_alarm_messages_xlsx(
         session=session,
     )
 
-    report_id = str(uuid4())
-    ps = from_dt.date().isoformat()
-    pe = to_dt.date().isoformat()
+    report_id = reportId or str(uuid4())
     filename = f"trevozhnye-soobshcheniya-{ps}-{pe}.xlsx"
-    path = _write_report_file(report_id, filename, xlsx)
-
-    r = Report(
-        id=report_id,
-        type="alarmMessages",
+    return await _store_generated_report(
+        session,
+        report_id=report_id,
+        report_type="alarmMessages",
         period_start=ps,
         period_end=pe,
-        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
-        status="generated",
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content=xlsx,
         events_count=int(events_count or 0),
         critical_count=0,
-        file_name=filename,
-        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        storage_path=str(path),
-        params_json=json.dumps(
-            {
-                "dateFrom": dateFrom,
-                "dateTo": dateTo,
-                "type": type,
-                "objectId": objectId,
-                "severity": severity,
-                "status": status,
-                "search": search,
-                "includeNoise": includeNoise,
-                "includeSystem": includeSystem,
-                "includeCancelled": includeCancelled,
-                "onlyWithOperatorComment": onlyWithOperatorComment,
-                "limit": limit,
-            },
-            ensure_ascii=False,
-        ),
-        error_message=None,
+        params={
+            "dateFrom": dateFrom,
+            "dateTo": dateTo,
+            "type": type,
+            "objectId": objectId,
+            "severity": severity,
+            "status": status,
+            "search": search,
+            "includeNoise": includeNoise,
+            "includeSystem": includeSystem,
+            "includeCancelled": includeCancelled,
+            "onlyWithOperatorComment": onlyWithOperatorComment,
+            "limit": limit,
+        },
     )
-    session.add(r)
-    await session.commit()
-    return _as_report_out_dict(r)
 
 
 @router.post("/generate/pcn-ledger-xlsx")
@@ -1558,6 +1782,7 @@ async def generate_pcn_ledger_xlsx(
             "Used to attribute early actions (e.g. 19:48 or 08:30) to the operator's actual shift."
         ),
     ),
+    reportId: str | None = None,
     session: AsyncSession = Depends(get_session),
     _current: dict = Depends(get_current_user),
 ) -> dict:
@@ -1642,6 +1867,87 @@ async def generate_pcn_ledger_xlsx(
 
     if period_end_date < period_start_date:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    ps = period_start_date.isoformat()
+    pe = period_end_date.isoformat()
+    if reportId is None:
+        report_id = str(uuid4())
+        pending = await _create_pending_report(
+            session,
+            report_id=report_id,
+            report_type="pcnLedger",
+            period_start=ps,
+            period_end=pe,
+            params={
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "dayStart": dayStart,
+                "nightStart": nightStart,
+                "actionName": actionName,
+                "operatorQuery": operatorQuery,
+                "manualOperators": sorted(
+                    {
+                        part.strip()
+                        for raw in (manualOperators or [])
+                        for part in re.split(r"[\r\n,;]+", str(raw or ""))
+                        if part.strip()
+                    },
+                    key=str.lower,
+                ),
+                "hideOperatorNames": hideOperatorNames,
+                "payouts": {"pay0": pay0, "pay1": pay1, "pay2": pay2, "pay3": pay3},
+                "thresholds": {
+                    "3": [thr3_1, thr3_2, thr3_3],
+                    "4": [thr4_1, thr4_2, thr4_3],
+                    "5": [thr5_1, thr5_2, thr5_3],
+                },
+                "bonusDefault": bonusDefault,
+                "bonusOverride": bonusOverride or [],
+                "includePresenceOnly": includePresenceOnly,
+                "dispatchersSource": dispatchersSource,
+                "minPresenceMinutes": minPresenceMinutes,
+                "presenceGraceMinutes": presenceGraceMinutes,
+            },
+        )
+        _start_report_worker(
+            report_id=report_id,
+            worker=lambda bg_session: generate_pcn_ledger_xlsx(
+                dateFrom=dateFrom,
+                dateTo=dateTo,
+                dayStart=dayStart,
+                dayEnd=dayEnd,
+                nightStart=nightStart,
+                nightEnd=nightEnd,
+                actionName=actionName,
+                operatorQuery=operatorQuery,
+                manualOperators=manualOperators,
+                hideOperatorNames=hideOperatorNames,
+                pay0=pay0,
+                pay1=pay1,
+                pay2=pay2,
+                pay3=pay3,
+                thr3_1=thr3_1,
+                thr3_2=thr3_2,
+                thr3_3=thr3_3,
+                thr4_1=thr4_1,
+                thr4_2=thr4_2,
+                thr4_3=thr4_3,
+                thr5_1=thr5_1,
+                thr5_2=thr5_2,
+                thr5_3=thr5_3,
+                bonusDefault=bonusDefault,
+                bonusOverride=bonusOverride,
+                includePresenceOnly=includePresenceOnly,
+                dispatchersSource=dispatchersSource,
+                minPresenceMinutes=minPresenceMinutes,
+                presenceGraceMinutes=presenceGraceMinutes,
+                handoverMinutes=handoverMinutes,
+                reportId=report_id,
+                session=bg_session,
+                _current=_current,
+            ),
+        )
+        return _as_report_out_dict(pending)
 
     payouts: tuple[int, int, int, int] = (int(pay0), int(pay1), int(pay2), int(pay3))
     thresholds: dict[int, tuple[int, int, int]] = {
@@ -2482,56 +2788,44 @@ async def generate_pcn_ledger_xlsx(
     wb.save(bio)
     data = bio.getvalue()
 
-    report_id = str(uuid4())
-    ps = period_start_date.isoformat()
-    pe = period_end_date.isoformat()
+    report_id = reportId or str(uuid4())
     filename = f"pcn-ledger-{ps}-{pe}.xlsx"
-    path = _write_report_file(report_id, filename, data)
-
-    r = Report(
-        id=report_id,
-        type="pcnLedger",
+    return await _store_generated_report(
+        session,
+        report_id=report_id,
+        report_type="pcnLedger",
         period_start=ps,
         period_end=pe,
-        generated_at=datetime.utcnow().isoformat(timespec="seconds"),
-        status="generated",
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content=data,
         events_count=sum(int(x.get("totalAlarmsUsed") or 0) for x in control_rows) if control_rows else 0,
         critical_count=0,
-        file_name=filename,
-        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        storage_path=str(path),
-        params_json=json.dumps(
-            {
-                "dateFrom": dateFrom,
-                "dateTo": dateTo,
-                "dayStart": dayStart,
-                "dayEnd": day_end.strftime('%H:%M'),
-                "nightStart": nightStart,
-                "nightEnd": night_end.strftime('%H:%M'),
-                "actionName": actionName,
-                "operatorQuery": operatorQuery,
-                "manualOperators": sorted(manual_operator_names, key=str.lower),
-                "hideOperatorNames": hideOperatorNames,
-                "payouts": {"pay0": pay0, "pay1": pay1, "pay2": pay2, "pay3": pay3},
-                "thresholds": {
-                    "3": [thr3_1, thr3_2, thr3_3],
-                    "4": [thr4_1, thr4_2, thr4_3],
-                    "5": [thr5_1, thr5_2, thr5_3],
-                },
-                "bonusDefault": bonusDefault,
-                "bonusOverride": bonusOverride or [],
-                "includePresenceOnly": includePresenceOnly,
-                "dispatchersSource": dispatchersSource,
-                "minPresenceMinutes": minPresenceMinutes,
-                "presenceGraceMinutes": presenceGraceMinutes,
+        params={
+            "dateFrom": dateFrom,
+            "dateTo": dateTo,
+            "dayStart": dayStart,
+            "dayEnd": day_end.strftime('%H:%M'),
+            "nightStart": nightStart,
+            "nightEnd": night_end.strftime('%H:%M'),
+            "actionName": actionName,
+            "operatorQuery": operatorQuery,
+            "manualOperators": sorted(manual_operator_names, key=str.lower),
+            "hideOperatorNames": hideOperatorNames,
+            "payouts": {"pay0": pay0, "pay1": pay1, "pay2": pay2, "pay3": pay3},
+            "thresholds": {
+                "3": [thr3_1, thr3_2, thr3_3],
+                "4": [thr4_1, thr4_2, thr4_3],
+                "5": [thr5_1, thr5_2, thr5_3],
             },
-            ensure_ascii=False,
-        ),
-        error_message=None,
+            "bonusDefault": bonusDefault,
+            "bonusOverride": bonusOverride or [],
+            "includePresenceOnly": includePresenceOnly,
+            "dispatchersSource": dispatchersSource,
+            "minPresenceMinutes": minPresenceMinutes,
+            "presenceGraceMinutes": presenceGraceMinutes,
+        },
     )
-    session.add(r)
-    await session.commit()
-    return _as_report_out_dict(r)
 
 
 @router.get("/{report_id}/download")

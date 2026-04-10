@@ -559,7 +559,10 @@ export default function Reports() {
         await apiPost(`/reports/generate/pcn-ledger-xlsx?${params.toString()}`);
       }
 
-      toast({ title: 'Отчёт', description: 'Отчёт добавлен в историю.' });
+      toast({
+        title: 'Отчёт',
+        description: 'Отчёт создаётся. Он появится в истории; можно уйти с этой страницы и вернуться позже.',
+      });
       setCreateOpen(false);
       await refetch();
     } catch (e: any) {
