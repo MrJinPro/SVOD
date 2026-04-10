@@ -146,6 +146,24 @@ _GBR_REAL_NAME_PREFIXES = (
 )
 
 
+def _looks_like_operator_display_name(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+
+    normalized = text.lower()
+    if normalized in {"null", "none", "unknown", "system", "admin"}:
+        return False
+
+    # Drop numeric ids/logins like 79021711223.
+    compact = re.sub(r"[\s()\-]+", "", text)
+    if compact.isdigit():
+        return False
+
+    # Keep only values that look like a human-readable operator name.
+    return bool(re.search(r"[A-Za-zА-Яа-яЁё]", text))
+
+
 def _is_real_gbr_name(value: object) -> bool:
     text = str(value or "").strip().lower()
     if not text:
@@ -999,7 +1017,10 @@ async def analytics_filters(
     )
 
     return {
-        "operators": [o for o in operators if o],
+        "operators": sorted(
+            {str(o).strip() for o in operators if _looks_like_operator_display_name(o)},
+            key=str.lower,
+        ),
         "actionNames": [a for a in action_names if a],
         "gbrNames": real_gbr_names,
         "dateMin": min_ts.isoformat() if isinstance(min_ts, datetime) else None,
