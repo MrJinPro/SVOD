@@ -551,10 +551,26 @@ export default function Reports() {
         }
         const params = new URLSearchParams();
         appendPcnDateRangeParams(params, { dateRange, timeFrom, timeTo });
-        if (pcnOperatorQuery.trim()) params.set('operatorQuery', pcnOperatorQuery.trim());
-        for (const name of pcnManualOperators) {
-          if (name) params.append('manualOperators', name);
+
+        // IMPORTANT:
+        // - `operatorQuery` is a *filter* (one operator or substring).
+        // - `manualOperators` is an *override roster* for the whole shift.
+        // Users often pick a single operator from the roster control expecting a filter;
+        // in that case treat it as `operatorQuery` to avoid breaking dispatcher count.
+        const operatorQuery = (pcnOperatorQuery || '').trim();
+        const singlePickedOperator = (pcnManualOperators || []).length === 1 ? String(pcnManualOperators[0] || '').trim() : '';
+        const effectiveOperatorQuery = operatorQuery || singlePickedOperator;
+        if (effectiveOperatorQuery) params.set('operatorQuery', effectiveOperatorQuery);
+
+        // Only send manualOperators when user selected a roster (2+ names) OR when
+        // operatorQuery is explicitly set and roster is still provided as an override.
+        const treatManualAsFilter = !operatorQuery && !!singlePickedOperator;
+        if (!treatManualAsFilter) {
+          for (const name of pcnManualOperators) {
+            if (name) params.append('manualOperators', name);
+          }
         }
+
         if (pcnHideOperatorNames) params.set('hideOperatorNames', 'true');
 
         // Shifts: configurable boundaries (Settings -> localStorage)
@@ -1026,14 +1042,15 @@ export default function Reports() {
                     </div>
 
                     <div className="space-y-1 min-w-[320px] flex-1">
-                      <div className="text-sm text-muted-foreground">Операторы смены из базы (опционально)</div>
+                      <div className="text-sm text-muted-foreground">Состав смены (опционально, не фильтр)</div>
                       <OperatorsMultiSelect
                         options={analyticsFilters?.operators || []}
                         value={pcnManualOperators}
                         onChange={setPcnManualOperators}
                       />
                       <div className="text-xs text-muted-foreground">
-                        Если выбрать операторов здесь, ведомость возьмёт состав смены из списка, а не будет определять его автоматически.
+                        Если выбрать операторов здесь, ведомость возьмёт состав смены из списка (override), а не будет определять его автоматически.
+                        Для отчёта по одному оператору используйте поле «Оператор (опционально)».
                       </div>
                     </div>
 

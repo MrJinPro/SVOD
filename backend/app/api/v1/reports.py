@@ -2345,6 +2345,16 @@ async def generate_pcn_ledger_xlsx(
     ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
     if selected_shift_keys is not None:
         ordered_shifts = [key for key in ordered_shifts if key in selected_shift_keys]
+
+    operator_label = (operatorQuery or "").strip()
+    operator_filter_ops: set[str] | None = None
+    if operator_label:
+        # Match operators by substring (case-insensitive), consistent with UI's "ФИО или часть".
+        # Note: we filter OUTPUT rows only; dispatcher count and shift totals are computed for the whole shift.
+        wanted = operator_label.lower()
+        candidate_ops = {str(op) for (_sd, _sh, op) in counts.keys() if str(op).strip()}
+        operator_filter_ops = {op for op in candidate_ops if wanted in op.lower()}
+
     out_rows: list[dict[str, Any]] = []
     control_rows: list[dict[str, Any]] = []
     detail_rows: list[dict[str, Any]] = []
@@ -2432,6 +2442,9 @@ async def generate_pcn_ledger_xlsx(
         else:
             op_names = set(effective_action_ops)
 
+        if operator_filter_ops is not None:
+            op_names = {op for op in op_names if op in operator_filter_ops}
+
         ops = [(op, int(alarms_by_op.get(op, 0))) for op in op_names]
         ops.sort(key=lambda x: (-x[1], x[0].lower()))
 
@@ -2472,6 +2485,8 @@ async def generate_pcn_ledger_xlsx(
             detail_ops_raw = detail.get("operators")
             detail_ops = set(detail_ops_raw) if isinstance(detail_ops_raw, set) else set()
             if manual_filter_ops and detail_ops.isdisjoint(manual_filter_ops):
+                continue
+            if operator_filter_ops is not None and detail_ops.isdisjoint(operator_filter_ops):
                 continue
             event_id = str(detail.get("eventId") or "").strip()
             trip_meta = alarm_trip_meta_by_event_id.get(event_id, {})
@@ -2581,7 +2596,6 @@ async def generate_pcn_ledger_xlsx(
     ws.cell(9, 2).alignment = Alignment(horizontal="center")
 
     ws.merge_cells(start_row=10, start_column=2, end_row=10, end_column=10)
-    operator_label = (operatorQuery or "").strip()
     scope_bits = [f"Оператор: {operator_label}" if operator_label else "Оператор: все"]
     if hideOperatorNames:
         scope_bits.append("ФИО скрыты")
@@ -2799,6 +2813,14 @@ async def generate_pcn_ledger_xlsx(
 
     report_id = reportId or str(uuid4())
     filename = f"pcn-ledger-{ps}-{pe}.xlsx"
+
+    # For the operator-filtered report, show the operator's alarm count in the UI list.
+    # For the full shift report, keep the previous behavior: total alarms used in calculations.
+    if operator_filter_ops is not None:
+        events_count_for_ui = sum(int(x.get("alarms") or 0) for x in out_rows)
+    else:
+        events_count_for_ui = sum(int(x.get("totalAlarmsUsed") or 0) for x in control_rows) if control_rows else 0
+
     return await _store_generated_report(
         session,
         report_id=report_id,
@@ -2808,7 +2830,7 @@ async def generate_pcn_ledger_xlsx(
         filename=filename,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         content=data,
-        events_count=sum(int(x.get("totalAlarmsUsed") or 0) for x in control_rows) if control_rows else 0,
+        events_count=events_count_for_ui,
         critical_count=0,
         params={
             "dateFrom": dateFrom,
