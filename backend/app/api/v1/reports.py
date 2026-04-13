@@ -1866,12 +1866,15 @@ async def generate_pcn_ledger_xlsx(
         if not d_from or not d_to or d_to < d_from:
             raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
         # Build query window that covers the last night shift up to next day's dayStart.
-        window_start = datetime.combine(d_from, day_start)
-        window_end = datetime.combine(d_to + timedelta(days=1), day_start)
+        handover = timedelta(minutes=int(handoverMinutes))
+        window_start = datetime.combine(d_from, day_start) - handover
+        window_end = datetime.combine(d_to + timedelta(days=1), day_start) + handover
         period_start_date = d_from
         period_end_date = d_to
         clamp_shift_dates = (d_from, d_to)
-        presence_span_start = d_from
+        # Presence bucketing needs a span that covers possible shift_dates, including
+        # handover overlaps which may attribute early morning actions to previous night.
+        presence_span_start = d_from - timedelta(days=1)
         presence_span_end = d_to
 
     if period_end_date < period_start_date:
@@ -2246,6 +2249,53 @@ async def generate_pcn_ledger_xlsx(
     shift_alarm_details: dict[tuple[date_type, str, str], dict[str, Any]] = {}
     detail_event_ids: set[str] = set()
 
+    handover_td = timedelta(minutes=int(handoverMinutes or 0))
+
+    def _presence_seconds(sd: date_type, sh: str, op: str) -> int:
+        try:
+            return int(presence_seconds_by_shift_op.get((sd, sh, op), 0) or 0)
+        except Exception:
+            return 0
+
+    def _adjust_shift_for_handover(op: str, ts: datetime, shift_date: date_type, shift_name: str) -> tuple[date_type, str]:
+        """Re-attribute near-boundary actions to the operator's actual shift.
+
+        Rationale: a dispatcher can accept a few alarms during handover (arrive early / leave late).
+        For payroll we should not count them as working both shifts due to a small drift.
+
+        Decision is made by comparing presence overlap seconds between the competing shifts.
+        If presence is unavailable, keep the original shift bucket.
+        """
+
+        if not handover_td or handover_td.total_seconds() <= 0:
+            return (shift_date, shift_name)
+
+        d = ts.date()
+        day_start_dt = datetime.combine(d, day_start)
+        night_start_dt = datetime.combine(d, night_start)
+
+        # Morning boundary: previous night (d-1, ночь) vs current day (d, день)
+        if day_start_dt - handover_td <= ts < day_start_dt + handover_td:
+            prev_night = _presence_seconds(d - timedelta(days=1), "ночь", op)
+            cur_day = _presence_seconds(d, "день", op)
+            if cur_day == 0 and prev_night == 0:
+                return (shift_date, shift_name)
+            if cur_day > prev_night:
+                return (d, "день")
+            return (d - timedelta(days=1), "ночь")
+
+        # Evening boundary: current day (d, день) vs current night (d, ночь)
+        if night_start_dt - handover_td <= ts < night_start_dt + handover_td:
+            cur_day = _presence_seconds(d, "день", op)
+            cur_night = _presence_seconds(d, "ночь", op)
+            if cur_day == 0 and cur_night == 0:
+                return (shift_date, shift_name)
+            if cur_day >= cur_night:
+                return (d, "день")
+            return (d, "ночь")
+
+        return (shift_date, shift_name)
+
     for alarm_id, event_id, op, ts, object_id, object_name, address, meter_count, result_text in rows:
         if not isinstance(ts, datetime) or not op:
             continue
@@ -2260,6 +2310,9 @@ async def generate_pcn_ledger_xlsx(
             night_start=night_start,
             night_end=night_end,
         )
+
+        # Re-attribute near-boundary actions based on operator presence.
+        shift_date, shift_name = _adjust_shift_for_handover(op_s, ts, shift_date, shift_name)
 
         if clamp_shift_dates is not None:
             dmin, dmax = clamp_shift_dates
