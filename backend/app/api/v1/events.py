@@ -183,7 +183,15 @@ def _append_object_id_filter(filters: list[Any], object_id: str | None) -> None:
     if not object_id:
         return
 
-    oid_variants = _query_variants(object_id)
+    oid_variants = query_variants(object_id)
+    raw = str(object_id or "").strip()
+    compact = raw.lstrip("0")
+    if compact and compact not in oid_variants:
+        oid_variants.append(compact)
+    if compact and f"ID{compact}" not in oid_variants:
+        oid_variants.append(f"ID{compact}")
+    if raw and raw.startswith("ID") and raw[2:] and raw[2:] not in oid_variants:
+        oid_variants.append(raw[2:])
     if len(oid_variants) == 1:
         filters.append(Event.object_id == oid_variants[0])
     elif oid_variants:
@@ -236,6 +244,37 @@ def _append_search_filter(filters: list[Any], search: str | None) -> None:
                         Event.state_name.ilike(needle),
                     ]
                 )
+
+                object_exists = exists(
+                    select(literal(1)).where(
+                        and_(
+                            Object.id == Event.object_id,
+                            or_(
+                                Object.id.ilike(needle),
+                                Object.name.ilike(needle),
+                                Object.address.ilike(needle),
+                                Object.client_name.ilike(needle),
+                            ),
+                        )
+                    )
+                )
+                like_clauses.append(object_exists)
+
+        for needle in prefix_needles:
+            object_prefix_exists = exists(
+                select(literal(1)).where(
+                    and_(
+                        Object.id == Event.object_id,
+                        or_(
+                            Object.id.ilike(needle),
+                            Object.name.ilike(needle),
+                            Object.address.ilike(needle),
+                            Object.client_name.ilike(needle),
+                        ),
+                    )
+                )
+            )
+            like_clauses.append(object_prefix_exists)
 
         if search_related:
             action_exists = exists(

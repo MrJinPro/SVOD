@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, cast
 from uuid import uuid4
 
-from datetime import datetime
+from datetime import datetime, timezone
 from datetime import date as date_type
 from datetime import time as time_type
 from datetime import timedelta
@@ -27,6 +27,12 @@ from app.models.object import Object
 from app.models.report import Report
 
 router = APIRouter(prefix="/reports")
+
+
+# If report generation is interrupted (server restart/crash), records can stay in
+# 'pending' forever. We conservatively auto-fail old pending reports so the UI
+# can show a useful error and allow regeneration.
+_REPORT_PENDING_STALE_SECONDS = 2 * 60 * 60  # 2 hours
 
 
 _PCN_EXCLUDED_ALARM_EXACT_VALUES = (
@@ -53,6 +59,18 @@ _GBR_ARCHIVE_CANCEL_PATTERNS = (
     "отмен",
     "ложн",
     "свобод",
+)
+
+
+_GBR_EXCLUDED_RESULT_PATTERNS = (
+    "сопровожд",
+    "на азс",
+    "на сто",
+    "на обеде",
+    "2-е сутки",
+    "2 е сутки",
+    "2е сутки",
+    "развод",
 )
 
 
@@ -285,6 +303,27 @@ def _resolve_manual_operator_names(
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
+    def _norm_tokens(value: object) -> list[str]:
+        text = _norm_name(value)
+        if not text:
+            return []
+        return [token for token in text.split(" ") if token]
+
+    def _tokens_match(wanted_tokens: list[str], candidate_tokens: list[str]) -> bool:
+        if not wanted_tokens or not candidate_tokens:
+            return False
+        matched = 0
+        for wanted in wanted_tokens:
+            found = False
+            for candidate in candidate_tokens:
+                if candidate.startswith(wanted) or wanted.startswith(candidate):
+                    found = True
+                    matched += 1
+                    break
+            if not found:
+                return False
+        return matched == len(wanted_tokens)
+
     normalized_candidates = {
         candidate: _norm_name(candidate)
         for candidate in candidate_names
@@ -315,6 +354,17 @@ def _resolve_manual_operator_names(
         }
         if len(partial) == 1:
             resolved.update(partial)
+            continue
+
+        # 3) Token/prefix match for cases like "Иванов И.И." vs "Иванов Иван Иванович".
+        wanted_tokens = _norm_tokens(wanted)
+        token_matches = {
+            candidate
+            for candidate, candidate_norm in normalized_candidates.items()
+            if _tokens_match(wanted_tokens, _norm_tokens(candidate_norm))
+        }
+        if len(token_matches) == 1:
+            resolved.update(token_matches)
         else:
             # 0 matches or >1 matches (ambiguous surname-only, etc.)
             unresolved.add(wanted)
@@ -351,6 +401,10 @@ def _gbr_archive_is_cancelled(status_reason: object) -> bool:
 
 def _gbr_trip_dedupe_key(row: dict[str, Any]) -> tuple[str, ...] | None:
     gbr_name = str(row.get("gbrName") or "").strip().lower()
+    alarm_id = str(row.get("alarmId") or "").strip()
+    if gbr_name and alarm_id:
+        return ("alarm", gbr_name, alarm_id)
+
     agency_event_id = str(row.get("agencyEventId") or "").strip()
     if gbr_name and agency_event_id:
         return ("agency", gbr_name, agency_event_id)
@@ -389,13 +443,15 @@ def _gbr_archive_row_to_trip(row: dict[str, object]) -> dict[str, object]:
     return {
         "eventId": f"archive:{archive_id}" if archive_id else "archive:unknown",
         "agencyEventId": archive_id or None,
+        "alarmId": archive_id or None,
         "gbrName": str(row.get("GroupName") or "").strip() or "Не указан",
         "calledAt": called_at.isoformat() if isinstance(called_at, datetime) else None,
         "arrivedAt": arrived_at.isoformat() if isinstance(arrived_at, datetime) else None,
         "cancelledAt": cancelled_at.isoformat() if isinstance(cancelled_at, datetime) else None,
         "lastActionAt": raw_end.isoformat() if isinstance(raw_end, datetime) else (called_at.isoformat() if isinstance(called_at, datetime) else None),
         "objectId": str(row.get("Panel_id") or "").strip() or None,
-        "objectName": object_address or object_name,
+        "objectName": object_name,
+        "address": object_address,
         "clientName": object_name,
         "responsibleName": None,
         "calledOperator": None,
@@ -405,6 +461,19 @@ def _gbr_archive_row_to_trip(row: dict[str, object]) -> dict[str, object]:
         "resultText": status_reason,
         "tripStatus": trip_status,
     }
+
+
+def _gbr_report_row_is_excluded(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(row.get("tripStatus") or ""),
+            str(row.get("resultText") or ""),
+            str(row.get("resultInspection") or ""),
+        ]
+    ).strip().lower()
+    if not text:
+        return False
+    return any(pattern in text for pattern in _GBR_EXCLUDED_RESULT_PATTERNS)
 
 
 def _backend_root_dir() -> Path:
@@ -438,6 +507,32 @@ def _write_report_file(report_id: str, filename: str, content: bytes) -> Path:
 
 def _utcnow_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def _parse_iso_dt_utc_naive(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        s = str(value).strip()
+        if not s:
+            return None
+        # Support both naive and Z-suffixed values.
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _pending_is_stale(r: "Report", *, now_utc_naive: datetime, stale_seconds: int) -> bool:
+    if str(getattr(r, "status", "")) != "pending":
+        return False
+    created = _parse_iso_dt_utc_naive(getattr(r, "generated_at", None))
+    if created is None:
+        return False
+    age = (now_utc_naive - created).total_seconds()
+    return age >= float(max(0, int(stale_seconds)))
 
 
 async def _create_pending_report(
@@ -771,6 +866,21 @@ async def list_reports(
         )
     ).scalars().all()
 
+    # Auto-fail stale pending reports (e.g. after server restart).
+    now = datetime.utcnow()
+    changed = False
+    for r in stored:
+        if _pending_is_stale(r, now_utc_naive=now, stale_seconds=_REPORT_PENDING_STALE_SECONDS):
+            r.status = "failed"
+            r.error_message = (
+                "Отчёт завис в статусе 'Ожидает' (возможно, сервер перезапускался). "
+                "Перегенерируйте отчёт из меню."
+            )
+            r.generated_at = _utcnow_iso()
+            changed = True
+    if changed:
+        await session.commit()
+
     out: list[dict] = [_as_report_out_dict(r) for r in stored]
 
     return out
@@ -1081,6 +1191,28 @@ async def generate_objects_by_code_report(
             ]
         )
 
+    total_events = sum(int(events_count or 0) for _object_id, _object_name, _address, events_count, _first_time, _last_time, _last_event_id, _last_meter_count, _last_result_text in rows)
+    ws.append(
+        [
+            "",
+            "ИТОГО",
+            "",
+            total_events,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    total_row_idx = ws.max_row
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=total_row_idx, column=col)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
     ws.freeze_panes = "A2"
     ws.column_dimensions["A"].width = 14
     ws.column_dimensions["B"].width = 40
@@ -1255,8 +1387,58 @@ async def generate_gbr_raport_xlsx(
                 if len(batch) < page_size:
                     break
 
+    # Enrich eventservice rows with alarm id (parent_event_id) and object address.
+    event_ids = sorted(
+        {
+            str(row.get("eventId") or "").strip()
+            for row in rows_all
+            if str(row.get("eventId") or "").strip() and not str(row.get("eventId") or "").startswith("archive:")
+        }
+    )
+    event_alarm_ids: dict[str, str] = {}
+    if event_ids:
+        for chunk in _iter_chunks(event_ids):
+            q = select(Event.id, Event.parent_event_id).where(Event.id.in_(chunk))
+            for event_id, parent_event_id in (await session.execute(q)).all():
+                eid = str(event_id or "").strip()
+                if eid:
+                    event_alarm_ids[eid] = str(parent_event_id or event_id or "").strip()
+
+    object_ids = sorted({str(row.get("objectId") or "").strip() for row in rows_all if str(row.get("objectId") or "").strip()})
+    object_meta_by_id: dict[str, tuple[str, str]] = {}
+    if object_ids:
+        for chunk in _iter_chunks(object_ids):
+            q = select(Object.id, Object.name, Object.address).where(Object.id.in_(chunk))
+            for object_id, object_name, address in (await session.execute(q)).all():
+                object_meta_by_id[str(object_id)] = (str(object_name or "").strip(), str(address or "").strip())
+
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows_all:
+        item = dict(row)
+        event_id = str(item.get("eventId") or "").strip()
+        object_id = str(item.get("objectId") or "").strip()
+        item["alarmId"] = str(item.get("alarmId") or event_alarm_ids.get(event_id) or item.get("agencyEventId") or event_id or "").strip() or None
+
+        object_name = str(item.get("objectName") or "").strip()
+        address = str(item.get("address") or "").strip()
+        if object_id in object_meta_by_id:
+            meta_name, meta_address = object_meta_by_id[object_id]
+            object_name = meta_name or object_name
+            address = meta_address or address
+        item["objectName"] = object_name
+        item["address"] = address
+        item["resultInspection"] = str(item.get("resultInspection") or item.get("resultText") or item.get("tripStatus") or "").strip()
+        normalized_rows.append(item)
+
+    # Business rule: count only trips with "Выезд + Прибытие".
+    rows_all = [
+        row
+        for row in normalized_rows
+        if row.get("calledAt") and row.get("arrivedAt") and not row.get("cancelledAt") and not _gbr_report_row_is_excluded(row)
+    ]
+
     # Business rule: 1 тревога = 1 выезд, even if multiple triggers/records exist.
-    # Prefer a stable agency alarm id, then fall back to crew+object+time, then event id.
+    # Prefer alarm id, then a stable agency alarm id, then crew+object+time, then event id.
     def _pick_better(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         # Prefer record that has arrivedAt; then cancelledAt; then calledAt.
         def _rank(x: dict[str, Any]) -> tuple[int, int, int, int]:
@@ -1292,8 +1474,10 @@ async def generate_gbr_raport_xlsx(
 
         # Fill missing descriptive fields.
         for k in [
+            "alarmId",
             "objectId",
             "objectName",
+            "address",
             "clientName",
             "responsibleName",
             "calledOperator",
@@ -1358,6 +1542,7 @@ async def generate_gbr_raport_xlsx(
     columns = [
         "№ объекта",
         "Адрес",
+        "Название объекта",
         "Шлейф",
         "Инженер",
         "Результат",
@@ -1402,7 +1587,7 @@ async def generate_gbr_raport_xlsx(
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    widths = [12, 28, 10, 16, 16, 12, 14, 18, 18, 12, 18, 16, 14, 10, 18, 16, 28, 45, 14, 26]
+    widths = [12, 28, 28, 10, 16, 16, 12, 14, 18, 18, 12, 22, 16, 14, 10, 18, 16, 28, 45, 14, 26]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(ord('A') + i - 1)].width = w
 
@@ -1445,16 +1630,17 @@ async def generate_gbr_raport_xlsx(
         cancelled_at = r.get("cancelledAt")
         values = [
             r.get("objectId") or "",
+            r.get("address") or "",
             r.get("objectName") or r.get("clientName") or "",
             "",
             "",
-            "",
+            r.get("tripStatus") or "",
             fmt_date(called_at),
             r.get("gbrName") or "",
             fmt_ts(called_at),
             fmt_ts(arrived_at) if arrived_at else ("Отмена" if cancelled_at else ""),
             fmt_travel(r.get("travelSeconds")),
-            "",
+            r.get("resultInspection") or r.get("resultText") or r.get("tripStatus") or "",
             "",
             "",
             "",
@@ -2311,6 +2497,10 @@ async def generate_pcn_ledger_xlsx(
         ]
     ] = []
 
+    exact_selected_shift: tuple[date_type, str] | None = None
+    if exact_window and selected_shift_keys and len(selected_shift_keys) == 1:
+        exact_selected_shift = next(iter(selected_shift_keys))
+
     for alarm_id, event_id, op, ts, object_id, object_name, address, meter_count, result_text in rows:
         if not isinstance(ts, datetime) or not op:
             continue
@@ -2318,14 +2508,18 @@ async def generate_pcn_ledger_xlsx(
         if not alarm_id_s:
             continue
         op_s = str(op)
-        shift_date, shift_name = _shift_bucket(
-            ts,
-            day_start=day_start,
-            day_end=day_end,
-            night_start=night_start,
-            night_end=night_end,
-        )
-        boundary = _handover_boundary_kind(ts)
+        if exact_selected_shift is not None and window_start <= ts <= window_end:
+            shift_date, shift_name = exact_selected_shift
+            boundary = None
+        else:
+            shift_date, shift_name = _shift_bucket(
+                ts,
+                day_start=day_start,
+                day_end=day_end,
+                night_start=night_start,
+                night_end=night_end,
+            )
+            boundary = None if exact_window else _handover_boundary_kind(ts)
         enriched_rows.append(
             (
                 alarm_id_s,
@@ -2431,9 +2625,12 @@ async def generate_pcn_ledger_xlsx(
         if event_id_s:
             detail_event_ids.add(event_id_s)
 
-    # Payroll rule: if the same operator appears in both day and night shifts
+    # Payroll rule (date-based reports only): if the same operator appears in both day and night shifts
     # for the same shift_date, attribute them to the dominant shift (by alarm count)
     # and move the smaller-shift alarms to the dominant shift.
+    #
+    # IMPORTANT: do NOT apply this rule for exact windows ("report for a single shift")
+    # otherwise the selected shift can become empty after re-attribution.
     def _move_operator_alarm(
         *,
         op: str,
@@ -2497,57 +2694,58 @@ async def generate_pcn_ledger_xlsx(
 
         shift_alarm_ids.setdefault((to_sd, to_sh), set()).add(alarm_id)
 
-    # Merge for each date/operator.
-    # Note: shift_date for "ночь" is the night start date (20:00 of that date).
-    ops_by_date: dict[date_type, set[str]] = {}
-    for (sd, sh, op), _alarms in operator_alarm_ids.items():
-        if sh in {"день", "ночь"}:
-            ops_by_date.setdefault(sd, set()).add(op)
+    if not exact_window:
+        # Merge for each date/operator.
+        # Note: shift_date for "ночь" is the night start date (20:00 of that date).
+        ops_by_date: dict[date_type, set[str]] = {}
+        for (sd, sh, op), _alarms in operator_alarm_ids.items():
+            if sh in {"день", "ночь"}:
+                ops_by_date.setdefault(sd, set()).add(op)
 
-    for sd, ops in ops_by_date.items():
-        for op in ops:
-            day_key = (sd, "день", op)
-            night_key = (sd, "ночь", op)
-            day_alarms = operator_alarm_ids.get(day_key) or set()
-            night_alarms = operator_alarm_ids.get(night_key) or set()
-            if not day_alarms or not night_alarms:
-                continue
-
-            day_cnt = len(day_alarms)
-            night_cnt = len(night_alarms)
-            if day_cnt == night_cnt:
-                day_pres = _presence_seconds(sd, "день", op)
-                night_pres = _presence_seconds(sd, "ночь", op)
-                if day_pres == night_pres:
+        for sd, ops in ops_by_date.items():
+            for op in ops:
+                day_key = (sd, "день", op)
+                night_key = (sd, "ночь", op)
+                day_alarms = operator_alarm_ids.get(day_key) or set()
+                night_alarms = operator_alarm_ids.get(night_key) or set()
+                if not day_alarms or not night_alarms:
                     continue
-                dominant = "день" if day_pres > night_pres else "ночь"
-            else:
-                dominant = "день" if day_cnt > night_cnt else "ночь"
 
-            if dominant == "ночь":
-                from_key = day_key
-                to_key = night_key
-            else:
-                from_key = night_key
-                to_key = day_key
+                day_cnt = len(day_alarms)
+                night_cnt = len(night_alarms)
+                if day_cnt == night_cnt:
+                    day_pres = _presence_seconds(sd, "день", op)
+                    night_pres = _presence_seconds(sd, "ночь", op)
+                    if day_pres == night_pres:
+                        continue
+                    dominant = "день" if day_pres > night_pres else "ночь"
+                else:
+                    dominant = "день" if day_cnt > night_cnt else "ночь"
 
-            moved = set(operator_alarm_ids.get(from_key) or set())
-            if not moved:
-                continue
-            operator_alarm_ids.setdefault(to_key, set()).update(moved)
-            operator_alarm_ids.pop(from_key, None)
+                if dominant == "ночь":
+                    from_key = day_key
+                    to_key = night_key
+                else:
+                    from_key = night_key
+                    to_key = day_key
 
-            from_sd, from_sh, _ = from_key
-            to_sd, to_sh, _ = to_key
-            for alarm_id in moved:
-                _move_operator_alarm(
-                    op=op,
-                    alarm_id=alarm_id,
-                    from_sd=from_sd,
-                    from_sh=from_sh,
-                    to_sd=to_sd,
-                    to_sh=to_sh,
-                )
+                moved = set(operator_alarm_ids.get(from_key) or set())
+                if not moved:
+                    continue
+                operator_alarm_ids.setdefault(to_key, set()).update(moved)
+                operator_alarm_ids.pop(from_key, None)
+
+                from_sd, from_sh, _ = from_key
+                to_sd, to_sh, _ = to_key
+                for alarm_id in moved:
+                    _move_operator_alarm(
+                        op=op,
+                        alarm_id=alarm_id,
+                        from_sd=from_sd,
+                        from_sh=from_sh,
+                        to_sd=to_sd,
+                        to_sh=to_sh,
+                    )
 
     counts: dict[tuple[date_type, str, str], int] = {
         key: len(alarm_ids)
@@ -2590,7 +2788,11 @@ async def generate_pcn_ledger_xlsx(
             }
 
     # Build ordered output rows
-    ordered_shifts = sorted(shift_totals.keys(), key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
+    ordered_shift_keys = set(shift_totals.keys())
+    if selected_shift_keys is not None:
+        ordered_shift_keys.update(selected_shift_keys)
+
+    ordered_shifts = sorted(ordered_shift_keys, key=lambda x: (x[0].toordinal(), 0 if x[1] == "день" else 1))
     if selected_shift_keys is not None:
         ordered_shifts = [key for key in ordered_shifts if key in selected_shift_keys]
 
@@ -3055,6 +3257,73 @@ async def generate_pcn_ledger_xlsx(
     except Exception:
         pass
 
+    try:
+        ws4 = wb.create_sheet("Тревоги по операторам")
+        ws4_headers = [
+            "Дата",
+            "Смена",
+            "Оператор",
+            "Принята",
+            "№ объекта",
+            "Название",
+            "Адрес",
+            "№ шлейфа",
+            "ГБР",
+            "Результат",
+            "ID тревоги",
+        ]
+        for idx, h in enumerate(ws4_headers, start=1):
+            cell = ws4.cell(1, idx, clean_excel_text(h))
+            cell.font = Font(bold=True)
+            cell.alignment = center
+            cell.border = border
+
+        row_idx = 2
+        for item in detail_rows:
+            accepted_at = item.get("acceptedAt")
+            operator_names = [
+                name.strip()
+                for name in str(item.get("operators") or "").split(",")
+                if name.strip()
+            ]
+            if not operator_names:
+                operator_names = [""]
+            for operator_name in operator_names:
+                values = [
+                    item.get("date"),
+                    item.get("shift") or "",
+                    operator_name,
+                    accepted_at.strftime("%d.%m.%Y %H:%M:%S") if isinstance(accepted_at, datetime) else "",
+                    item.get("objectId") or "",
+                    item.get("objectName") or "",
+                    item.get("address") or "",
+                    item.get("meterCount") or "",
+                    item.get("gbrName") or "",
+                    item.get("resultText") or "",
+                    item.get("alarmId") or "",
+                ]
+                for col_idx, value in enumerate(values, start=1):
+                    cell = ws4.cell(row_idx, col_idx, clean_excel_text(value))
+                    cell.border = border
+                    cell.alignment = center if col_idx not in {3, 6, 7, 10, 11} else Alignment(horizontal="left", vertical="center", wrap_text=True)
+                if isinstance(item.get("date"), date_type):
+                    ws4.cell(row_idx, 1).number_format = "DD.MM.YYYY"
+                row_idx += 1
+
+        ws4.column_dimensions["A"].width = 12
+        ws4.column_dimensions["B"].width = 10
+        ws4.column_dimensions["C"].width = 28
+        ws4.column_dimensions["D"].width = 20
+        ws4.column_dimensions["E"].width = 14
+        ws4.column_dimensions["F"].width = 34
+        ws4.column_dimensions["G"].width = 42
+        ws4.column_dimensions["H"].width = 14
+        ws4.column_dimensions["I"].width = 18
+        ws4.column_dimensions["J"].width = 36
+        ws4.column_dimensions["K"].width = 20
+    except Exception:
+        pass
+
     bio = BytesIO()
     wb.save(bio)
     data = bio.getvalue()
@@ -3125,6 +3394,24 @@ async def download_report(
         have = set(map(str, current.get("permissions") or []))
         if "analytics:read" not in have and current.get("role") != "admin":
             raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
+
+    # If pending is stale, fail it now so UI stops showing an infinite spinner.
+    if _pending_is_stale(r, now_utc_naive=datetime.utcnow(), stale_seconds=_REPORT_PENDING_STALE_SECONDS):
+        r.status = "failed"
+        r.error_message = (
+            "Отчёт завис в статусе 'Ожидает' (возможно, сервер перезапускался). "
+            "Перегенерируйте отчёт из меню."
+        )
+        r.generated_at = _utcnow_iso()
+        await session.commit()
+
+    if str(r.status) == "pending":
+        raise HTTPException(status_code=409, detail={"code": "PENDING", "message": "Отчёт ещё формируется"})
+    if str(r.status) == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "FAILED", "message": "Отчёт не сформирован", "error": (r.error_message or "")},
+        )
 
     if not r.storage_path or not r.file_name:
         raise HTTPException(status_code=409, detail={"code": "NO_FILE", "message": "Report has no stored file"})
@@ -3221,6 +3508,15 @@ async def get_report_params(
         if "analytics:read" not in have and current.get("role") != "admin":
             raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
 
+    if _pending_is_stale(r, now_utc_naive=datetime.utcnow(), stale_seconds=_REPORT_PENDING_STALE_SECONDS):
+        r.status = "failed"
+        r.error_message = (
+            "Отчёт завис в статусе 'Ожидает' (возможно, сервер перезапускался). "
+            "Перегенерируйте отчёт из меню."
+        )
+        r.generated_at = _utcnow_iso()
+        await session.commit()
+
     params: dict[str, Any] = {}
     try:
         if r.params_json:
@@ -3248,6 +3544,29 @@ async def preview_report(
     ).scalars().first()
     if r is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Report not found"})
+
+    # Permission gate for analytics-based reports
+    if str(r.type) == "gbrRaportXlsx":
+        have = set(map(str, current.get("permissions") or []))
+        if "analytics:read" not in have and current.get("role") != "admin":
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
+
+    if _pending_is_stale(r, now_utc_naive=datetime.utcnow(), stale_seconds=_REPORT_PENDING_STALE_SECONDS):
+        r.status = "failed"
+        r.error_message = (
+            "Отчёт завис в статусе 'Ожидает' (возможно, сервер перезапускался). "
+            "Перегенерируйте отчёт из меню."
+        )
+        r.generated_at = _utcnow_iso()
+        await session.commit()
+
+    if str(r.status) == "pending":
+        raise HTTPException(status_code=409, detail={"code": "PENDING", "message": "Отчёт ещё формируется"})
+    if str(r.status) == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "FAILED", "message": "Отчёт не сформирован", "error": (r.error_message or "")},
+        )
 
     # Generic preview for stored files (CSV/XLSX)
     if not r.storage_path or not r.file_name:
