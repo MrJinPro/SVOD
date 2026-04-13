@@ -3198,6 +3198,43 @@ async def delete_report(
     return Response(status_code=204)
 
 
+@router.get("/{report_id}/params")
+async def get_report_params(
+    report_id: str,
+    session: AsyncSession = Depends(get_session),
+    current: dict = Depends(get_current_user),
+) -> dict:
+    """Return generation/view parameters for a stored report.
+
+    Used by the UI for 'Просмотреть параметры' and 'Перегенерировать'.
+    """
+
+    r = (
+        await session.execute(select(Report).where(Report.id == report_id).limit(1))
+    ).scalars().first()
+    if r is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Report not found"})
+
+    # Permission gate for analytics-based reports
+    if str(r.type) == "gbrRaportXlsx":
+        have = set(map(str, current.get("permissions") or []))
+        if "analytics:read" not in have and current.get("role") != "admin":
+            raise HTTPException(status_code=403, detail={"code": "FORBIDDEN", "message": "Missing permissions"})
+
+    params: dict[str, Any] = {}
+    try:
+        if r.params_json:
+            loaded = json.loads(r.params_json)
+            if isinstance(loaded, dict):
+                params = loaded
+    except Exception:
+        params = {}
+
+    out = _as_report_out_dict(r)
+    out["params"] = params
+    return out
+
+
 @router.get("/{report_id}/preview")
 async def preview_report(
     report_id: str,

@@ -1,6 +1,6 @@
 import { Report, ReportType, ReportStatus } from '@/types';
 import { cn } from '@/lib/utils';
-import { apiFetchRaw } from '@/lib/api';
+import { apiFetchRaw, apiGet, apiPost } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import {
   Table,
@@ -23,6 +23,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+
+type ReportParamsResponse = Report & {
+  params?: Record<string, any>;
+};
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -410,6 +414,11 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Report | null>(null);
 
+  const [paramsOpen, setParamsOpen] = useState(false);
+  const [paramsLoading, setParamsLoading] = useState(false);
+  const [paramsTitle, setParamsTitle] = useState('Параметры отчёта');
+  const [paramsText, setParamsText] = useState('');
+
   const formatDate = (dateString: string) => {
     if (!dateString) return '—';
     return new Date(dateString).toLocaleDateString('ru-RU', {
@@ -549,8 +558,121 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     }
   };
 
+  const fetchReportParams = async (report: Report): Promise<ReportParamsResponse> => {
+    return await apiGet<ReportParamsResponse>(`/reports/${encodeURIComponent(report.id)}/params`);
+  };
+
+  const viewReportParams = async (report: Report) => {
+    setParamsOpen(true);
+    setParamsLoading(true);
+    setParamsTitle(`Параметры отчёта: ${report.title || report.type}`);
+    setParamsText('');
+    try {
+      const data = await fetchReportParams(report);
+      const text = JSON.stringify(data?.params || {}, null, 2);
+      setParamsText(text || '{}');
+    } catch (e: any) {
+      toast({
+        title: 'Параметры отчёта',
+        description: e?.message || 'Не удалось загрузить параметры',
+        variant: 'destructive',
+      });
+      setParamsText('');
+    } finally {
+      setParamsLoading(false);
+    }
+  };
+
+  const toSearchParams = (paramsObj: Record<string, any> | undefined, fallback: Partial<Report>) => {
+    const params = new URLSearchParams();
+    const src: Record<string, any> = { ...(paramsObj || {}) };
+
+    // Defensive: ensure period fields exist for date-range based reports.
+    if (fallback.periodStart && src.dateFrom == null) src.dateFrom = fallback.periodStart;
+    if (fallback.periodEnd && src.dateTo == null) src.dateTo = fallback.periodEnd;
+
+    for (const [k, v] of Object.entries(src)) {
+      if (v == null) continue;
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item == null) continue;
+          const s = String(item).trim();
+          if (!s) continue;
+          params.append(k, s);
+        }
+        continue;
+      }
+      if (typeof v === 'boolean') {
+        if (v) params.set(k, 'true');
+        continue;
+      }
+      const s = String(v).trim();
+      if (!s) continue;
+      params.set(k, s);
+    }
+    return params;
+  };
+
+  const regenerateReport = async (report: Report) => {
+    try {
+      const data = await fetchReportParams(report);
+      const params = toSearchParams(data?.params, report);
+
+      let path = '';
+      switch (report.type) {
+        case 'objectsByCode':
+          path = `/reports/generate/objects-by-code?${params.toString()}`;
+          break;
+        case 'gbrRaportXlsx':
+          path = `/reports/generate/gbr-raport-xlsx?${params.toString()}`;
+          break;
+        case 'eventsRaportXlsx':
+          path = `/reports/generate/events-raport-xlsx?${params.toString()}`;
+          break;
+        case 'alarmMessages':
+          path = `/reports/generate/alarm-messages-xlsx?${params.toString()}`;
+          break;
+        case 'pcnLedger':
+          path = `/reports/generate/pcn-ledger-xlsx?${params.toString()}`;
+          break;
+        default:
+          toast({ title: 'Перегенерация', description: 'Неизвестный тип отчёта', variant: 'destructive' });
+          return;
+      }
+
+      await apiPost(path);
+      toast({ title: 'Перегенерация', description: 'Запущено. Новый отчёт появится в истории.' });
+      onChanged?.();
+    } catch (e: any) {
+      toast({
+        title: 'Перегенерация',
+        description: e?.message || 'Не удалось перегенерировать отчёт',
+        variant: 'destructive',
+      });
+    }
+  };
+
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <Dialog open={paramsOpen} onOpenChange={setParamsOpen}>
+        <DialogContent fullscreenable className="sm:max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>{paramsTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-muted-foreground">
+            {paramsLoading ? (
+              'Загрузка…'
+            ) : paramsText ? (
+              <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 max-h-[60dvh] overflow-auto">
+                {paramsText}
+              </pre>
+            ) : (
+              'Нет параметров.'
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         <DialogContent
           fullscreenable
@@ -722,24 +844,17 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
                         onClick={() => {
-                          toast({ title: 'Параметры отчёта', description: 'Скоро добавим.' });
+                          viewReportParams(report);
                         }}
                       >
                         Просмотреть параметры
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         onClick={() => {
-                          toast({ title: 'Перегенерация', description: 'Скоро добавим.' });
+                          regenerateReport(report);
                         }}
                       >
                         Перегенерировать
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => {
-                          toast({ title: 'Отправка', description: 'Скоро добавим.' });
-                        }}
-                      >
-                        Отправить повторно
                       </DropdownMenuItem>
 
                       {isStoredReport(report) ? (
