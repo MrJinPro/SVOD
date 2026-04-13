@@ -2257,44 +2257,38 @@ async def generate_pcn_ledger_xlsx(
         except Exception:
             return 0
 
-    def _adjust_shift_for_handover(op: str, ts: datetime, shift_date: date_type, shift_name: str) -> tuple[date_type, str]:
-        """Re-attribute near-boundary actions to the operator's actual shift.
-
-        Rationale: a dispatcher can accept a few alarms during handover (arrive early / leave late).
-        For payroll we should not count them as working both shifts due to a small drift.
-
-        Decision is made by comparing presence overlap seconds between the competing shifts.
-        If presence is unavailable, keep the original shift bucket.
-        """
-
+    def _handover_boundary_kind(ts: datetime) -> tuple[str, date_type] | None:
         if not handover_td or handover_td.total_seconds() <= 0:
-            return (shift_date, shift_name)
-
+            return None
         d = ts.date()
         day_start_dt = datetime.combine(d, day_start)
         night_start_dt = datetime.combine(d, night_start)
-
-        # Morning boundary: previous night (d-1, ночь) vs current day (d, день)
         if day_start_dt - handover_td <= ts < day_start_dt + handover_td:
-            prev_night = _presence_seconds(d - timedelta(days=1), "ночь", op)
-            cur_day = _presence_seconds(d, "день", op)
-            if cur_day == 0 and prev_night == 0:
-                return (shift_date, shift_name)
-            if cur_day > prev_night:
-                return (d, "день")
-            return (d - timedelta(days=1), "ночь")
-
-        # Evening boundary: current day (d, день) vs current night (d, ночь)
+            return ("morning", d)
         if night_start_dt - handover_td <= ts < night_start_dt + handover_td:
-            cur_day = _presence_seconds(d, "день", op)
-            cur_night = _presence_seconds(d, "ночь", op)
-            if cur_day == 0 and cur_night == 0:
-                return (shift_date, shift_name)
-            if cur_day >= cur_night:
-                return (d, "день")
-            return (d, "ночь")
+            return ("evening", d)
+        return None
 
-        return (shift_date, shift_name)
+    # Two-pass handover attribution:
+    # - Baseline: count alarms outside the handover windows.
+    # - Boundary actions (near 09:00/20:00): assign to the operator's dominant shift by baseline alarm counts.
+    #   Presence seconds are used as a tie-breaker if available.
+    enriched_rows: list[
+        tuple[
+            str,
+            str,
+            str,
+            datetime,
+            str,
+            str,
+            str,
+            str,
+            str,
+            date_type,
+            str,
+            tuple[str, date_type] | None,
+        ]
+    ] = []
 
     for alarm_id, event_id, op, ts, object_id, object_name, address, meter_count, result_text in rows:
         if not isinstance(ts, datetime) or not op:
@@ -2310,9 +2304,66 @@ async def generate_pcn_ledger_xlsx(
             night_start=night_start,
             night_end=night_end,
         )
+        boundary = _handover_boundary_kind(ts)
+        enriched_rows.append(
+            (
+                alarm_id_s,
+                str(event_id or "").strip(),
+                op_s,
+                ts,
+                str(object_id or "").strip(),
+                str(object_name or "").strip(),
+                str(address or "").strip(),
+                str(meter_count or "").strip(),
+                str(result_text or "").strip(),
+                shift_date,
+                shift_name,
+                boundary,
+            )
+        )
 
-        # Re-attribute near-boundary actions based on operator presence.
-        shift_date, shift_name = _adjust_shift_for_handover(op_s, ts, shift_date, shift_name)
+    baseline_alarm_ids_by_shift_op: dict[tuple[date_type, str, str], set[str]] = {}
+    for alarm_id_s, _event_id_s, op_s, ts, *_rest, shift_date, shift_name, boundary in enriched_rows:
+        if boundary is not None:
+            continue
+        baseline_alarm_ids_by_shift_op.setdefault((shift_date, shift_name, op_s), set()).add(alarm_id_s)
+
+    def _baseline_cnt(sd: date_type, sh: str, op: str) -> int:
+        return len(baseline_alarm_ids_by_shift_op.get((sd, sh, op), set()))
+
+    for (
+        alarm_id_s,
+        event_id_s,
+        op_s,
+        ts,
+        object_id_s,
+        object_name_s,
+        address_s,
+        meter_count_s,
+        result_text_s,
+        shift_date,
+        shift_name,
+        boundary,
+    ) in enriched_rows:
+        if boundary is not None:
+            kind, d = boundary
+            if kind == "morning":
+                cand_a = (d - timedelta(days=1), "ночь")
+                cand_b = (d, "день")
+            else:
+                cand_a = (d, "день")
+                cand_b = (d, "ночь")
+
+            a_cnt = _baseline_cnt(cand_a[0], cand_a[1], op_s)
+            b_cnt = _baseline_cnt(cand_b[0], cand_b[1], op_s)
+            if a_cnt != b_cnt:
+                shift_date, shift_name = (cand_a if a_cnt > b_cnt else cand_b)
+            else:
+                a_pres = _presence_seconds(cand_a[0], cand_a[1], op_s)
+                b_pres = _presence_seconds(cand_b[0], cand_b[1], op_s)
+                if a_pres != b_pres:
+                    shift_date, shift_name = (cand_a if a_pres > b_pres else cand_b)
+                # else: keep the original shift bucket
 
         if clamp_shift_dates is not None:
             dmin, dmax = clamp_shift_dates
@@ -2325,13 +2376,13 @@ async def generate_pcn_ledger_xlsx(
         if detail is None:
             detail = {
                 "alarmId": alarm_id_s,
-                "eventId": str(event_id or "").strip() or None,
+                "eventId": event_id_s or None,
                 "acceptedAt": ts,
-                "objectId": str(object_id or "").strip(),
-                "objectName": str(object_name or "").strip(),
-                "address": str(address or "").strip(),
-                "meterCount": str(meter_count or "").strip(),
-                "resultText": str(result_text or "").strip(),
+                "objectId": object_id_s,
+                "objectName": object_name_s,
+                "address": address_s,
+                "meterCount": meter_count_s,
+                "resultText": result_text_s,
                 "operators": {op_s},
             }
             shift_alarm_details[detail_key] = detail
@@ -2340,19 +2391,19 @@ async def generate_pcn_ledger_xlsx(
             accepted_at = detail.get("acceptedAt")
             if isinstance(accepted_at, datetime) and ts < accepted_at:
                 detail["acceptedAt"] = ts
-            if not detail.get("objectId") and object_id:
-                detail["objectId"] = str(object_id or "").strip()
-            if not detail.get("objectName") and object_name:
-                detail["objectName"] = str(object_name or "").strip()
-            if not detail.get("address") and address:
-                detail["address"] = str(address or "").strip()
-            if not detail.get("meterCount") and meter_count:
-                detail["meterCount"] = str(meter_count or "").strip()
-            if not detail.get("resultText") and result_text:
-                detail["resultText"] = str(result_text or "").strip()
+            if not detail.get("objectId") and object_id_s:
+                detail["objectId"] = object_id_s
+            if not detail.get("objectName") and object_name_s:
+                detail["objectName"] = object_name_s
+            if not detail.get("address") and address_s:
+                detail["address"] = address_s
+            if not detail.get("meterCount") and meter_count_s:
+                detail["meterCount"] = meter_count_s
+            if not detail.get("resultText") and result_text_s:
+                detail["resultText"] = result_text_s
 
-        if event_id:
-            detail_event_ids.add(str(event_id))
+        if event_id_s:
+            detail_event_ids.add(event_id_s)
 
     counts: dict[tuple[date_type, str, str], int] = {
         key: len(alarm_ids)
