@@ -277,25 +277,46 @@ def _resolve_manual_operator_names(
     resolved: set[str] = set()
     unresolved: set[str] = set()
 
+    def _norm_name(value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        text = text.replace(".", " ")
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
     normalized_candidates = {
-        candidate: str(candidate or "").strip().lower()
+        candidate: _norm_name(candidate)
         for candidate in candidate_names
-        if str(candidate or "").strip()
+        if _norm_name(candidate)
     }
 
     for raw_name in requested_names:
         wanted = str(raw_name or "").strip()
         if not wanted:
             continue
-        wanted_norm = wanted.lower()
-        matches = {
+        wanted_norm = _norm_name(wanted)
+
+        # 1) Exact match (safe)
+        exact = {candidate for candidate, candidate_norm in normalized_candidates.items() if wanted_norm == candidate_norm}
+        if len(exact) == 1:
+            resolved.update(exact)
+            continue
+        if len(exact) > 1:
+            # Unlikely, but treat as ambiguous.
+            unresolved.add(wanted)
+            continue
+
+        # 2) Substring match only if it resolves to exactly one operator.
+        partial = {
             candidate
             for candidate, candidate_norm in normalized_candidates.items()
-            if wanted_norm == candidate_norm or wanted_norm in candidate_norm or candidate_norm in wanted_norm
+            if wanted_norm and (wanted_norm in candidate_norm or candidate_norm in wanted_norm)
         }
-        if matches:
-            resolved.update(matches)
+        if len(partial) == 1:
+            resolved.update(partial)
         else:
+            # 0 matches or >1 matches (ambiguous surname-only, etc.)
             unresolved.add(wanted)
 
     return resolved, unresolved
@@ -2363,7 +2384,12 @@ async def generate_pcn_ledger_xlsx(
                 b_pres = _presence_seconds(cand_b[0], cand_b[1], op_s)
                 if a_pres != b_pres:
                     shift_date, shift_name = (cand_a if a_pres > b_pres else cand_b)
-                # else: keep the original shift bucket
+                else:
+                    # If we have no evidence at all (no baseline alarms and no presence),
+                    # avoid dragging early actions of the next DAY shift into the previous NIGHT.
+                    if kind == "morning" and shift_name == "ночь" and shift_date == (d - timedelta(days=1)):
+                        shift_date, shift_name = (d, "день")
+                    # else: keep the original shift bucket
 
         if clamp_shift_dates is not None:
             dmin, dmax = clamp_shift_dates
