@@ -2431,6 +2431,124 @@ async def generate_pcn_ledger_xlsx(
         if event_id_s:
             detail_event_ids.add(event_id_s)
 
+    # Payroll rule: if the same operator appears in both day and night shifts
+    # for the same shift_date, attribute them to the dominant shift (by alarm count)
+    # and move the smaller-shift alarms to the dominant shift.
+    def _move_operator_alarm(
+        *,
+        op: str,
+        alarm_id: str,
+        from_sd: date_type,
+        from_sh: str,
+        to_sd: date_type,
+        to_sh: str,
+    ) -> None:
+        # Update shift totals (best-effort). If other operators are still present on the
+        # alarm in the source shift, we keep it there too.
+        from_key = (from_sd, from_sh, alarm_id)
+        src_detail = shift_alarm_details.get(from_key)
+        snapshot: dict[str, Any] | None = None
+        if isinstance(src_detail, dict) and op in (src_detail.get("operators") or set()):
+            snapshot = {
+                **src_detail,
+                "operators": set(src_detail.get("operators") or set()),
+            }
+            src_detail["operators"].discard(op)
+            if not src_detail["operators"]:
+                shift_alarm_details.pop(from_key, None)
+                shift_alarm_ids.get((from_sd, from_sh), set()).discard(alarm_id)
+
+        # Ensure destination detail has this operator.
+        to_key = (to_sd, to_sh, alarm_id)
+        dst_detail = shift_alarm_details.get(to_key)
+        if dst_detail is None:
+            base = snapshot or {
+                "alarmId": alarm_id,
+                "eventId": None,
+                "acceptedAt": None,
+                "objectId": "",
+                "objectName": "",
+                "address": "",
+                "meterCount": "",
+                "resultText": "",
+                "operators": set(),
+            }
+            shift_alarm_details[to_key] = {
+                "alarmId": str(base.get("alarmId") or alarm_id),
+                "eventId": base.get("eventId"),
+                "acceptedAt": base.get("acceptedAt"),
+                "objectId": str(base.get("objectId") or ""),
+                "objectName": str(base.get("objectName") or ""),
+                "address": str(base.get("address") or ""),
+                "meterCount": str(base.get("meterCount") or ""),
+                "resultText": str(base.get("resultText") or ""),
+                "operators": {op},
+            }
+        else:
+            dst_detail.setdefault("operators", set())
+            if not isinstance(dst_detail["operators"], set):
+                dst_detail["operators"] = set(dst_detail["operators"] or [])
+            dst_detail["operators"].add(op)
+            if snapshot is not None:
+                a = snapshot.get("acceptedAt")
+                b = dst_detail.get("acceptedAt")
+                if isinstance(a, datetime) and (not isinstance(b, datetime) or a < b):
+                    dst_detail["acceptedAt"] = a
+
+        shift_alarm_ids.setdefault((to_sd, to_sh), set()).add(alarm_id)
+
+    # Merge for each date/operator.
+    # Note: shift_date for "ночь" is the night start date (20:00 of that date).
+    ops_by_date: dict[date_type, set[str]] = {}
+    for (sd, sh, op), _alarms in operator_alarm_ids.items():
+        if sh in {"день", "ночь"}:
+            ops_by_date.setdefault(sd, set()).add(op)
+
+    for sd, ops in ops_by_date.items():
+        for op in ops:
+            day_key = (sd, "день", op)
+            night_key = (sd, "ночь", op)
+            day_alarms = operator_alarm_ids.get(day_key) or set()
+            night_alarms = operator_alarm_ids.get(night_key) or set()
+            if not day_alarms or not night_alarms:
+                continue
+
+            day_cnt = len(day_alarms)
+            night_cnt = len(night_alarms)
+            if day_cnt == night_cnt:
+                day_pres = _presence_seconds(sd, "день", op)
+                night_pres = _presence_seconds(sd, "ночь", op)
+                if day_pres == night_pres:
+                    continue
+                dominant = "день" if day_pres > night_pres else "ночь"
+            else:
+                dominant = "день" if day_cnt > night_cnt else "ночь"
+
+            if dominant == "ночь":
+                from_key = day_key
+                to_key = night_key
+            else:
+                from_key = night_key
+                to_key = day_key
+
+            moved = set(operator_alarm_ids.get(from_key) or set())
+            if not moved:
+                continue
+            operator_alarm_ids.setdefault(to_key, set()).update(moved)
+            operator_alarm_ids.pop(from_key, None)
+
+            from_sd, from_sh, _ = from_key
+            to_sd, to_sh, _ = to_key
+            for alarm_id in moved:
+                _move_operator_alarm(
+                    op=op,
+                    alarm_id=alarm_id,
+                    from_sd=from_sd,
+                    from_sh=from_sh,
+                    to_sd=to_sd,
+                    to_sh=to_sh,
+                )
+
     counts: dict[tuple[date_type, str, str], int] = {
         key: len(alarm_ids)
         for key, alarm_ids in operator_alarm_ids.items()
