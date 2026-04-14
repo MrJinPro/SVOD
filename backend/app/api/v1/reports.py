@@ -36,7 +36,9 @@ _REPORT_PENDING_STALE_SECONDS = 2 * 60 * 60  # 2 hours
 
 
 _PCN_EXCLUDED_ALARM_EXACT_VALUES = (
+    "",
     "-",
+    "—",
     "отмена тревоги",
 )
 
@@ -52,6 +54,7 @@ _PCN_EXCLUDED_ALARM_PATTERNS = (
     "х/о оповещ",
     "х/о на связи",
     "оповещен начальник караула",
+    "снятие не по расписанию отзвонились",
 )
 
 
@@ -743,7 +746,12 @@ def _preview_table_from_csv_bytes(content: bytes, max_rows: int = 200) -> dict:
     return {"kind": "table", "columns": columns, "rows": out_rows}
 
 
-def _preview_table_from_xlsx_bytes(content: bytes, max_rows: int = 200, max_cols: int = 50) -> dict:
+def _preview_table_from_xlsx_bytes(
+    content: bytes,
+    max_rows: int = 200,
+    max_cols: int = 50,
+    sheet_name: str | None = None,
+) -> dict:
     from io import BytesIO
 
     try:
@@ -752,16 +760,33 @@ def _preview_table_from_xlsx_bytes(content: bytes, max_rows: int = 200, max_cols
         raise HTTPException(status_code=500, detail={"code": "MISSING_DEP", "message": "openpyxl not installed"})
 
     wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
-    ws = wb.worksheets[0] if wb.worksheets else None
+    sheet_names = [str(ws.title or "") for ws in wb.worksheets]
+
+    ws = None
+    requested_sheet = str(sheet_name or "").strip()
+    if requested_sheet:
+        for candidate in wb.worksheets:
+            if str(candidate.title or "").strip().lower() == requested_sheet.lower():
+                ws = candidate
+                break
     if ws is None:
-        return {"kind": "table", "columns": [], "rows": []}
+        ws = wb.worksheets[0] if wb.worksheets else None
+    if ws is None:
+        return {"kind": "table", "columns": [], "rows": [], "sheets": [], "sheetName": ""}
 
     collected: list[list[str]] = []
     for row in ws.iter_rows(values_only=True, max_row=max_rows, max_col=max_cols):
         collected.append(["" if v is None else str(v) for v in row])
 
     if not collected:
-        return {"kind": "table", "columns": [], "rows": [], "titleLines": []}
+        return {
+            "kind": "table",
+            "columns": [],
+            "rows": [],
+            "titleLines": [],
+            "sheets": sheet_names,
+            "sheetName": str(ws.title or ""),
+        }
 
     def _norm(v: str) -> str:
         return (v or "").strip().lower()
@@ -803,7 +828,14 @@ def _preview_table_from_xlsx_bytes(content: bytes, max_rows: int = 200, max_cols
     while rows and _non_empty_count(rows[-1]) == 0:
         rows.pop()
 
-    return {"kind": "table", "columns": columns, "rows": rows, "titleLines": title_lines}
+    return {
+        "kind": "table",
+        "columns": columns,
+        "rows": rows,
+        "titleLines": title_lines,
+        "sheets": sheet_names,
+        "sheetName": str(ws.title or ""),
+    }
 
 
 def _csv_bytes_to_xlsx_bytes(content: bytes) -> bytes:
@@ -3536,6 +3568,7 @@ async def preview_report(
     report_id: str,
     maxRows: int = Query(200, ge=1, le=5000, description="Max rows for table preview"),
     maxCols: int = Query(50, ge=1, le=200, description="Max cols for table preview"),
+    sheetName: str | None = Query(default=None, description="Worksheet name for XLSX preview"),
     session: AsyncSession = Depends(get_session),
     current: dict = Depends(get_current_user),
 ) -> dict:
@@ -3579,7 +3612,12 @@ async def preview_report(
     if ext == "csv":
         return _preview_table_from_csv_bytes(content, max_rows=int(maxRows))
     if ext == "xlsx":
-        return _preview_table_from_xlsx_bytes(content, max_rows=int(maxRows), max_cols=int(maxCols))
+        return _preview_table_from_xlsx_bytes(
+            content,
+            max_rows=int(maxRows),
+            max_cols=int(maxCols),
+            sheet_name=sheetName,
+        )
 
     raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Preview not supported"})
 

@@ -235,6 +235,7 @@ export interface OperatorLiveRow {
 export interface GbrTripRow {
   eventId: string;
   agencyEventId?: string | null;
+  alarmId?: string | null;
   gbrName: string;
   calledAt: string | null;
   arrivedAt: string | null;
@@ -242,6 +243,7 @@ export interface GbrTripRow {
   lastActionAt: string | null;
   objectId: string | null;
   objectName: string | null;
+  address?: string | null;
   clientName: string | null;
   responsibleName?: string | null;
   calledOperator?: string | null;
@@ -250,6 +252,7 @@ export interface GbrTripRow {
   meterCount?: string | null;
   timeMeterCount?: string | null;
   resultText?: string | null;
+  resultInspection?: string | null;
 
   tripStatus?: string | null;
 }

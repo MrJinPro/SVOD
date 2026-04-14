@@ -962,7 +962,7 @@ async def build_alarm_messages_xlsx_bytes(
         values = [
             _fmt_dt_ru(getattr(e, "timestamp", None)),
             getattr(e, "object_id", None) or "",
-            getattr(e, "location", None) or getattr(e, "object_name", None) or "",
+            getattr(obj, "address", None) or getattr(e, "location", None) or getattr(e, "object_name", None) or "",
             getattr(e, "client_name", None) or "",
             "1" if accepted or operator else "0",
             _fmt_dt_ru(accepted if isinstance(accepted, datetime) else getattr(obj, "created_at", None)),
@@ -993,6 +993,14 @@ async def build_alarm_messages_xlsx_bytes(
             c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    total_row_idx = start_row + len(events_rows)
+    ws.cell(row=total_row_idx, column=1, value=clean_excel_text("ИТОГО")).font = Font(bold=True)
+    ws.cell(row=total_row_idx, column=2, value=int(len(events_rows) or 0)).font = Font(bold=True)
+    ws.cell(row=total_row_idx, column=2).alignment = Alignment(horizontal="center", vertical="center")
+    for col_idx in range(1, len(columns) + 1):
+        c = ws.cell(row=total_row_idx, column=col_idx)
+        c.border = border
 
     ws.freeze_panes = ws["A5"]
     ws.page_setup.orientation = "landscape"

@@ -349,6 +349,8 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   const [tableColumns, setTableColumns] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<string[][]>([]);
   const [tableTitleLines, setTableTitleLines] = useState<string[]>([]);
+  const [previewSheets, setPreviewSheets] = useState<string[]>([]);
+  const [previewSheetName, setPreviewSheetName] = useState('');
   const [previewMode, setPreviewMode] = useState<'none' | 'gbr' | 'table'>('none');
 
   const humanizeColumn = (c: string) => {
@@ -467,7 +469,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     return report.downloadUrl.startsWith('/reports/') && report.downloadUrl.includes('/download');
   };
 
-  const openPreview = async (report: Report) => {
+  const openPreview = async (report: Report, requestedSheetName?: string) => {
     setPreviewTitle(report.title || typeLabels[report.type] || 'Отчёт');
     setPreviewOpen(true);
     setPreviewLoading(true);
@@ -475,11 +477,17 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     setTableColumns([]);
     setTableRows([]);
     setTableTitleLines([]);
+    setPreviewSheets([]);
     setPreviewMode('none');
     try {
       if (isStoredReport(report)) {
+        const params = new URLSearchParams();
+        params.set('maxRows', '1000');
+        params.set('maxCols', '80');
+        const preferredSheet = requestedSheetName || (report.type === 'pcnLedger' ? 'Тревоги по операторам' : '');
+        if (preferredSheet) params.set('sheetName', preferredSheet);
         const res = await apiFetchRaw(
-          `/reports/${encodeURIComponent(report.id)}/preview?maxRows=1000&maxCols=80`,
+          `/reports/${encodeURIComponent(report.id)}/preview?${params.toString()}`,
         );
         const json = (await res.json()) as any;
 
@@ -494,6 +502,8 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
         setTableColumns(Array.isArray(json?.columns) ? json.columns.map(humanizeColumn) : []);
         setTableRows(Array.isArray(json?.rows) ? json.rows : []);
         setTableTitleLines(Array.isArray(json?.titleLines) ? json.titleLines : []);
+        setPreviewSheets(Array.isArray(json?.sheets) ? json.sheets : []);
+        setPreviewSheetName(String(json?.sheetName || preferredSheet || ''));
         return;
       }
 
@@ -734,6 +744,27 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                 </div>
               ) : (
                 <div className="h-full min-h-0 p-2 sm:p-3">
+                  {previewSheets.length > 1 ? (
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {previewSheets.map((sheet) => (
+                        <Button
+                          key={sheet}
+                          variant={sheet === previewSheetName ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => {
+                            if (sheet !== previewSheetName) {
+                              const activeReport = reports.find((r) => (r.title || typeLabels[r.type] || 'Отчёт') === previewTitle);
+                              if (activeReport) {
+                                void openPreview(activeReport, sheet);
+                              }
+                            }
+                          }}
+                        >
+                          {sheet}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : null}
                   <SheetViewer
                     titleLines={tableTitleLines}
                     columns={tableColumns}

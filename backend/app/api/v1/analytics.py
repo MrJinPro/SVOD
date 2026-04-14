@@ -25,7 +25,7 @@ from app.integrations.agency_sqlite import (
 )
 from app.models.event import Event
 from app.models.event_action import EventAction
-from app.models.object import Responsible
+from app.models.object import Object, Responsible
 
 router = APIRouter(prefix="/analytics")
 
@@ -139,6 +139,18 @@ _GBR_ARCHIVE_CANCEL_PATTERNS = (
 )
 
 
+_GBR_EXCLUDED_RESULT_PATTERNS = (
+    "сопровожд",
+    "на азс",
+    "на сто",
+    "на обеде",
+    "2-е сутки",
+    "2 е сутки",
+    "2е сутки",
+    "развод",
+)
+
+
 _GBR_REAL_NAME_PREFIXES = (
     "булат",
     "гром",
@@ -216,22 +228,38 @@ def _gbr_archive_row_to_trip(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventId": f"archive:{archive_id}" if archive_id else "archive:unknown",
         "agencyEventId": archive_id or None,
+        "alarmId": archive_id or None,
         "gbrName": str(row.get("GroupName") or "").strip() or "Не указан",
         "calledAt": called_at.isoformat() if isinstance(called_at, datetime) else None,
         "arrivedAt": arrived_at.isoformat() if isinstance(arrived_at, datetime) else None,
         "cancelledAt": cancelled_at.isoformat() if isinstance(cancelled_at, datetime) else None,
         "lastActionAt": raw_end.isoformat() if isinstance(raw_end, datetime) else (called_at.isoformat() if isinstance(called_at, datetime) else None),
         "objectId": str(row.get("Panel_id") or "").strip() or None,
-        "objectName": object_address or object_name,
+        "objectName": object_name,
+        "address": object_address,
         "clientName": object_name,
         "responsibleName": None,
         "calledOperator": None,
         "travelSeconds": duration_value,
         "resultText": status_reason,
+        "resultInspection": status_reason,
         "meterCount": None,
         "timeMeterCount": None,
         "tripStatus": trip_status,
     }
+
+
+def _gbr_report_row_is_excluded(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(row.get("tripStatus") or ""),
+            str(row.get("resultText") or ""),
+            str(row.get("resultInspection") or ""),
+        ]
+    ).strip().lower()
+    if not text:
+        return False
+    return any(pattern in text for pattern in _GBR_EXCLUDED_RESULT_PATTERNS)
 
 
 def _merge_gbr_trip_items(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
@@ -268,13 +296,16 @@ def _merge_gbr_trip_items(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any
     for key in [
         "eventId",
         "agencyEventId",
+        "alarmId",
         "gbrName",
         "objectId",
         "objectName",
+        "address",
         "clientName",
         "responsibleName",
         "calledOperator",
         "resultText",
+        "resultInspection",
         "meterCount",
         "timeMeterCount",
         "tripStatus",
@@ -301,7 +332,7 @@ def _dedupe_gbr_trip_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not _is_real_gbr_name(item.get("gbrName")):
             continue
         gbr_name = str(item.get("gbrName") or "").strip().lower()
-        alarm_id = str(item.get("agencyEventId") or item.get("eventId") or "").strip()
+        alarm_id = str(item.get("alarmId") or item.get("agencyEventId") or item.get("eventId") or "").strip()
         if not alarm_id:
             alarm_id = f"__row__{len(dedup)}"
         key = (gbr_name, alarm_id)
@@ -367,7 +398,8 @@ def _filter_gbr_archive_trips(
         items = [item for item in items if str(item.get("gbrName") or "").strip().lower() == gbr_name_norm]
 
     if status_norm in {"all", "arrived"}:
-        items = [item for item in items if item.get("arrivedAt")]
+        items = [item for item in items if item.get("calledAt") and item.get("arrivedAt") and not item.get("cancelledAt")]
+        items = [item for item in items if not _gbr_report_row_is_excluded(item)]
     elif status_norm == "cancelled":
         items = [item for item in items if item.get("cancelledAt") and not item.get("arrivedAt")]
     elif status_norm == "called":
@@ -1255,8 +1287,10 @@ async def gbr_trips(
             sq.c.arrived_ts,
             sq.c.cancelled_ts,
             sq.c.last_action_ts,
+            Event.parent_event_id,
             Event.object_id,
             Event.object_name,
+            Event.location,
             Event.client_name,
             Event.result_text,
             Event.meter_count,
@@ -1296,8 +1330,10 @@ async def gbr_trips(
         arrived,
         cancelled,
         last_action,
+        parent_event_id,
         obj_id,
         obj_name,
+        location,
         client_name,
         result_text,
         meter_count,
@@ -1327,6 +1363,7 @@ async def gbr_trips(
             {
                 "eventId": event_id,
                 "agencyEventId": _agency_event_id(event_id),
+                "alarmId": str(parent_event_id or event_id or "").strip() or None,
                 "gbrName": gbr,
                 "calledAt": called.isoformat() if isinstance(called, datetime) else None,
                 "arrivedAt": arrived.isoformat() if isinstance(arrived, datetime) else None,
@@ -1334,16 +1371,46 @@ async def gbr_trips(
                 "lastActionAt": last_action.isoformat() if isinstance(last_action, datetime) else None,
                 "objectId": obj_id,
                 "objectName": obj_name,
+                "address": location,
                 "clientName": client_name,
                 "responsibleName": responsible_name,
                 "calledOperator": called_operator_name,
                 "travelSeconds": travel_seconds_val,
                 "resultText": result_text,
+                "resultInspection": result_text,
                 "meterCount": meter_count,
                 "timeMeterCount": time_meter_count.isoformat() if isinstance(time_meter_count, datetime) else None,
                 "tripStatus": _trip_status(called, arrived, cancelled),
             }
         )
+
+    object_ids = sorted({str(item.get("objectId") or "").strip() for item in items if str(item.get("objectId") or "").strip()})
+    object_meta_by_id: dict[str, tuple[str, str]] = {}
+    if object_ids:
+        for chunk_start in range(0, len(object_ids), 1000):
+            chunk = object_ids[chunk_start : chunk_start + 1000]
+            out = (await session.execute(select(Object.id, Object.name, Object.address).where(Object.id.in_(chunk)))).all()
+            for object_id, object_name, address in out:
+                object_meta_by_id[str(object_id)] = (str(object_name or "").strip(), str(address or "").strip())
+
+    normalized_items: list[dict[str, Any]] = []
+    for item in items:
+        normalized = dict(item)
+        object_id = str(normalized.get("objectId") or "").strip()
+        if object_id in object_meta_by_id:
+            meta_name, meta_address = object_meta_by_id[object_id]
+            normalized["objectName"] = meta_name or normalized.get("objectName")
+            normalized["address"] = meta_address or normalized.get("address")
+        normalized_items.append(normalized)
+
+    items = _dedupe_gbr_trip_items(normalized_items)
+    if status_norm in {"all", "arrived"}:
+        items = [item for item in items if item.get("calledAt") and item.get("arrivedAt") and not item.get("cancelledAt")]
+        items = [item for item in items if not _gbr_report_row_is_excluded(item)]
+    elif status_norm == "cancelled":
+        items = [item for item in items if item.get("cancelledAt") and not item.get("arrivedAt")]
+    elif status_norm == "called":
+        items = [item for item in items if item.get("calledAt") and not item.get("arrivedAt") and not item.get("cancelledAt")]
 
     # Count (for pagination) - count distinct pairs from the same grouped view.
     count_inner = (
@@ -1510,6 +1577,7 @@ async def gbr_trips_export_xlsx(
     columns = [
         "№ объекта",
         "Адрес",
+        "Название объекта",
         "Шлейф",
         "Инженер",
         "Результат",
@@ -1561,6 +1629,7 @@ async def gbr_trips_export_xlsx(
     widths = [
         12,  # № объекта
         28,  # Адрес
+        28,  # Название объекта
         10,  # Шлейф
         16,  # Инженер
         16,  # Результат
@@ -1599,15 +1668,17 @@ async def gbr_trips_export_xlsx(
         gbr = r.get("gbrName") or ""
         obj_id = r.get("objectId") or ""
         obj_name = r.get("objectName") or ""
+        address = r.get("address") or ""
         client = r.get("clientName") or ""
 
         # Template columns: fill what we have, rest leave empty.
         values = [
             obj_id,
+            address,
             (obj_name or client),
             "",  # шлейф
             "",  # инженер
-            "",  # результат
+            r.get("tripStatus") or "",  # результат
             (called_at or "")[:10].replace("-", ".") if called_at else "",  # дата
             gbr,
             (called_at or "")[:19].replace("T", " ") if called_at else "",
@@ -1617,7 +1688,7 @@ async def gbr_trips_export_xlsx(
                 else ("Отмена" if cancelled_at else "")
             ),
             _format_seconds_hhmmss(r.get("travelSeconds")),
-            "",  # результат осмотра
+            r.get("resultInspection") or r.get("resultText") or r.get("tripStatus") or "",
             r.get("calledOperator") or "",
             "",  # заявка
             "",  # штраф
@@ -1632,6 +1703,13 @@ async def gbr_trips_export_xlsx(
             c = ws.cell(row=row_idx, column=col_idx, value=clean_excel_text(v))
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    summary_row_idx = start_row + len(rows)
+    ws.merge_cells(start_row=summary_row_idx, start_column=1, end_row=summary_row_idx, end_column=len(columns))
+    summary_cell = ws.cell(summary_row_idx, 1, value=clean_excel_text(f"Итого отработанных тревог: {len(rows)}"))
+    summary_cell.font = Font(bold=True)
+    summary_cell.alignment = Alignment(horizontal="right", vertical="center")
+    summary_cell.border = border
 
     # Improve print layout
     ws.freeze_panes = ws["A6"]
@@ -1692,9 +1770,11 @@ async def gbr_trips_export_table_xlsx(
         "ГБР",
         "№ объекта",
         "Объект",
+        "Адрес",
         "Ответственный",
         "Оператор",
         "В пути",
+        "Результат осмотра",
         "ID события (аг.)",
         "Параметр (MeterCount)",
         "Пометка оператора (Result_Text)",
@@ -1729,14 +1809,33 @@ async def gbr_trips_export_table_xlsx(
                 clean_excel_text(r.get("gbrName") or ""),
                 clean_excel_text(r.get("objectId") or ""),
                 clean_excel_text(r.get("objectName") or ""),
+                clean_excel_text(r.get("address") or ""),
                 clean_excel_text((r.get("responsibleName") or r.get("clientName") or "")),
                 clean_excel_text(r.get("calledOperator") or ""),
                 clean_excel_text((_format_seconds_hhmmss(r.get("travelSeconds")) or "—")),
+                clean_excel_text(r.get("resultInspection") or r.get("resultText") or ""),
                 clean_excel_text(r.get("agencyEventId") or ""),
                 clean_excel_text(r.get("meterCount") or ""),
                 clean_excel_text(r.get("resultText") or ""),
             ]
         )
+
+    ws.append([
+        clean_excel_text("ИТОГО"),
+        clean_excel_text(str(int(result.get("total") or 0))),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ])
 
     ws.freeze_panes = "A2"
     ws.column_dimensions["A"].width = 20
@@ -1745,12 +1844,14 @@ async def gbr_trips_export_table_xlsx(
     ws.column_dimensions["D"].width = 16
     ws.column_dimensions["E"].width = 12
     ws.column_dimensions["F"].width = 40
-    ws.column_dimensions["G"].width = 30
-    ws.column_dimensions["H"].width = 22
-    ws.column_dimensions["I"].width = 10
-    ws.column_dimensions["J"].width = 16
+    ws.column_dimensions["G"].width = 34
+    ws.column_dimensions["H"].width = 30
+    ws.column_dimensions["I"].width = 22
+    ws.column_dimensions["J"].width = 10
     ws.column_dimensions["K"].width = 30
-    ws.column_dimensions["L"].width = 45
+    ws.column_dimensions["L"].width = 16
+    ws.column_dimensions["M"].width = 30
+    ws.column_dimensions["N"].width = 45
 
     out = BytesIO()
     wb.save(out)

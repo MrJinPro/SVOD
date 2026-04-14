@@ -342,6 +342,15 @@ function OperatorsMultiSelect({
 export default function Reports() {
   const { data: reports, refetch } = useApiGet('/reports', []);
 
+  useEffect(() => {
+    const hasPending = Array.isArray(reports) && reports.some((report) => report?.status === 'pending');
+    if (!hasPending) return;
+    const timer = window.setInterval(() => {
+      refetch();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [reports, refetch]);
+
   const { data: analyticsFilters } = useApiGet<AnalyticsFiltersResponse>('/analytics/filters', {
     operators: [],
     actionNames: [],

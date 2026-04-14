@@ -21,7 +21,7 @@ import { PaginationBar } from '@/components/PaginationBar';
 import { apiFetchRaw } from '@/lib/api';
 import { toast } from '@/hooks/use-toast';
 import { Download, RefreshCw, RotateCcw, Filter } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AnalyticsFiltersResponse, GbrArchiveSummaryResponse, GbrTripsResponse } from '@/types';
 import type { DateRange } from 'react-day-picker';
 
@@ -78,6 +78,24 @@ function formatDuration(seconds: number | null): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+type DetailColumnKey =
+  | 'calledAt'
+  | 'arrivedAt'
+  | 'tripStatus'
+  | 'gbrName'
+  | 'objectId'
+  | 'objectSummary'
+  | 'calledOperator'
+  | 'travelSeconds'
+  | 'resultInspection';
+
+function reorder<T>(arr: T[], from: number, to: number): T[] {
+  const out = arr.slice();
+  const [item] = out.splice(from, 1);
+  out.splice(to, 0, item);
+  return out;
+}
+
 async function downloadFile(path: string, filename: string) {
   const res = await apiFetchRaw(path, { method: 'GET' });
   const blob = await res.blob();
@@ -103,6 +121,18 @@ export default function GbrReports() {
   const [draft, setDraft] = useState<Draft>(defaultDraft);
   const [applied, setApplied] = useState<Draft>(defaultDraft);
   const [page, setPage] = useState(1);
+  const [detailColumns, setDetailColumns] = useState<DetailColumnKey[]>([
+    'calledAt',
+    'arrivedAt',
+    'tripStatus',
+    'gbrName',
+    'objectId',
+    'objectSummary',
+    'calledOperator',
+    'travelSeconds',
+    'resultInspection',
+  ]);
+  const dragFromRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!filters?.dateMin || !filters?.dateMax) return;
@@ -167,6 +197,65 @@ export default function GbrReports() {
   });
 
   const totalPages = Math.max(1, Math.ceil((trips.total || 0) / (trips.limit || 200)));
+
+  const detailColumnMeta: Record<DetailColumnKey, { label: string; className?: string; render: (r: GbrTripsResponse['data'][number]) => React.ReactNode }> = {
+    calledAt: {
+      label: 'Вызов',
+      className: 'tabular-nums',
+      render: (r) => (r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'),
+    },
+    arrivedAt: {
+      label: 'Прибытие',
+      className: 'tabular-nums',
+      render: (r) => (r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')),
+    },
+    tripStatus: {
+      label: 'Статус',
+      render: (r) => r.tripStatus || '—',
+    },
+    gbrName: {
+      label: 'ГБР',
+      render: (r) => r.gbrName,
+    },
+    objectId: {
+      label: '№ объекта',
+      className: 'tabular-nums',
+      render: (r) => r.objectId || '—',
+    },
+    objectSummary: {
+      label: 'Объект / адрес',
+      render: (r) => (
+        <div>
+          <div className="text-foreground">{r.objectName || '—'}</div>
+          <div className="text-xs text-muted-foreground">{r.address || r.responsibleName || r.clientName || ''}</div>
+        </div>
+      ),
+    },
+    calledOperator: {
+      label: 'Оператор',
+      render: (r) => r.calledOperator || '—',
+    },
+    travelSeconds: {
+      label: 'В пути',
+      className: 'text-right tabular-nums',
+      render: (r) => formatDuration(r.travelSeconds),
+    },
+    resultInspection: {
+      label: 'Результат осмотра',
+      render: (r) => r.resultInspection || r.resultText || '—',
+    },
+  };
+
+  const onDragStartHeader = (idx: number) => {
+    dragFromRef.current = idx;
+  };
+
+  const onDropHeader = (toIdx: number) => {
+    const fromIdx = dragFromRef.current;
+    dragFromRef.current = null;
+    if (fromIdx == null || fromIdx === toIdx) return;
+    setDetailColumns((prev) => reorder(prev, fromIdx, toIdx));
+  };
 
   const exportParams = useMemo(() => {
     const params = new URLSearchParams();
@@ -408,40 +497,53 @@ export default function GbrReports() {
             />
           </div>
           <div className="overflow-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[1320px] text-sm">
               <thead className="bg-muted/50 text-muted-foreground">
                 <tr>
-                  <th className="text-left font-medium px-3 py-2">Вызов</th>
-                  <th className="text-left font-medium px-3 py-2">Прибытие</th>
-                  <th className="text-left font-medium px-3 py-2">Статус</th>
-                  <th className="text-left font-medium px-3 py-2">ГБР</th>
-                  <th className="text-left font-medium px-3 py-2">№ объекта</th>
-                  <th className="text-left font-medium px-3 py-2">Объект</th>
-                  <th className="text-left font-medium px-3 py-2">Оператор</th>
-                  <th className="text-right font-medium px-3 py-2">В пути</th>
+                  {detailColumns.map((key, idx) => {
+                    const meta = detailColumnMeta[key];
+                    return (
+                      <th
+                        key={key}
+                        draggable
+                        onDragStart={() => onDragStartHeader(idx)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => onDropHeader(idx)}
+                        className={`text-left font-medium px-3 py-2 ${meta.className || ''}`}
+                        title="Перетащите, чтобы поменять столбцы местами"
+                      >
+                        {meta.label}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
                 {(trips.data || []).map((r) => (
                   <tr key={`${r.eventId}:${r.gbrName}:${r.calledAt}`} className="border-t border-border">
-                    <td className="px-3 py-2 tabular-nums">{r.calledAt ? r.calledAt.replace('T', ' ').slice(0, 19) : '—'}</td>
-                    <td className="px-3 py-2 tabular-nums">{r.arrivedAt ? r.arrivedAt.replace('T', ' ').slice(0, 19) : (r.cancelledAt ? 'Отмена' : '—')}</td>
-                    <td className="px-3 py-2">{r.tripStatus || '—'}</td>
-                    <td className="px-3 py-2">{r.gbrName}</td>
-                    <td className="px-3 py-2 tabular-nums">{r.objectId || '—'}</td>
-                    <td className="px-3 py-2">
-                      <div className="text-foreground">{r.objectName || '—'}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {r.responsibleName || r.clientName || ''}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">{r.calledOperator || '—'}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatDuration(r.travelSeconds)}</td>
+                    {detailColumns.map((key) => {
+                      const meta = detailColumnMeta[key];
+                      return (
+                        <td key={key} className={`px-3 py-2 align-top ${meta.className || ''}`}>
+                          {meta.render(r)}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
+                {!isLoading && (trips.data || []).length > 0 && (
+                  <tr className="border-t border-border bg-muted/20">
+                    <td className="px-3 py-2 font-semibold" colSpan={Math.max(1, detailColumns.length - 1)}>
+                      Итого отработанных тревог
+                    </td>
+                    <td className="px-3 py-2 font-semibold text-right tabular-nums">
+                      {trips.total}
+                    </td>
+                  </tr>
+                )}
                 {!isLoading && (trips.data || []).length === 0 && (
                   <tr>
-                    <td className="px-3 py-6 text-muted-foreground" colSpan={8}>
+                    <td className="px-3 py-6 text-muted-foreground" colSpan={detailColumns.length}>
                       Нет данных по выбранным фильтрам
                     </td>
                   </tr>
