@@ -729,10 +729,7 @@ async def build_alarm_messages_xlsx_bytes(
         event_ids.extend([str(e.id) for e in group if getattr(e, "id", None)])
 
         timestamp = _min_dt([getattr(e, "timestamp", None) for e in group])
-        latest_result_event = max(
-            group,
-            key=lambda e: getattr(e, "timestamp", None) or datetime.min,
-        ) if group else None
+        latest_timestamp = _max_dt([getattr(e, "timestamp", None) for e in group]) or timestamp
 
         alarm_rows.append(
             {
@@ -749,7 +746,7 @@ async def build_alarm_messages_xlsx_bytes(
                 "eventIds": [str(e.id) for e in group if getattr(e, "id", None)],
                 "acceptedEventId": str(getattr(group[0], "id", "") or ""),
                 "created_at": timestamp,
-                "latest_timestamp": getattr(latest_result_event, "timestamp", None) if latest_result_event is not None else timestamp,
+                "latest_timestamp": latest_timestamp,
             }
         )
 
