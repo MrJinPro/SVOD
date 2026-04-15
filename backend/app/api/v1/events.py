@@ -668,6 +668,24 @@ async def build_alarm_messages_xlsx_bytes(
     limit: int,
     session: AsyncSession,
 ) -> tuple[bytes, int]:
+    def _alarm_id_for_event(e: Event) -> str:
+        return str(getattr(e, "parent_event_id", None) or getattr(e, "id", "") or "").strip()
+
+    def _first_non_empty(values: list[Any]) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _min_dt(values: list[Any]) -> datetime | None:
+        dts = [value for value in values if isinstance(value, datetime)]
+        return min(dts) if dts else None
+
+    def _max_dt(values: list[Any]) -> datetime | None:
+        dts = [value for value in values if isinstance(value, datetime)]
+        return max(dts) if dts else None
+
     filters = await _build_event_filters(
         session=session,
         dateFrom=dateFrom,
@@ -689,10 +707,53 @@ async def build_alarm_messages_xlsx_bytes(
     stmt: Select[tuple[Event]] = select(Event).order_by(Event.timestamp.desc()).limit(limit)
     if where is not None:
         stmt = stmt.where(where)
-    events_rows: list[Event] = (await session.execute(stmt)).scalars().all()
+    raw_events_rows: list[Event] = (await session.execute(stmt)).scalars().all()
 
-    event_ids = [str(e.id) for e in events_rows if e.id]
-    object_ids = sorted({str(e.object_id) for e in events_rows if getattr(e, "object_id", None)}, key=str)
+    alarm_groups: dict[str, list[Event]] = {}
+    alarm_order: list[str] = []
+    for event_row in raw_events_rows:
+        alarm_id = _alarm_id_for_event(event_row)
+        if not alarm_id:
+            continue
+        if alarm_id not in alarm_groups:
+            alarm_groups[alarm_id] = []
+            alarm_order.append(alarm_id)
+        alarm_groups[alarm_id].append(event_row)
+
+    alarm_rows: list[dict[str, Any]] = []
+    event_ids: list[str] = []
+    for alarm_id in alarm_order:
+        group = alarm_groups.get(alarm_id) or []
+        if not group:
+            continue
+        event_ids.extend([str(e.id) for e in group if getattr(e, "id", None)])
+
+        timestamp = _min_dt([getattr(e, "timestamp", None) for e in group])
+        latest_result_event = max(
+            group,
+            key=lambda e: getattr(e, "timestamp", None) or datetime.min,
+        ) if group else None
+
+        alarm_rows.append(
+            {
+                "alarmId": alarm_id,
+                "timestamp": timestamp,
+                "object_id": _first_non_empty([getattr(e, "object_id", None) for e in group]),
+                "object_name": _first_non_empty([getattr(e, "object_name", None) for e in group]),
+                "location": _first_non_empty([getattr(e, "location", None) for e in group]),
+                "client_name": _first_non_empty([getattr(e, "client_name", None) for e in group]),
+                "status": _first_non_empty([getattr(e, "status", None) for e in reversed(group)]),
+                "result_text": _first_non_empty([getattr(e, "result_text", None) for e in reversed(group)]),
+                "description": _first_non_empty([getattr(e, "description", None) for e in reversed(group)]),
+                "code_text": _first_non_empty([getattr(e, "code_text", None) for e in group]),
+                "eventIds": [str(e.id) for e in group if getattr(e, "id", None)],
+                "acceptedEventId": str(getattr(group[0], "id", "") or ""),
+                "created_at": timestamp,
+                "latest_timestamp": getattr(latest_result_event, "timestamp", None) if latest_result_event is not None else timestamp,
+            }
+        )
+
+    object_ids = sorted({str(row.get("object_id") or "") for row in alarm_rows if str(row.get("object_id") or "")}, key=str)
 
     called_match_strict = or_(
         EventAction.action_name.ilike("%Вызван%груп%"),
@@ -794,6 +855,32 @@ async def build_alarm_messages_xlsx_bytes(
                 "accepted": accepted,
                 "operator": op,
             }
+
+    actions_by_alarm: dict[str, dict[str, Any]] = {}
+    for row in alarm_rows:
+        merged: dict[str, Any] = {
+            "gbr": None,
+            "called": None,
+            "arrived": None,
+            "cancelled": None,
+            "accepted": None,
+            "operator": None,
+        }
+        for event_id in row.get("eventIds") or []:
+            action = actions_by_event.get(str(event_id)) or {}
+            if not merged.get("gbr") and action.get("gbr"):
+                merged["gbr"] = action.get("gbr")
+            if not merged.get("operator") and action.get("operator"):
+                merged["operator"] = action.get("operator")
+            called = action.get("called")
+            arrived = action.get("arrived")
+            cancelled = action.get("cancelled")
+            accepted = action.get("accepted")
+            merged["called"] = _min_dt([merged.get("called"), called])
+            merged["arrived"] = _min_dt([merged.get("arrived"), arrived])
+            merged["cancelled"] = _min_dt([merged.get("cancelled"), cancelled])
+            merged["accepted"] = _min_dt([merged.get("accepted"), accepted])
+        actions_by_alarm[str(row.get("alarmId") or "")] = merged
 
     objects_by_id: dict[str, Object] = {}
     if object_ids:
@@ -902,15 +989,15 @@ async def build_alarm_messages_xlsx_bytes(
         return text
 
     start_row = header_row + 1
-    for i, e in enumerate(events_rows, start=0):
+    for i, e in enumerate(alarm_rows, start=0):
         row_idx = start_row + i
 
-        a = actions_by_event.get(str(e.id)) or {}
+        a = actions_by_alarm.get(str(e.get("alarmId") or "")) or {}
         called = a.get("called")
         arrived = a.get("arrived")
         cancelled = a.get("cancelled")
         accepted = a.get("accepted")
-        obj = objects_by_id.get(str(getattr(e, "object_id", "") or ""))
+        obj = objects_by_id.get(str(e.get("object_id") or ""))
 
         travel_seconds: float | None = None
         if isinstance(called, datetime) and isinstance(arrived, datetime):
@@ -919,34 +1006,35 @@ async def build_alarm_messages_xlsx_bytes(
             except Exception:
                 travel_seconds = None
 
-        shleif = _extract_desc_value(e.description, "Шлейф")
-        engineer = _extract_desc_value(e.description, "Инженер")
-        system_name = _extract_desc_value(e.description, "Система")
-        osmotr = _extract_desc_value(e.description, "Осмотр")
-        result_osmotr = _extract_desc_value(e.description, "Результат осмотра") or _extract_desc_value(e.description, "Результат")
-        notes = _extract_desc_value(e.description, "Заметки")
-        zayavka = _extract_desc_value(e.description, "Заявка")
-        result_zayavka = _extract_desc_value(e.description, "Результат заявки")
-        shtraf = _extract_desc_value(e.description, "Штраф")
-        receipt_no = _extract_desc_value(e.description, "№ квитанции") or _extract_desc_value(e.description, "Квитанция")
-        contract_department = _extract_desc_value(e.description, "Договорной отдел")
-        missing_count = _extract_desc_value(e.description, "Пропажи")
-        missing_flag = _extract_desc_value(e.description, "Пропажа")
-        eliminated_flag = _extract_desc_value(e.description, "Устранена")
-        completed_flag = _extract_desc_value(e.description, "Выполнена")
-        false_alarm = _extract_desc_value(e.description, "Ложная сработка")
+        description = str(e.get("description") or "")
+        shleif = _extract_desc_value(description, "Шлейф")
+        engineer = _extract_desc_value(description, "Инженер")
+        system_name = _extract_desc_value(description, "Система")
+        osmotr = _extract_desc_value(description, "Осмотр")
+        result_osmotr = _extract_desc_value(description, "Результат осмотра") or _extract_desc_value(description, "Результат")
+        notes = _extract_desc_value(description, "Заметки")
+        zayavka = _extract_desc_value(description, "Заявка")
+        result_zayavka = _extract_desc_value(description, "Результат заявки")
+        shtraf = _extract_desc_value(description, "Штраф")
+        receipt_no = _extract_desc_value(description, "№ квитанции") or _extract_desc_value(description, "Квитанция")
+        contract_department = _extract_desc_value(description, "Договорной отдел")
+        missing_count = _extract_desc_value(description, "Пропажи")
+        missing_flag = _extract_desc_value(description, "Пропажа")
+        eliminated_flag = _extract_desc_value(description, "Устранена")
+        completed_flag = _extract_desc_value(description, "Выполнена")
+        false_alarm = _extract_desc_value(description, "Ложная сработка")
 
-        operator = ((str(a.get("operator") or "").strip()) or _extract_desc_value(e.description, "Оператор") or "")
-        gbr = (str(a.get("gbr") or "").strip()) or _extract_desc_value(e.description, "ГБР") or ""
-        result_main = (getattr(e, "result_text", None) or "").strip()
+        operator = ((str(a.get("operator") or "").strip()) or _extract_desc_value(description, "Оператор") or "")
+        gbr = (str(a.get("gbr") or "").strip()) or _extract_desc_value(description, "ГБР") or ""
+        result_main = str(e.get("result_text") or "").strip()
         if not result_main:
             result_main = notes
 
         combined_text = " ".join(
             [
-                str(getattr(e, "result_text", None) or ""),
-                str(getattr(e, "description", None) or ""),
-                str(getattr(e, "code_text", None) or ""),
+                str(e.get("result_text") or ""),
+                str(e.get("description") or ""),
+                str(e.get("code_text") or ""),
             ]
         ).lower()
 
@@ -954,24 +1042,24 @@ async def build_alarm_messages_xlsx_bytes(
             false_alarm = "1"
         if not missing_flag and "пропаж" in combined_text:
             missing_flag = "1"
-        if not completed_flag and getattr(e, "status", None) == "resolved":
+        if not completed_flag and e.get("status") == "resolved":
             completed_flag = "1"
-        if not eliminated_flag and getattr(e, "status", None) == "resolved":
+        if not eliminated_flag and e.get("status") == "resolved":
             eliminated_flag = "1"
 
         values = [
-            _fmt_dt_ru(getattr(e, "timestamp", None)),
-            getattr(e, "object_id", None) or "",
-            getattr(obj, "address", None) or getattr(e, "location", None) or getattr(e, "object_name", None) or "",
-            getattr(e, "client_name", None) or "",
+            _fmt_dt_ru(e.get("timestamp") if isinstance(e.get("timestamp"), datetime) else None),
+            e.get("object_id") or "",
+            getattr(obj, "address", None) or e.get("location") or e.get("object_name") or "",
+            e.get("client_name") or "",
             "1" if accepted or operator else "0",
-            _fmt_dt_ru(accepted if isinstance(accepted, datetime) else getattr(obj, "created_at", None)),
+            _fmt_dt_ru(accepted if isinstance(accepted, datetime) else e.get("created_at") if isinstance(e.get("created_at"), datetime) else getattr(obj, "created_at", None)),
             system_name,
             shleif,
             engineer,
             gbr,
             operator,
-            _fmt_time_ru(called if isinstance(called, datetime) else getattr(e, "timestamp", None)),
+            _fmt_time_ru(called if isinstance(called, datetime) else e.get("timestamp") if isinstance(e.get("timestamp"), datetime) else None),
             _fmt_time_ru(arrived) if isinstance(arrived, datetime) else ("Отмена" if isinstance(cancelled, datetime) else ""),
             result_main,
             result_osmotr or osmotr,
@@ -994,9 +1082,9 @@ async def build_alarm_messages_xlsx_bytes(
             c.border = border
             c.alignment = Alignment(vertical="top", wrap_text=True)
 
-    total_row_idx = start_row + len(events_rows)
+    total_row_idx = start_row + len(alarm_rows)
     ws.cell(row=total_row_idx, column=1, value=clean_excel_text("ИТОГО")).font = Font(bold=True)
-    ws.cell(row=total_row_idx, column=2, value=int(len(events_rows) or 0)).font = Font(bold=True)
+    ws.cell(row=total_row_idx, column=2, value=int(len(alarm_rows) or 0)).font = Font(bold=True)
     ws.cell(row=total_row_idx, column=2).alignment = Alignment(horizontal="center", vertical="center")
     for col_idx in range(1, len(columns) + 1):
         c = ws.cell(row=total_row_idx, column=col_idx)
@@ -1009,7 +1097,7 @@ async def build_alarm_messages_xlsx_bytes(
 
     out = BytesIO()
     wb.save(out)
-    return (out.getvalue(), len(events_rows))
+    return (out.getvalue(), len(alarm_rows))
 
 
 def _event_to_out(e: Event) -> dict[str, Any]:
