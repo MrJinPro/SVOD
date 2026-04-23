@@ -1077,6 +1077,16 @@ async def sync_events_from_agency_sqlite_archives(
         except Exception:
             continue
 
+        parent_event_id: str | None = None
+        try:
+            parent_raw = r.get("Event_Parent_id")
+            if parent_raw is not None:
+                parent_int = int(parent_raw)
+                if parent_int > 0:
+                    parent_event_id = f"mssql:{date_key}:{parent_int}"
+        except Exception:
+            parent_event_id = None
+
         max_date_key, max_event_id = (date_key, event_id)
         event_pairs.add((date_key, event_id))
 
@@ -1086,6 +1096,17 @@ async def sync_events_from_agency_sqlite_archives(
 
         panel_id = _safe_str(r.get("Panel_id"))
         obj = objects_by_id.get(panel_id) if panel_id else None
+        if obj is None and panel_id:
+            obj = Object(
+                id=panel_id,
+                name=panel_id,
+                client_name=panel_id,
+                disabled=False,
+                created_at=ts,
+                updated_at=datetime.utcnow(),
+            )
+            session.add(obj)
+            objects_by_id[panel_id] = obj
 
         code = _safe_str(r.get("Code"))
         code_text = _safe_str(r.get("CodeText"))
@@ -1142,9 +1163,17 @@ async def sync_events_from_agency_sqlite_archives(
         else:
             status = "active"
 
+        event_type, event_severity = _classify_agency_archive_event(
+            code=code,
+            code_text=code_text,
+            state_name=state_name,
+            name_state=name_state,
+        )
+
         events_to_insert.append(
             {
                 "id": f"mssql:{date_key}:{event_id}",
+                "parent_event_id": parent_event_id,
                 "timestamp": ts,
                 "type": event_type,
                 "object_id": panel_id,
@@ -1243,6 +1272,7 @@ async def sync_events_from_agency_sqlite_archives(
             sqlite_insert(Event)
             .values(
                 id=bindparam("id"),
+                parent_event_id=bindparam("parent_event_id"),
                 timestamp=bindparam("timestamp"),
                 type=bindparam("type"),
                 object_id=bindparam("object_id"),
@@ -1256,12 +1286,14 @@ async def sync_events_from_agency_sqlite_archives(
                 state_name=bindparam("state_name"),
                 state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
+                result_text=bindparam("result_text"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
             .on_conflict_do_update(
                 index_elements=[Event.id],
                 set_={
+                    "parent_event_id": sqlite_insert(Event).excluded.parent_event_id,
                     "timestamp": sqlite_insert(Event).excluded.timestamp,
                     "type": sqlite_insert(Event).excluded.type,
                     "object_id": sqlite_insert(Event).excluded.object_id,
@@ -1277,6 +1309,7 @@ async def sync_events_from_agency_sqlite_archives(
                     "code_text": sqlite_insert(Event).excluded.code_text,
                     "state_name": sqlite_insert(Event).excluded.state_name,
                     "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
+                    "result_text": sqlite_insert(Event).excluded.result_text,
                 },
             )
         )
