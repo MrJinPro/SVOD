@@ -1,5 +1,6 @@
 import { MainLayout } from '@/components/layout/MainLayout';
 import { ReportsTable } from '@/components/reports/ReportsTable';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useApiGet } from '@/hooks/useApiGet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,7 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Check, ChevronsUpDown, Plus, RefreshCw } from 'lucide-react';
 import { API_BASE_URL, apiFetchRaw, apiGet, apiPost } from '@/lib/api';
 import { loadUiSettings } from '@/lib/uiSettings';
 import { appendCommonEventFilterParams, appendEventDateRangeParams } from '@/lib/eventFilters';
@@ -340,7 +341,7 @@ function OperatorsMultiSelect({
 }
 
 export default function Reports() {
-  const { data: reports, refetch } = useApiGet('/reports', []);
+  const { data: reports, isLoading: reportsLoading, error: reportsError, refetch } = useApiGet('/reports', []);
 
   useEffect(() => {
     const hasPending = Array.isArray(reports) && reports.some((report) => report?.status === 'pending');
@@ -1155,6 +1156,26 @@ export default function Reports() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {reportsError ? (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Не удалось загрузить список отчётов</AlertTitle>
+            <AlertDescription className="space-y-3">
+              <p>{reportsError}</p>
+              <p className="text-xs opacity-80">API: {API_BASE_URL}/reports</p>
+              <Button type="button" variant="outline" size="sm" onClick={refetch}>
+                Повторить загрузку
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {!reportsError && reportsLoading && (!Array.isArray(reports) || reports.length === 0) ? (
+          <div className="mb-4 rounded-md border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            Загрузка списка отчётов...
+          </div>
+        ) : null}
 
         {/* Table */}
         <ReportsTable reports={filteredReports} onChanged={refetch} />
