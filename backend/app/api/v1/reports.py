@@ -620,6 +620,14 @@ async def _create_pending_report(
     session.add(r)
     await session.commit()
     await session.refresh(r)
+    report_worker_logger.info(
+        "Report queued report_id=%s type=%s period_start=%s period_end=%s params=%s",
+        report_id,
+        report_type,
+        period_start,
+        period_end,
+        _report_log_value(params),
+    )
     return r
 
 
@@ -741,6 +749,16 @@ async def _store_generated_report(
 
     await session.commit()
     await session.refresh(r)
+    report_worker_logger.info(
+        "Report stored report_id=%s type=%s filename=%s storage_path=%s bytes=%s events_count=%s critical_count=%s",
+        report_id,
+        report_type,
+        filename,
+        str(path),
+        len(content),
+        int(events_count or 0),
+        int(critical_count or 0),
+    )
     return _as_report_out_dict(r)
 
 
