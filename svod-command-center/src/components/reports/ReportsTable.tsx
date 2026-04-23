@@ -480,13 +480,14 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     setTableRows([]);
     setTableTitleLines([]);
     setPreviewSheets([]);
+    setPreviewSheetName('');
     setPreviewMode('none');
     try {
       if (isStoredReport(report)) {
         const params = new URLSearchParams();
         params.set('maxRows', '1000');
         params.set('maxCols', '80');
-        const preferredSheet = requestedSheetName || (report.type === 'pcnLedger' ? 'Тревоги по операторам' : '');
+        const preferredSheet = requestedSheetName || (report.type === 'pcnLedger' ? 'Ведомость' : '');
         if (preferredSheet) params.set('sheetName', preferredSheet);
         const res = await apiFetchRaw(
           `/reports/${encodeURIComponent(report.id)}/preview?${params.toString()}`,
