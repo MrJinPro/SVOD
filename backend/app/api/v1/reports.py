@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, cast
 from uuid import uuid4
@@ -27,6 +28,7 @@ from app.models.object import Object
 from app.models.report import Report
 
 router = APIRouter(prefix="/reports")
+logger = logging.getLogger(__name__)
 
 
 # If report generation is interrupted (server restart/crash), records can stay in
@@ -588,6 +590,7 @@ def _start_report_worker(
             try:
                 await worker(session)
             except Exception as e:  # noqa: BLE001
+                logger.exception("Report worker failed", extra={"report_id": report_id})
                 await _mark_report_failed(report_id, e, session=session)
 
     asyncio.create_task(_runner())
@@ -693,6 +696,7 @@ def _as_report_out_dict(r: Report) -> dict:
         "status": str(r.status),
         "eventsCount": int(r.events_count or 0),
         "criticalCount": int(r.critical_count or 0),
+        "errorMessage": str(r.error_message or "") or None,
         "downloadUrl": None,
         "fileName": r.file_name,
         "mimeType": r.mime_type,

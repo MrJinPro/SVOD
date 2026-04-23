@@ -26,6 +26,7 @@ import {
 
 type ReportParamsResponse = Report & {
   params?: Record<string, any>;
+  errorMessage?: string | null;
 };
 
 function clamp(n: number, min: number, max: number) {
@@ -420,6 +421,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
   const [paramsLoading, setParamsLoading] = useState(false);
   const [paramsTitle, setParamsTitle] = useState('Параметры отчёта');
   const [paramsText, setParamsText] = useState('');
+  const [paramsErrorText, setParamsErrorText] = useState('');
 
   const formatDate = (dateString: string) => {
     if (!dateString) return '—';
@@ -577,9 +579,11 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     setParamsLoading(true);
     setParamsTitle(`Параметры отчёта: ${report.title || report.type}`);
     setParamsText('');
+    setParamsErrorText('');
     try {
       const data = await fetchReportParams(report);
       const text = JSON.stringify(data?.params || {}, null, 2);
+      setParamsErrorText(String(data?.errorMessage || ''));
       setParamsText(text || '{}');
     } catch (e: any) {
       toast({
@@ -588,6 +592,7 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
         variant: 'destructive',
       });
       setParamsText('');
+      setParamsErrorText('');
     } finally {
       setParamsLoading(false);
     }
@@ -672,12 +677,21 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
           <div className="text-sm text-muted-foreground">
             {paramsLoading ? (
               'Загрузка…'
-            ) : paramsText ? (
-              <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 max-h-[60dvh] overflow-auto">
-                {paramsText}
-              </pre>
             ) : (
-              'Нет параметров.'
+              <div className="space-y-3">
+                {paramsErrorText ? (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-destructive whitespace-pre-wrap break-words">
+                    {paramsErrorText}
+                  </div>
+                ) : null}
+                {paramsText ? (
+                  <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 max-h-[60dvh] overflow-auto">
+                    {paramsText}
+                  </pre>
+                ) : (
+                  'Нет параметров.'
+                )}
+              </div>
             )}
           </div>
         </DialogContent>
