@@ -112,8 +112,45 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ):
                     if col_name not in ea_col_names:
                         await conn.execute(text(f"ALTER TABLE event_actions ADD COLUMN {col_name} {col_type}"))
+
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_event_actions_action_time_event_id "
+                        "ON event_actions (action_time, event_id)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_event_actions_action_time_operator_name "
+                        "ON event_actions (action_time, operator_name)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_event_actions_date_key_raw_event_id "
+                        "ON event_actions (date_key, raw_event_id)"
+                    )
+                )
             except Exception:
                 # If table doesn't exist yet, Base.metadata.create_all will create it.
+                pass
+
+            try:
+                pres_cols = (await conn.execute(text("PRAGMA table_info(user_presence_sessions)"))).all()
+                if pres_cols:
+                    await conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_user_presence_sessions_started_ended "
+                            "ON user_presence_sessions (started_at, ended_at)"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_user_presence_sessions_started_last_seen "
+                            "ON user_presence_sessions (started_at, last_seen_at)"
+                        )
+                    )
+            except Exception:
                 pass
 
             # reports: optional stored files/history
@@ -229,6 +266,50 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ).first()
                 if not col_exists:
                     await conn.execute(text(f"ALTER TABLE event_actions ADD COLUMN {col_name} {col_type}"))
+
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_event_actions_action_time_event_id "
+                    "ON event_actions (action_time, event_id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_event_actions_action_time_operator_name "
+                    "ON event_actions (action_time, operator_name)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_event_actions_date_key_raw_event_id "
+                    "ON event_actions (date_key, raw_event_id)"
+                )
+            )
+
+            presence_table_exists = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_name='user_presence_sessions'
+                        """
+                    )
+                )
+            ).first()
+            if presence_table_exists:
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_user_presence_sessions_started_ended "
+                        "ON user_presence_sessions (started_at, ended_at)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_user_presence_sessions_started_last_seen "
+                        "ON user_presence_sessions (started_at, last_seen_at)"
+                    )
+                )
 
             # reports: optional stored files/history
             for col_name, col_type in (
