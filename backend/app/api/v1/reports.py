@@ -31,6 +31,23 @@ router = APIRouter(prefix="/reports")
 logger = logging.getLogger(__name__)
 
 
+def _build_report_worker_logger() -> logging.Logger:
+    report_logger = logging.getLogger("app.reports.worker")
+    if report_logger.handlers:
+        return report_logger
+
+    log_path = Path(__file__).resolve().parents[3] / "report_worker.log"
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    report_logger.addHandler(handler)
+    report_logger.setLevel(logging.INFO)
+    report_logger.propagate = False
+    return report_logger
+
+
+report_worker_logger = _build_report_worker_logger()
+
+
 # If report generation is interrupted (server restart/crash), records can stay in
 # 'pending' forever. In operator workflow, waiting many minutes is already a
 # broken state, so fail stale reports much earlier and let users regenerate.
@@ -86,6 +103,25 @@ _GBR_REAL_NAME_PREFIXES = (
     "гром",
     "накат",
 )
+
+
+def _report_log_value(value: Any, *, limit: int = 1200) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+    except Exception:
+        text = str(value)
+    if len(text) > limit:
+        return f"{text[:limit]}...<truncated>"
+    return text
+
+
+def _format_report_error(error: Exception | str) -> str:
+    if isinstance(error, Exception):
+        message = str(error).strip()
+        if message:
+            return f"{type(error).__name__}: {message}"
+        return type(error).__name__
+    return str(error)
 
 
 def _public_alarm_id(*candidates: object) -> str | None:
@@ -591,7 +627,7 @@ async def _mark_report_failed(report_id: str, error: Exception | str, *, session
     if r is None:
         return
     r.status = "failed"
-    r.error_message = str(error)
+    r.error_message = _format_report_error(error)
     r.generated_at = _utcnow_iso()
     await session.commit()
 
@@ -603,10 +639,52 @@ def _start_report_worker(
 ) -> None:
     async def _runner() -> None:
         async with SessionLocal() as session:
+            report_type = "unknown"
+            period_start = ""
+            period_end = ""
+            params_text = "{}"
             try:
+                report = await session.get(Report, report_id)
+                if report is not None:
+                    report_type = str(report.type or "unknown")
+                    period_start = str(report.period_start or "")
+                    period_end = str(report.period_end or "")
+                    try:
+                        params_text = _report_log_value(json.loads(report.params_json or "{}"))
+                    except Exception:
+                        params_text = _report_log_value(report.params_json or "")
+
+                report_worker_logger.info(
+                    "Report worker started report_id=%s type=%s period_start=%s period_end=%s params=%s",
+                    report_id,
+                    report_type,
+                    period_start,
+                    period_end,
+                    params_text,
+                )
                 await worker(session)
+                report_worker_logger.info(
+                    "Report worker finished report_id=%s type=%s",
+                    report_id,
+                    report_type,
+                )
             except Exception as e:  # noqa: BLE001
-                logger.exception("Report worker failed", extra={"report_id": report_id})
+                report_worker_logger.exception(
+                    "Report worker failed report_id=%s type=%s period_start=%s period_end=%s params=%s",
+                    report_id,
+                    report_type,
+                    period_start,
+                    period_end,
+                    params_text,
+                )
+                logger.exception(
+                    "Report worker failed report_id=%s type=%s period_start=%s period_end=%s params=%s",
+                    report_id,
+                    report_type,
+                    period_start,
+                    period_end,
+                    params_text,
+                )
                 await _mark_report_failed(report_id, e, session=session)
 
     asyncio.create_task(_runner())
