@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 
 
 # If report generation is interrupted (server restart/crash), records can stay in
-# 'pending' forever. We conservatively auto-fail old pending reports so the UI
-# can show a useful error and allow regeneration.
-_REPORT_PENDING_STALE_SECONDS = 2 * 60 * 60  # 2 hours
+# 'pending' forever. In operator workflow, waiting many minutes is already a
+# broken state, so fail stale reports much earlier and let users regenerate.
+_REPORT_PENDING_STALE_SECONDS = 10 * 60  # 10 minutes
 
 
 _PCN_EXCLUDED_ALARM_EXACT_VALUES = (
