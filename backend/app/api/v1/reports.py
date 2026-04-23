@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from time import monotonic
 from typing import Any, Awaitable, Callable, Iterator, cast
 from uuid import uuid4
 
@@ -2139,6 +2140,18 @@ async def generate_pcn_ledger_xlsx(
 ) -> dict:
     # Stored XLSX report: "Ведомость учета работы операторов ПЦН".
 
+    report_log_id = str(reportId or "direct")
+    pcn_started_at = monotonic()
+
+    def _pcn_stage(stage: str, **payload: Any) -> None:
+        report_worker_logger.info(
+            "PCN stage report_id=%s stage=%s elapsed_ms=%s data=%s",
+            report_log_id,
+            stage,
+            int((monotonic() - pcn_started_at) * 1000),
+            _report_log_value(payload),
+        )
+
     ds = (dispatchersSource or "auto").strip().lower()
     if ds not in {"auto", "presence", "actions"}:
         raise HTTPException(
@@ -2221,6 +2234,17 @@ async def generate_pcn_ledger_xlsx(
 
     if period_end_date < period_start_date:
         raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    _pcn_stage(
+        "window_ready",
+        exactWindow=exact_window,
+        windowStart=window_start,
+        windowEnd=window_end,
+        periodStart=period_start_date,
+        periodEnd=period_end_date,
+        dispatchersSource=ds,
+        includePresenceOnly=includePresenceOnly,
+    )
 
     ps = period_start_date.isoformat()
     pe = period_end_date.isoformat()
@@ -2378,7 +2402,9 @@ async def generate_pcn_ledger_xlsx(
         action_stmt = action_stmt.where(EventAction.operator_name.ilike(f"%{oq}%"))
 
     action_stmt = action_stmt.order_by(EventAction.action_time.asc(), EventAction.event_id.asc())
+    _pcn_stage("fetch_actions_begin")
     action_rows = (await session.execute(action_stmt)).all()
+    _pcn_stage("fetch_actions_done", actionRows=len(action_rows))
 
     exact_event_ids = sorted({str(event_id) for event_id, *_rest in action_rows if event_id})
     events_by_id: dict[str, dict[str, Any]] = {}
@@ -2409,6 +2435,11 @@ async def generate_pcn_ledger_xlsx(
                 "meterCount": str(meter_count or "").strip(),
                 "resultText": str(result_text or "").strip(),
             }
+    _pcn_stage(
+        "resolve_exact_events_done",
+        exactEventIds=len(exact_event_ids),
+        resolvedExactEvents=len(events_by_id),
+    )
 
     unresolved_pairs = {
         (int(raw_event_id), int(date_key))
@@ -2417,6 +2448,7 @@ async def generate_pcn_ledger_xlsx(
     }
     events_by_raw_key: dict[tuple[int, int], dict[str, Any]] = {}
     if unresolved_pairs:
+        _pcn_stage("resolve_raw_events_begin", unresolvedPairs=len(unresolved_pairs))
         raw_ids = sorted({raw_event_id for raw_event_id, _date_key in unresolved_pairs})
         raw_date_keys = sorted({date_key for _raw_event_id, date_key in unresolved_pairs})
         numeric_event_id_expr = sql_cast(Event.id, Integer)
@@ -2462,6 +2494,14 @@ async def generate_pcn_ledger_xlsx(
                         "meterCount": str(meter_count or "").strip(),
                         "resultText": str(result_text or "").strip(),
                     }
+        _pcn_stage(
+            "resolve_raw_events_done",
+            rawDateKeys=len(raw_date_keys),
+            rawIds=len(raw_ids),
+            resolvedRawEvents=len(events_by_raw_key),
+        )
+    else:
+        _pcn_stage("resolve_raw_events_skipped", unresolvedPairs=0)
 
     object_ids = sorted(
         {
@@ -2475,6 +2515,7 @@ async def generate_pcn_ledger_xlsx(
         obj_stmt = select(Object.id, Object.name, Object.address).where(Object.id.in_(chunk))
         for object_id, object_name, address in (await session.execute(obj_stmt)).all():
             objects_by_id[str(object_id)] = (str(object_name or "").strip(), str(address or "").strip())
+    _pcn_stage("fetch_objects_done", objectIds=len(object_ids), resolvedObjects=len(objects_by_id))
 
     rows: list[tuple[str, str, str, datetime, str, str, str, str, str]] = []
     for event_id, raw_event_id, date_key, op, ts in action_rows:
@@ -2507,6 +2548,7 @@ async def generate_pcn_ledger_xlsx(
                 str(event_data.get("resultText") or "").strip(),
             )
         )
+    _pcn_stage("build_source_rows_done", sourceRows=len(rows))
 
     # Presence (who was logged in / "in the system")
     # Used to compute the dispatcher count per shift (staffing), independent from actions.
@@ -2538,7 +2580,9 @@ async def generate_pcn_ledger_xlsx(
             )
         )
 
+        _pcn_stage("fetch_presence_begin", qStart=q_start, qEnd=q_end)
         pres_rows = (await session.execute(pres_stmt)).all()
+        _pcn_stage("fetch_presence_done", presenceRows=len(pres_rows))
 
         # Prepare shift windows for the date range.
         shift_windows: list[tuple[date_type, str, datetime, datetime]] = []
@@ -2580,7 +2624,16 @@ async def generate_pcn_ledger_xlsx(
         for (sd, sh, op), sec in presence_seconds.items():
             if min_seconds <= 0 or sec >= min_seconds:
                 presence_ops_by_shift.setdefault((sd, sh), set()).add(op)
+        _pcn_stage(
+            "presence_processed",
+            presenceShiftOps=sum(len(ops) for ops in presence_ops_by_shift.values()),
+            presenceShiftKeys=len(presence_ops_by_shift),
+        )
     except Exception:
+        report_worker_logger.exception(
+            "PCN presence fallback report_id=%s stage=presence_failed",
+            report_log_id,
+        )
         # Presence is optional; fallback to action-based dispatcher count.
         presence_ops_by_shift = {}
         presence_seconds_by_shift_op = {}
@@ -2759,6 +2812,12 @@ async def generate_pcn_ledger_xlsx(
 
         if event_id_s:
             detail_event_ids.add(event_id_s)
+    _pcn_stage(
+        "aggregate_done",
+        operatorAlarmGroups=len(operator_alarm_ids),
+        shiftTotals=len(shift_alarm_ids),
+        detailEventIds=len(detail_event_ids),
+    )
 
     # Payroll rule (date-based reports only): if the same operator appears in both day and night shifts
     # for the same shift_date, attribute them to the dominant shift (by alarm count)
@@ -2921,6 +2980,7 @@ async def generate_pcn_ledger_xlsx(
             alarm_trip_meta_by_event_id[str(event_id)] = {
                 "gbrName": str(gbr_name or "").strip(),
             }
+    _pcn_stage("fetch_trip_meta_done", tripMetaEvents=len(alarm_trip_meta_by_event_id))
 
     # Build ordered output rows
     ordered_shift_keys = set(shift_totals.keys())
@@ -3090,6 +3150,13 @@ async def generate_pcn_ledger_xlsx(
                     "alarmId": detail.get("alarmId") or "",
                 }
             )
+    _pcn_stage(
+        "output_rows_done",
+        outRows=len(out_rows),
+        controlRows=len(control_rows),
+        detailRows=len(detail_rows),
+        orderedShifts=len(ordered_shifts),
+    )
 
     # Build XLSX
     from io import BytesIO
@@ -3460,8 +3527,10 @@ async def generate_pcn_ledger_xlsx(
         pass
 
     bio = BytesIO()
+    _pcn_stage("workbook_save_begin")
     wb.save(bio)
     data = bio.getvalue()
+    _pcn_stage("workbook_save_done", fileBytes=len(data))
 
     report_id = reportId or str(uuid4())
     filename = f"pcn-ledger-{ps}-{pe}.xlsx"
@@ -3472,6 +3541,8 @@ async def generate_pcn_ledger_xlsx(
         events_count_for_ui = sum(int(x.get("alarms") or 0) for x in out_rows)
     else:
         events_count_for_ui = sum(int(x.get("totalAlarmsUsed") or 0) for x in control_rows) if control_rows else 0
+
+    _pcn_stage("store_report_begin", eventsCountForUi=events_count_for_ui)
 
     return await _store_generated_report(
         session,
