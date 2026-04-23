@@ -469,10 +469,6 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
     return report.downloadUrl.startsWith('/reports/') && report.downloadUrl.includes('/download');
   };
 
-  const canDeleteReport = (report: Report) => {
-    return Boolean(report.id && report.generatedAt);
-  };
-
   const openPreview = async (report: Report, requestedSheetName?: string) => {
     setPreviewTitle(report.title || typeLabels[report.type] || 'Отчёт');
     setPreviewOpen(true);
@@ -892,15 +888,13 @@ export function ReportsTable({ reports, onChanged }: ReportsTableProps) {
                         Перегенерировать
                       </DropdownMenuItem>
 
-                      {canDeleteReport(report) ? (
-                        <DropdownMenuItem
-                          onClick={() => {
-                            confirmDelete(report);
-                          }}
-                        >
-                          Удалить
-                        </DropdownMenuItem>
-                      ) : null}
+                      <DropdownMenuItem
+                        onClick={() => {
+                          confirmDelete(report);
+                        }}
+                      >
+                        Удалить
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
