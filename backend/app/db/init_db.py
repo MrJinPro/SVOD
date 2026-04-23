@@ -25,6 +25,20 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             if "object_id" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN object_id VARCHAR(64)"))
 
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_events_type_timestamp_id "
+                    "ON events (type, timestamp, id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_events_alarm_datekey_numeric_id "
+                    "ON events (CAST(strftime('%Y%m%d', timestamp) AS INTEGER), CAST(id AS INTEGER)) "
+                    "WHERE type = 'alarm' AND id GLOB '[0-9]*' AND id NOT GLOB '*[^0-9]*'"
+                )
+            )
+
             # Enrich events with agency code/state info (optional)
             if "parent_event_id" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN parent_event_id VARCHAR(64)"))
@@ -183,6 +197,20 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
             ).first()
             if not exists:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN object_id VARCHAR(64)"))
+
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_events_type_timestamp_id "
+                    "ON events (type, timestamp, id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_events_alarm_datekey_numeric_id "
+                    "ON events ((CAST(to_char(timestamp, 'YYYYMMDD') AS INTEGER)), (CAST(id AS INTEGER))) "
+                    "WHERE type = 'alarm' AND id ~ '^[0-9]+$'"
+                )
+            )
 
             for col_name, col_type in (
                 ("parent_event_id", "VARCHAR(64)"),
