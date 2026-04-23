@@ -344,10 +344,9 @@ export default function Reports() {
 
   useEffect(() => {
     const hasPending = Array.isArray(reports) && reports.some((report) => report?.status === 'pending');
-    if (!hasPending) return;
     const timer = window.setInterval(() => {
       refetch();
-    }, 4000);
+    }, hasPending ? 4000 : 15000);
     return () => window.clearInterval(timer);
   }, [reports, refetch]);
 

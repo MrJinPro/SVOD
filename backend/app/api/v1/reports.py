@@ -53,8 +53,10 @@ _PCN_EXCLUDED_ALARM_PATTERNS = (
     "тревожная кнопка проверка ответственных",
     "отмена группы",
     "групповая обработка",
+    "х/о оповещен",
     "х/о оповещ",
     "х/о на связи",
+    "х/о на связи н/нет",
     "оповещен начальник караула",
     "снятие не по расписанию отзвонились",
 )
@@ -84,6 +86,20 @@ _GBR_REAL_NAME_PREFIXES = (
     "гром",
     "накат",
 )
+
+
+def _public_alarm_id(*candidates: object) -> str | None:
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        if ":" in text:
+            tail = text.rsplit(":", 1)[-1].strip()
+            if tail.isdigit():
+                return tail
+            continue
+        return text
+    return None
 
 
 def _agency_event_id(event_id: str | None) -> str | None:
@@ -1453,7 +1469,12 @@ async def generate_gbr_raport_xlsx(
         item = dict(row)
         event_id = str(item.get("eventId") or "").strip()
         object_id = str(item.get("objectId") or "").strip()
-        item["alarmId"] = str(item.get("alarmId") or event_alarm_ids.get(event_id) or item.get("agencyEventId") or event_id or "").strip() or None
+        item["alarmId"] = _public_alarm_id(
+            item.get("alarmId"),
+            event_alarm_ids.get(event_id),
+            item.get("agencyEventId"),
+            event_id,
+        )
 
         object_name = str(item.get("objectName") or "").strip()
         address = str(item.get("address") or "").strip()
@@ -2394,10 +2415,10 @@ async def generate_pcn_ledger_xlsx(
             address = obj_address or address
 
         resolved_event_id = str(event_data.get("eventId") or "").strip()
-        alarm_id = str(event_data.get("parentEventId") or resolved_event_id).strip()
+        alarm_id = _public_alarm_id(event_data.get("parentEventId"), raw_event_id, resolved_event_id)
         rows.append(
             (
-                alarm_id,
+            str(alarm_id or ""),
                 resolved_event_id,
                 str(op or "").strip(),
                 ts,
@@ -3247,7 +3268,7 @@ async def generate_pcn_ledger_xlsx(
             "ГБР",
             "Результат",
             "Оператор(ы)",
-            "ID тревоги",
+            "№ тревоги",
         ]
         for idx, h in enumerate(ws3_headers, start=1):
             cell = ws3.cell(1, idx, clean_excel_text(h))
@@ -3306,7 +3327,7 @@ async def generate_pcn_ledger_xlsx(
             "№ шлейфа",
             "ГБР",
             "Результат",
-            "ID тревоги",
+            "№ тревоги",
         ]
         for idx, h in enumerate(ws4_headers, start=1):
             cell = ws4.cell(1, idx, clean_excel_text(h))
