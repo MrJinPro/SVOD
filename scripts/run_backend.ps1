@@ -21,6 +21,12 @@ function Resolve-PythonExe([string]$rootDir, [string]$backendPath) {
   return $null
 }
 
+function Convert-ToSqliteUrl([string]$path, [string]$scheme) {
+  $fullPath = [System.IO.Path]::GetFullPath($path)
+  $normalizedPath = $fullPath.Replace('\\', '/')
+  return "${scheme}:///$normalizedPath"
+}
+
 $python = Resolve-PythonExe -rootDir $root -backendPath $backendDir
 
 if (-not $python) {
@@ -44,13 +50,14 @@ try {
 
 
 # Dev defaults (can be overridden by environment or backend/.env if you run without this script)
-$env:DATABASE_URL = 'sqlite+aiosqlite:///d:/alarm/SVOD_SOFT/backend/svod.db'
+$backendDb = Join-Path $backendDir 'svod.db'
+$env:DATABASE_URL = Convert-ToSqliteUrl -path $backendDb -scheme 'sqlite+aiosqlite'
 
 # По умолчанию для dev-режима используем SQLite-слепок агентской БД, если он есть.
 # Это также отключает попытки синка из MSSQL (которые требуют pyodbc/ODBC).
 $agencyDb = Join-Path $backendDir 'agency_raw.db'
 if (Test-Path $agencyDb) {
-  $env:AGENCY_DATABASE_URL = 'sqlite:///d:/alarm/SVOD_SOFT/backend/agency_raw.db'
+  $env:AGENCY_DATABASE_URL = Convert-ToSqliteUrl -path $agencyDb -scheme 'sqlite'
 }
 
 # Allow Vite dev/preview from LAN. Regex is the most robust here because
