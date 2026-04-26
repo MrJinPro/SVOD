@@ -204,13 +204,17 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                     "ON events (type, timestamp, id)"
                 )
             )
-            await conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_events_alarm_datekey_numeric_id "
-                    "ON events ((CAST(to_char(timestamp, 'YYYYMMDD') AS INTEGER)), (CAST(id AS INTEGER))) "
-                    "WHERE type = 'alarm' AND id ~ '^[0-9]+$'"
-                )
-            )
+            # PostgreSQL does not allow stable functions in index expressions unless marked IMMUTABLE.
+            # `to_char(timestamp, 'YYYYMMDD')` is not immutable, so skip this index for Postgres.
+            # The `ix_events_type_timestamp_id` index is sufficient for startup and common event filtering.
+            # TODO: add a Postgres-compatible date_key expression index when schema supports a dedicated column.
+            # await conn.execute(
+            #     text(
+            #         "CREATE INDEX IF NOT EXISTS ix_events_alarm_datekey_numeric_id "
+            #         "ON events ((CAST(to_char(timestamp, 'YYYYMMDD') AS INTEGER)), (CAST(id AS INTEGER))) "
+            #         "WHERE type = 'alarm' AND id ~ '^[0-9]+$'"
+            #     )
+            # )
 
             for col_name, col_type in (
                 ("parent_event_id", "VARCHAR(64)"),
