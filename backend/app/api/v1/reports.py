@@ -5,7 +5,9 @@ import json
 import logging
 from pathlib import Path
 from time import monotonic
-from typing import Any, Awaitable, Callable, Iterator, cast
+from typing import Any, Awaitable, Callable, Iterator, cast, TypeVar
+
+T = TypeVar('T')
 from uuid import uuid4
 
 from datetime import datetime, timezone
@@ -549,7 +551,7 @@ def _safe_report_filename(filename: str) -> str:
     return name or 'report.xlsx'
 
 
-def _iter_chunks[T](values: list[T], chunk_size: int = 1000) -> Iterator[list[T]]:
+def _iter_chunks(values, chunk_size=1000):
     for i in range(0, len(values), chunk_size):
         yield values[i : i + chunk_size]
 
@@ -2472,46 +2474,45 @@ async def generate_pcn_ledger_xlsx(
         numeric_event_id_expr = sql_cast(Event.id, Integer)
         date_key_expr = _event_date_key_expr(dialect_name)
 
-        for date_key in raw_date_keys:
-            for raw_chunk in _iter_chunks(raw_ids):
-                raw_stmt = (
-                    select(
-                        Event.id,
-                        Event.parent_event_id,
-                        Event.object_id,
-                        Event.object_name,
-                        Event.location,
-                        Event.meter_count,
-                        Event.result_text,
-                        numeric_event_id_expr.label("raw_event_id"),
-                        date_key_expr.label("date_key"),
-                    )
-                    .where(Event.type == "alarm")
-                    .where(~_pcn_excluded_alarm_predicate())
-                    .where(_numeric_event_id_predicate(dialect_name))
-                    .where(date_key_expr == date_key)
-                    .where(numeric_event_id_expr.in_(list(raw_chunk)))
+        for raw_chunk in _iter_chunks(raw_ids):
+            raw_stmt = (
+                select(
+                    Event.id,
+                    Event.parent_event_id,
+                    Event.object_id,
+                    Event.object_name,
+                    Event.location,
+                    Event.meter_count,
+                    Event.result_text,
+                    numeric_event_id_expr.label("raw_event_id"),
+                    date_key_expr.label("date_key"),
                 )
-                for (
-                    event_id,
-                    parent_event_id,
-                    object_id,
-                    object_name,
-                    location,
-                    meter_count,
-                    result_text,
-                    raw_event_id,
-                    resolved_date_key,
-                ) in (await session.execute(raw_stmt)).all():
-                    events_by_raw_key[(int(raw_event_id), int(resolved_date_key))] = {
-                        "eventId": str(event_id),
-                        "parentEventId": str(parent_event_id or "").strip() or None,
-                        "objectId": str(object_id or "").strip(),
-                        "objectName": str(object_name or "").strip(),
-                        "address": str(location or "").strip(),
-                        "meterCount": str(meter_count or "").strip(),
-                        "resultText": str(result_text or "").strip(),
-                    }
+                .where(Event.type == "alarm")
+                .where(~_pcn_excluded_alarm_predicate())
+                .where(_numeric_event_id_predicate(dialect_name))
+                .where(date_key_expr.in_(raw_date_keys))
+                .where(numeric_event_id_expr.in_(list(raw_chunk)))
+            )
+            for (
+                event_id,
+                parent_event_id,
+                object_id,
+                object_name,
+                location,
+                meter_count,
+                result_text,
+                raw_event_id,
+                resolved_date_key,
+            ) in (await session.execute(raw_stmt)).all():
+                events_by_raw_key[(int(raw_event_id), int(resolved_date_key))] = {
+                    "eventId": str(event_id),
+                    "parentEventId": str(parent_event_id or "").strip() or None,
+                    "objectId": str(object_id or "").strip(),
+                    "objectName": str(object_name or "").strip(),
+                    "address": str(location or "").strip(),
+                    "meterCount": str(meter_count or "").strip(),
+                    "resultText": str(result_text or "").strip(),
+                }
         _pcn_stage(
             "resolve_raw_events_done",
             rawDateKeys=len(raw_date_keys),
