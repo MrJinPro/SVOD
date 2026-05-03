@@ -220,6 +220,7 @@ def fetch_archive_events_since(
             sql = f"""
             SELECT
               a.Event_id,
+              a.Event_Parent_id,
               a.Date_Key,
               a.Panel_id,
               a.Group_ AS GroupNo,
@@ -228,6 +229,8 @@ def fetch_archive_events_since(
               a.Code,
               a.CodeGroup,
               a.TimeEvent,
+              a.MeterCount,
+              a.TimeMeterCount,
               a.Result_Text,
               a.StateEvent,
               (
@@ -285,6 +288,7 @@ def fetch_archive_events_since(
             # Coerce timestamps (sqlite stores them as TEXT).
             for r in rows:
                 r["TimeEvent"] = _parse_dt(r.get("TimeEvent"))
+                r["TimeMeterCount"] = _parse_dt(r.get("TimeMeterCount"))
                 r["OperationTime"] = _parse_dt(r.get("OperationTime"))
 
             out.extend(rows)
@@ -361,6 +365,27 @@ def fetch_gbr_group_statuses(sqlite_url: str) -> dict[str, Any]:
         "snapshotAt": snapshot_at.isoformat(),
         "rows": rows,
     }
+
+
+def fetch_gbr_names(sqlite_url: str) -> list[str]:
+    """Возвращает список уникальных имён ГБР из агентской SQLite-слепка."""
+    info = parse_sqlite_url(sqlite_url)
+    if not info.path.exists():
+        raise FileNotFoundError(f"Agency SQLite DB not found: {info.path}")
+
+    with _connect(info.path) as conn:
+        rows = _rows_to_dicts(
+            conn.execute(
+                """
+                SELECT DISTINCT Description
+                FROM GroupResponse
+                WHERE Description IS NOT NULL AND trim(Description) != ''
+                ORDER BY Description ASC
+                """
+            )
+        )
+
+    return [str(r.get("Description") or "").strip() for r in rows if str(r.get("Description") or "").strip()]
 
 
 def fetch_gbr_archive_trips(

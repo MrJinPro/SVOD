@@ -48,6 +48,10 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN code_group INTEGER"))
             if "code_text" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN code_text VARCHAR(500)"))
+            if "line" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN line VARCHAR(10)"))
+            if "zone" not in col_names:
+                await conn.execute(text("ALTER TABLE events ADD COLUMN zone INTEGER"))
             if "state_name" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN state_name VARCHAR(60)"))
             if "state_is_over_process" not in col_names:
@@ -60,6 +64,9 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN meter_count TEXT"))
             if "time_meter_count" not in col_names:
                 await conn.execute(text("ALTER TABLE events ADD COLUMN time_meter_count DATETIME"))
+
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_line ON events (line)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_zone ON events (zone)"))
 
             user_cols = (await conn.execute(text("PRAGMA table_info(users)"))).all()
             user_col_names = {c[1] for c in user_cols}
@@ -221,6 +228,8 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ("code", "VARCHAR(16)"),
                 ("code_group", "INTEGER"),
                 ("code_text", "VARCHAR(500)"),
+                ("line", "VARCHAR(10)"),
+                ("zone", "INTEGER"),
                 ("state_name", "VARCHAR(60)"),
                 ("state_is_over_process", "BOOLEAN"),
                 ("result_text", "TEXT"),
@@ -241,6 +250,9 @@ async def _ensure_schema(engine: AsyncEngine) -> None:
                 ).first()
                 if not col_exists:
                     await conn.execute(text(f"ALTER TABLE events ADD COLUMN {col_name} {col_type}"))
+
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_line ON events (line)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_zone ON events (zone)"))
 
             user_hash_exists = (
                 await conn.execute(

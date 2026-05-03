@@ -56,7 +56,7 @@ EXEC sp_addextendedproperty
 GO
 
 EXEC sp_addextendedproperty
-'MS_Description', N'1 - изменение состояния',
+'MS_Description', N'1 - изменение состояния', 
 'SCHEMA', N'dbo',
 'TABLE', N'States',
 'COLUMN', N'IsChangeStateEvent'

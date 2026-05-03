@@ -232,6 +232,15 @@ def _safe_str(v: Any) -> str | None:
     return s or None
 
 
+def _safe_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
 def _classify_agency_archive_event(
     *,
     code: str | None,
@@ -482,10 +491,14 @@ async def sync_recent_events_from_agency_mssql_archives(
                 "code": code,
                 "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
                 "code_text": code_text,
+                "line": line,
+                "zone": _safe_int(zone),
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
                 "result_text": result_text,
+                "meter_count": _safe_str(r.get("MeterCount")),
+                "time_meter_count": _coerce_dt(r.get("TimeMeterCount")),
                 "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }
@@ -571,9 +584,13 @@ async def sync_recent_events_from_agency_mssql_archives(
                 "code": insert_stmt.excluded.code,
                 "code_group": insert_stmt.excluded.code_group,
                 "code_text": insert_stmt.excluded.code_text,
+                "line": insert_stmt.excluded.line,
+                "zone": insert_stmt.excluded.zone,
                 "state_name": insert_stmt.excluded.state_name,
                 "state_is_over_process": insert_stmt.excluded.state_is_over_process,
                 "result_text": insert_stmt.excluded.result_text,
+                "meter_count": insert_stmt.excluded.meter_count,
+                "time_meter_count": insert_stmt.excluded.time_meter_count,
             },
         )
         result = await session.execute(stmt)
@@ -602,10 +619,14 @@ async def sync_recent_events_from_agency_mssql_archives(
                 code=bindparam("code"),
                 code_group=bindparam("code_group"),
                 code_text=bindparam("code_text"),
+                line=bindparam("line"),
+                zone=bindparam("zone"),
                 state_name=bindparam("state_name"),
                 state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
                 result_text=bindparam("result_text"),
+                meter_count=bindparam("meter_count"),
+                time_meter_count=bindparam("time_meter_count"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
@@ -626,9 +647,13 @@ async def sync_recent_events_from_agency_mssql_archives(
                     "code": sqlite_insert(Event).excluded.code,
                     "code_group": sqlite_insert(Event).excluded.code_group,
                     "code_text": sqlite_insert(Event).excluded.code_text,
+                    "line": sqlite_insert(Event).excluded.line,
+                    "zone": sqlite_insert(Event).excluded.zone,
                     "state_name": sqlite_insert(Event).excluded.state_name,
                     "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
                     "result_text": sqlite_insert(Event).excluded.result_text,
+                    "meter_count": sqlite_insert(Event).excluded.meter_count,
+                    "time_meter_count": sqlite_insert(Event).excluded.time_meter_count,
                 },
             )
         )
@@ -1184,10 +1209,14 @@ async def sync_events_from_agency_sqlite_archives(
                 "code": code,
                 "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
                 "code_text": code_text,
+                "line": line,
+                "zone": _safe_int(zone),
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
                 "result_text": result_text,
+                "meter_count": _safe_str(r.get("MeterCount")),
+                "time_meter_count": _coerce_dt(r.get("TimeMeterCount")),
                 "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }
@@ -1283,10 +1312,14 @@ async def sync_events_from_agency_sqlite_archives(
                 code=bindparam("code"),
                 code_group=bindparam("code_group"),
                 code_text=bindparam("code_text"),
+                line=bindparam("line"),
+                zone=bindparam("zone"),
                 state_name=bindparam("state_name"),
                 state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
                 result_text=bindparam("result_text"),
+                meter_count=bindparam("meter_count"),
+                time_meter_count=bindparam("time_meter_count"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
@@ -1307,9 +1340,13 @@ async def sync_events_from_agency_sqlite_archives(
                     "code": sqlite_insert(Event).excluded.code,
                     "code_group": sqlite_insert(Event).excluded.code_group,
                     "code_text": sqlite_insert(Event).excluded.code_text,
+                    "line": sqlite_insert(Event).excluded.line,
+                    "zone": sqlite_insert(Event).excluded.zone,
                     "state_name": sqlite_insert(Event).excluded.state_name,
                     "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
                     "result_text": sqlite_insert(Event).excluded.result_text,
+                    "meter_count": sqlite_insert(Event).excluded.meter_count,
+                    "time_meter_count": sqlite_insert(Event).excluded.time_meter_count,
                 },
             )
         )
@@ -1542,10 +1579,14 @@ async def sync_events_from_agency_mssql_archives(
                 "code": code,
                 "code_group": int(r.get("CodeGroup")) if r.get("CodeGroup") is not None else None,
                 "code_text": code_text,
+                "line": line,
+                "zone": _safe_int(zone),
                 "state_name": state_name,
                 "state_is_over_process": bool(state_is_over) if state_is_over is not None else None,
                 "description": "\n".join(desc_parts) if desc_parts else "",
                 "result_text": result_text,
+                "meter_count": _safe_str(r.get("MeterCount")),
+                "time_meter_count": _coerce_dt(r.get("TimeMeterCount")),
                 "location": (obj.address if obj and obj.address else None),
                 "operator_id": person,
             }
@@ -1631,9 +1672,13 @@ async def sync_events_from_agency_mssql_archives(
                 "code": insert_stmt.excluded.code,
                 "code_group": insert_stmt.excluded.code_group,
                 "code_text": insert_stmt.excluded.code_text,
+                "line": insert_stmt.excluded.line,
+                "zone": insert_stmt.excluded.zone,
                 "state_name": insert_stmt.excluded.state_name,
                 "state_is_over_process": insert_stmt.excluded.state_is_over_process,
                 "result_text": insert_stmt.excluded.result_text,
+                "meter_count": insert_stmt.excluded.meter_count,
+                "time_meter_count": insert_stmt.excluded.time_meter_count,
             },
         )
         result = await session.execute(stmt)
@@ -1666,10 +1711,14 @@ async def sync_events_from_agency_mssql_archives(
                 code=bindparam("code"),
                 code_group=bindparam("code_group"),
                 code_text=bindparam("code_text"),
+                line=bindparam("line"),
+                zone=bindparam("zone"),
                 state_name=bindparam("state_name"),
                 state_is_over_process=bindparam("state_is_over_process"),
                 description=bindparam("description"),
                 result_text=bindparam("result_text"),
+                meter_count=bindparam("meter_count"),
+                time_meter_count=bindparam("time_meter_count"),
                 location=bindparam("location"),
                 operator_id=bindparam("operator_id"),
             )
@@ -1690,9 +1739,13 @@ async def sync_events_from_agency_mssql_archives(
                     "code": sqlite_insert(Event).excluded.code,
                     "code_group": sqlite_insert(Event).excluded.code_group,
                     "code_text": sqlite_insert(Event).excluded.code_text,
+                    "line": sqlite_insert(Event).excluded.line,
+                    "zone": sqlite_insert(Event).excluded.zone,
                     "state_name": sqlite_insert(Event).excluded.state_name,
                     "state_is_over_process": sqlite_insert(Event).excluded.state_is_over_process,
                     "result_text": sqlite_insert(Event).excluded.result_text,
+                    "meter_count": sqlite_insert(Event).excluded.meter_count,
+                    "time_meter_count": sqlite_insert(Event).excluded.time_meter_count,
                 },
             )
         )

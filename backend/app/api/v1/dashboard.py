@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import and_, func, not_, select
+from sqlalchemy import and_, func, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
@@ -45,6 +45,26 @@ def _coerce_dt(value: Any) -> datetime | None:
     return None
 
 
+def _db_dt_value(session: AsyncSession, value: datetime) -> datetime | str:
+    try:
+        bind = session.get_bind()
+        dialect = getattr(bind, "dialect", None)
+        if getattr(dialect, "name", None) == "sqlite":
+            return value.strftime("%Y-%m-%d %H:%M:%S.%f")
+    except Exception:
+        pass
+    return value
+
+
+def _is_sqlite(session: AsyncSession) -> bool:
+    try:
+        bind = session.get_bind()
+        dialect = getattr(bind, "dialect", None)
+        return getattr(dialect, "name", None) == "sqlite"
+    except Exception:
+        return False
+
+
 async def _get_reference_day_and_ts(session: AsyncSession) -> tuple[date_type, datetime | None]:
     # Avoid func.max() here: some DBs/dialects can return non-datetime values.
     latest_ts = (
@@ -72,14 +92,84 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
     prev_day = ref_day - timedelta(days=1)
     dt_from, dt_to = _day_bounds(ref_day)
     y_from, y_to = _day_bounds(prev_day)
+    dt_from_db = _db_dt_value(session, dt_from)
+    dt_to_db = _db_dt_value(session, dt_to)
+    y_from_db = _db_dt_value(session, y_from)
+    y_to_db = _db_dt_value(session, y_to)
+    ref_day_str = ref_day.isoformat()
+    prev_day_str = prev_day.isoformat()
 
     alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
+
+    if _is_sqlite(session):
+        total_today = (
+            await session.execute(
+                text(
+                    "SELECT count(DISTINCT coalesce(parent_event_id, id)) "
+                    "FROM events WHERE date(timestamp) = :day"
+                ),
+                {"day": ref_day_str},
+            )
+        ).scalar_one()
+
+        total_yesterday = (
+            await session.execute(
+                text(
+                    "SELECT count(DISTINCT coalesce(parent_event_id, id)) "
+                    "FROM events WHERE date(timestamp) = :day"
+                ),
+                {"day": prev_day_str},
+            )
+        ).scalar_one()
+
+        critical_day = (
+            await session.execute(
+                text(
+                    "SELECT count(DISTINCT coalesce(parent_event_id, id)) "
+                    "FROM events WHERE severity = 'critical' AND date(timestamp) = :day"
+                ),
+                {"day": ref_day_str},
+            )
+        ).scalar_one()
+
+        active_objects = (
+            await session.execute(
+                text(
+                    "SELECT count(DISTINCT object_id) FROM events "
+                    "WHERE object_id IS NOT NULL AND trim(object_id) <> '' "
+                    "AND object_id NOT LIKE 'ID%' AND object_id NOT LIKE '*%'"
+                )
+            )
+        ).scalar_one()
+
+        reports_generated = (
+            await session.execute(
+                text(
+                    "SELECT count(DISTINCT date(timestamp)) FROM events "
+                    "WHERE date(timestamp) >= :date_from AND date(timestamp) <= :date_to"
+                ),
+                {
+                    "date_from": week_from.date().isoformat(),
+                    "date_to": week_to.date().isoformat(),
+                },
+            )
+        ).scalar_one()
+
+        trend = _trend_percent(int(total_today), int(total_yesterday))
+
+        return {
+            "totalEvents": int(total_today),
+            "criticalEvents": int(critical_day),
+            "activeObjects": int(active_objects),
+            "reportsGenerated": int(reports_generated),
+            "eventsTrend": round(float(trend), 1),
+        }
 
     total_today = (
         await session.execute(
             select(func.count(func.distinct(alarm_id_expr)))
             .select_from(Event)
-            .where(Event.timestamp >= dt_from, Event.timestamp <= dt_to)
+            .where(func.date(Event.timestamp) == ref_day_str)
         )
     ).scalar_one()
 
@@ -87,7 +177,7 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
         await session.execute(
             select(func.count(func.distinct(alarm_id_expr)))
             .select_from(Event)
-            .where(Event.timestamp >= y_from, Event.timestamp <= y_to)
+            .where(func.date(Event.timestamp) == prev_day_str)
         )
     ).scalar_one()
 
@@ -96,8 +186,7 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
         await session.execute(
             select(func.count(func.distinct(alarm_id_expr))).select_from(Event).where(
                 Event.severity == "critical",
-                Event.timestamp >= dt_from,
-                Event.timestamp <= dt_to,
+                func.date(Event.timestamp) == ref_day_str,
             )
         )
     ).scalar_one()
@@ -111,14 +200,27 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)) -> dict[
             )
         )
     ).scalar_one()
+    if not int(active_objects or 0):
+        active_objects = (
+            await session.execute(
+                select(func.count(func.distinct(Event.object_id))).select_from(Event).where(
+                    Event.object_id.is_not(None),
+                    Event.object_id != "",
+                    not_(Event.object_id.ilike("ID%")),
+                    not_(Event.object_id.like("*%")),
+                )
+            )
+        ).scalar_one()
 
     week_from = datetime.combine(ref_day - timedelta(days=6), datetime.min.time())
     week_to = dt_to
+    week_from_db = _db_dt_value(session, week_from)
+    week_to_db = _db_dt_value(session, week_to)
     reports_generated = (
         await session.execute(
             select(func.count(func.distinct(func.date(Event.timestamp)))).where(
-                Event.timestamp >= week_from,
-                Event.timestamp <= week_to,
+                func.date(Event.timestamp) >= week_from.date().isoformat(),
+                func.date(Event.timestamp) <= week_to.date().isoformat(),
             )
         )
     ).scalar_one()
@@ -140,6 +242,9 @@ async def dashboard_timeline(session: AsyncSession = Depends(get_session)) -> li
 
     ref_day, _max_ts = await _get_reference_day_and_ts(session)
     dt_from, dt_to = _day_bounds(ref_day)
+    dt_from_db = _db_dt_value(session, dt_from)
+    dt_to_db = _db_dt_value(session, dt_to)
+    ref_day_str = ref_day.isoformat()
 
     # Pre-fill buckets
     buckets: dict[int, dict[str, Any]] = {
@@ -148,13 +253,24 @@ async def dashboard_timeline(session: AsyncSession = Depends(get_session)) -> li
 
     alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
 
-    rows = (
-        await session.execute(
-            select(Event.timestamp, Event.severity, alarm_id_expr.label("alarm_id")).where(
-                and_(Event.timestamp >= dt_from, Event.timestamp <= dt_to)
+    if _is_sqlite(session):
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT timestamp, severity, coalesce(parent_event_id, id) AS alarm_id "
+                    "FROM events WHERE date(timestamp) = :day"
+                ),
+                {"day": ref_day_str},
             )
-        )
-    ).all()
+        ).all()
+    else:
+        rows = (
+            await session.execute(
+                select(Event.timestamp, Event.severity, alarm_id_expr.label("alarm_id")).where(
+                    func.date(Event.timestamp) == ref_day_str
+                )
+            )
+        ).all()
 
     seen_by_bucket: dict[int, set[str]] = {hour: set() for hour in range(0, 24, 2)}
     crit_by_bucket: dict[int, set[str]] = {hour: set() for hour in range(0, 24, 2)}
@@ -185,13 +301,15 @@ async def dashboard_by_type(session: AsyncSession = Depends(get_session)) -> lis
     _ref_day, max_ts = await _get_reference_day_and_ts(session)
     window_end = max_ts or datetime.now()
     dt_from = window_end - timedelta(hours=24)
+    dt_from_db = _db_dt_value(session, dt_from)
+    window_end_db = _db_dt_value(session, window_end)
 
     alarm_id_expr = func.coalesce(Event.parent_event_id, Event.id)
 
     rows = (
         await session.execute(
             select(Event.type, func.count(func.distinct(alarm_id_expr)).label("cnt"))
-            .where(Event.timestamp >= dt_from, Event.timestamp <= window_end)
+            .where(Event.timestamp >= dt_from_db, Event.timestamp <= window_end_db)
             .group_by(Event.type)
             .order_by(func.count(func.distinct(alarm_id_expr)).desc())
         )

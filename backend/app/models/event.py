@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import String, Text
+from sqlalchemy import Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -27,6 +27,8 @@ class Event(Base):
     code: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     code_group: Mapped[int | None] = mapped_column(nullable=True)
     code_text: Mapped[str | None] = mapped_column(String(500), index=True, nullable=True)
+    line: Mapped[str | None] = mapped_column(String(10), index=True, nullable=True)
+    zone: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     state_name: Mapped[str | None] = mapped_column(String(60), index=True, nullable=True)
     state_is_over_process: Mapped[bool | None] = mapped_column(nullable=True)
 

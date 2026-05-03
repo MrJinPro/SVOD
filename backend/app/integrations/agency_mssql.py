@@ -180,6 +180,31 @@ def fetch_gbr_group_statuses(mssql_url: str) -> dict[str, Any]:
     }
 
 
+def fetch_gbr_names(mssql_url: str) -> list[str]:
+    """Возвращает список уникальных имён ГБР из агентской MSSQL базы."""
+    pyodbc = _require_pyodbc()
+    info = parse_mssql_url(mssql_url)
+    conn_str = _build_odbc_conn_str(info)
+
+    sql = """
+    SELECT DISTINCT Description
+    FROM dbo.GroupResponse
+    WHERE Description IS NOT NULL AND LTRIM(RTRIM(Description)) != ''
+    ORDER BY Description ASC
+    """
+
+    with pyodbc.connect(conn_str, timeout=10) as conn:
+        conn.setdecoding(pyodbc.SQL_CHAR, encoding="cp1251")
+        conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
+        conn.setencoding(encoding="utf-8")
+
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = _rows_to_dicts(cur)
+
+    return [str(r.get("Description") or "").strip() for r in rows if str(r.get("Description") or "").strip()]
+
+
 def fetch_objects_snapshot(mssql_url: str) -> dict[str, Any]:
     """Снимает снапшот объектов/групп/ответственных из Pult4DB.
 
@@ -346,6 +371,8 @@ def fetch_archive_events_since(
                 a.Code,
                 a.CodeGroup,
                 a.TimeEvent,
+                a.MeterCount,
+                a.TimeMeterCount,
                 a.Result_Text,
                 a.StateEvent,
                 es.NameState,
@@ -457,6 +484,8 @@ def fetch_archive_events_recent(
                 a.Code,
                 a.CodeGroup,
                 a.TimeEvent,
+                a.MeterCount,
+                a.TimeMeterCount,
                 a.Result_Text,
                 a.StateEvent,
                 es.NameState,
@@ -830,6 +859,8 @@ def fetch_alarm_stands_analysis(
                 a.Code,
                 a.CodeGroup,
                 a.TimeEvent,
+                a.MeterCount,
+                a.TimeMeterCount,
                 a.Result_Text,
                 a.StateEvent,
                 es.NameState,

@@ -15,6 +15,8 @@ export interface Event {
   status: EventStatus;
   code?: string | null;
   codeText?: string | null;
+  line?: string | null;
+  zone?: number | null;
   stateName?: string | null;
   description: string;
   location?: string;
@@ -114,6 +116,7 @@ export type ReportType =
   | 'gbrRaportXlsx'
   | 'eventsRaportXlsx'
   | 'alarmMessages'
+  | 'pcnMainXlsx'
   | 'pcnLedger';
 export type ReportStatus = 'generated' | 'sent' | 'pending' | 'failed';
 

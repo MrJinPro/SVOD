@@ -43,7 +43,7 @@ import type { DateRange } from 'react-day-picker';
 import type { AnalyticsFiltersResponse, GbrTripRow, GbrTripsResponse } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'eventsRaportXlsx' | 'alarmMessages' | 'pcnLedger';
+type CreateReportKind = 'objectsByCode' | 'gbrRaportXlsx' | 'eventsRaportXlsx' | 'alarmMessages' | 'pcnLedger' | 'pcnMainXlsx';
 
 function formatLocalYYYYMMDD(d: Date): string {
   const yyyy = d.getFullYear();
@@ -412,6 +412,11 @@ export default function Reports() {
   const [gbrPreview, setGbrPreview] = useState<GbrTripRow[]>([]);
   const [gbrPreviewLoading, setGbrPreviewLoading] = useState(false);
 
+  // ПЦН: Основной отчёт (pcnMainXlsx) фильтры
+  const [pcnMainOperator, setPcnMainOperator] = useState('');
+  const [pcnMainObjectId, setPcnMainObjectId] = useState('');
+  const [pcnMainGbrName, setPcnMainGbrName] = useState<'all' | string>('all');
+
   const setRangeToYear = (year: number) => {
     setDateRange({ from: new Date(year, 0, 1), to: new Date(year, 11, 31) });
   };
@@ -606,6 +611,17 @@ export default function Reports() {
         if (pcnThr5_3.trim()) params.set('thr5_3', pcnThr5_3.trim());
 
         await apiPost(`/reports/generate/pcn-ledger-xlsx?${params.toString()}`);
+      } else if (createKind === 'pcnMainXlsx') {
+        if (!dateRange?.from || !dateRange?.to) {
+          toast({ title: 'Отчёт', description: 'Выберите период (от и до).', variant: 'destructive' });
+          return;
+        }
+        const params = new URLSearchParams();
+        appendEventDateRangeParams(params, { dateRange, timeFrom, timeTo });
+        if (pcnMainOperator.trim()) params.set('operatorName', pcnMainOperator.trim());
+        if (pcnMainObjectId.trim()) params.set('objectId', pcnMainObjectId.trim());
+        if (pcnMainGbrName !== 'all') params.set('gbrName', String(pcnMainGbrName));
+        await apiPost(`/reports/generate/pcn-main-xlsx?${params.toString()}`);
       }
 
       toast({
@@ -709,6 +725,7 @@ export default function Reports() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="objectsByCode">Объекты по коду события (XLSX)</SelectItem>
+                    <SelectItem value="pcnMainXlsx">ПЦН: Все тревоги (XLSX)</SelectItem>
                     <SelectItem value="gbrRaportXlsx">Рапорт (ГБР) по шаблону (XLSX)</SelectItem>
                     <SelectItem value="eventsRaportXlsx">Рапорт по событиям (XLSX)</SelectItem>
                     <SelectItem value="alarmMessages">Тревожные сообщения (XLSX)</SelectItem>
@@ -1136,6 +1153,83 @@ export default function Reports() {
 
                   <div className="text-xs text-muted-foreground">
                     Тревоги считаются по действиям оператора «Прием на обработку». Пороговые выплаты берутся как в шаблоне.
+                  </div>
+                </div>
+              ) : null}
+
+              {createKind === 'pcnMainXlsx' ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Период</div>
+                      <QuickRangeButtons />
+                      <div className="flex flex-wrap items-end gap-2">
+                        <DateRangePicker
+                          value={dateRange}
+                          onChange={setDateRange}
+                          placeholder="Выберите период"
+                          triggerClassName="w-[280px]"
+                          numberOfMonths={2}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Время (от/до)</div>
+                      <div className="flex items-center gap-2">
+                        <Input type="time" className="w-[140px] bg-background" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} />
+                        <div className="text-muted-foreground">—</div>
+                        <Input type="time" className="w-[140px] bg-background" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Оператор (фильтр, опционально)</div>
+                      <Input
+                        className="w-[320px] bg-background"
+                        placeholder="Имя или часть"
+                        value={pcnMainOperator}
+                        onChange={(e) => setPcnMainOperator(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">Объект (фильтр, опционально)</div>
+                      <Input
+                        className="w-[320px] bg-background"
+                        placeholder="ID / адрес / название"
+                        value={pcnMainObjectId}
+                        onChange={(e) => setPcnMainObjectId(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-sm text-muted-foreground">ГБР (фильтр, опционально)</div>
+                      <Select value={String(pcnMainGbrName)} onValueChange={(v) => setPcnMainGbrName(v)}>
+                        <SelectTrigger className="w-[260px] bg-background">
+                          <SelectValue placeholder="ГБР" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все ГБР</SelectItem>
+                          {(analyticsFilters?.gbrNames || []).map((g) => (
+                            <SelectItem key={g} value={g}>
+                              {g}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border bg-muted/30 p-3">
+                    <div className="text-sm text-muted-foreground">
+                      📋 Основной отчёт ПЦН: все тревоги за период со следующими колонками:
+                      <div className="mt-2 font-mono text-xs">
+                        Дата | № Объекта | Адрес | ФИО | Шлейф | Инженер | ГБР | Оператор | Время вызова | Время прибытия | Результат | Штраф
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}

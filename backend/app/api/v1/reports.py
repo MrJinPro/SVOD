@@ -792,6 +792,23 @@ def _as_report_out_dict(r: Report) -> dict:
             title = f"Ведомость ПЦН по оператору {operator}"
         else:
             title = f"Ведомость по тревогам (ПЦН) {ps}–{pe}" if ps and pe else "Ведомость по тревогам (ПЦН)"
+    elif rt == "pcnMainXlsx":
+        ps = str(r.period_start or "").strip()
+        pe = str(r.period_end or "").strip()
+        filters_parts = []
+        if str(params.get("operatorName") or "").strip():
+            filters_parts.append(f"опер. {params.get('operatorName').strip()}")
+        if str(params.get("objectId") or "").strip():
+            filters_parts.append(f"объект {params.get('objectId').strip()}")
+        if str(params.get("gbrName") or "").strip():
+            filters_parts.append(f"ГБР {params.get('gbrName').strip()}")
+        filters_str = ", ".join(filters_parts)
+        if filters_str and ps and pe:
+            title = f"ПЦН: Все тревоги {ps}–{pe} ({filters_str})"
+        elif filters_str:
+            title = f"ПЦН: Все тревоги ({filters_str})"
+        else:
+            title = f"ПЦН: Все тревоги {ps}–{pe}" if ps and pe else "ПЦН: Все тревоги"
     elif rt == "eventsRaportXlsx":
         ps = str(r.period_start or "").strip()
         pe = str(r.period_end or "").strip()
@@ -3597,6 +3614,93 @@ async def generate_pcn_ledger_xlsx(
             "dispatchersSource": dispatchersSource,
             "minPresenceMinutes": minPresenceMinutes,
             "presenceGraceMinutes": presenceGraceMinutes,
+        },
+    )
+
+
+@router.post("/generate/pcn-main-xlsx")
+async def generate_pcn_main_xlsx(
+    dateFrom: str = Query(description="ISO datetime или YYYY-MM-DD"),
+    dateTo: str = Query(description="ISO datetime или YYYY-MM-DD"),
+    operatorName: str | None = Query(default=None, description="Фильтр по имени оператора"),
+    objectId: str | None = Query(default=None, description="Фильтр по ID или адресу объекта"),
+    gbrName: str | None = Query(default=None, description="Фильтр по имени ГБР"),
+    reportId: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    _current: dict = Depends(get_current_user),
+) -> dict:
+    """Генерирует основной отчёт ПЦН (все тревоги за период с фильтрами)."""
+    from_dt = _parse_dt(dateFrom)
+    to_dt = _parse_dt(dateTo)
+    if not from_dt or not to_dt or to_dt < from_dt:
+        raise HTTPException(status_code=400, detail={"code": "BAD_REQUEST", "message": "Invalid date range"})
+
+    ps = from_dt.date().isoformat()
+    pe = to_dt.date().isoformat()
+
+    if reportId is None:
+        # First call: create pending report and start async worker
+        report_id = str(uuid4())
+        pending = await _create_pending_report(
+            session,
+            report_id=report_id,
+            report_type="pcnMainXlsx",
+            period_start=ps,
+            period_end=pe,
+            params={
+                "dateFrom": dateFrom,
+                "dateTo": dateTo,
+                "operatorName": operatorName,
+                "objectId": objectId,
+                "gbrName": gbrName,
+            },
+        )
+        _start_report_worker(
+            report_id=report_id,
+            worker=lambda bg_session: generate_pcn_main_xlsx(
+                dateFrom=dateFrom,
+                dateTo=dateTo,
+                operatorName=operatorName,
+                objectId=objectId,
+                gbrName=gbrName,
+                reportId=report_id,
+                session=bg_session,
+                _current=_current,
+            ),
+        )
+        return _as_report_out_dict(pending)
+
+    # Second call: generate report
+    from app.api.v1.reports_pcn_main import build_pcn_main_report_xlsx
+
+    xlsx, events_count = await build_pcn_main_report_xlsx(
+        session,
+        date_from=from_dt,
+        date_to=to_dt,
+        operator_name=operatorName,
+        object_id=objectId,
+        gbr_name=gbrName,
+    )
+
+    report_id = reportId or str(uuid4())
+    filename = f"pcn-main-{ps}-{pe}.xlsx"
+    return await _store_generated_report(
+        session,
+        report_id=report_id,
+        report_type="pcnMainXlsx",
+        period_start=ps,
+        period_end=pe,
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        content=xlsx,
+        events_count=events_count,
+        critical_count=0,
+        params={
+            "dateFrom": dateFrom,
+            "dateTo": dateTo,
+            "operatorName": operatorName,
+            "objectId": objectId,
+            "gbrName": gbrName,
         },
     )
 

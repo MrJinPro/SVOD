@@ -62,6 +62,23 @@ def _has_operator_comment_predicate() -> Any:
     )
 
 
+def _event_line_label(event_or_row: Any, description: str | None = None) -> str:
+    line = getattr(event_or_row, "line", None)
+    if line is None and isinstance(event_or_row, dict):
+        line = event_or_row.get("line")
+    text = str(line or "").strip()
+    if text:
+        return text
+
+    zone = getattr(event_or_row, "zone", None)
+    if zone is None and isinstance(event_or_row, dict):
+        zone = event_or_row.get("zone")
+    if zone is not None:
+        return str(zone).strip()
+
+    return _extract_desc_value(description or getattr(event_or_row, "description", "") or "", "Шлейф")
+
+
 def _accept_action_predicate() -> Any:
     """Best-effort match for operator action: accepted for processing."""
 
@@ -217,8 +234,11 @@ def _append_search_filter(filters: list[Any], search: str | None) -> None:
                     Event.id == variant,
                     Event.object_id == variant,
                     Event.code == variant,
+                    Event.line == variant,
                 ]
             )
+            if str(variant).isdigit():
+                like_clauses.append(Event.zone == int(variant))
 
         for needle in prefix_needles:
             like_clauses.extend(
@@ -228,6 +248,7 @@ def _append_search_filter(filters: list[Any], search: str | None) -> None:
                     Event.object_name.ilike(needle),
                     Event.client_name.ilike(needle),
                     Event.code.ilike(needle),
+                    Event.line.ilike(needle),
                 ]
             )
 
@@ -241,6 +262,7 @@ def _append_search_filter(filters: list[Any], search: str | None) -> None:
                         Event.location.ilike(needle),
                         Event.result_text.ilike(needle),
                         Event.code_text.ilike(needle),
+                        Event.line.ilike(needle),
                         Event.state_name.ilike(needle),
                     ]
                 )
@@ -593,7 +615,7 @@ async def build_events_raport_xlsx_bytes(
             except Exception:
                 travel_seconds = None
 
-        shleif = _extract_desc_value(e.description, "Шлейф")
+        shleif = _event_line_label(e)
         engineer = _extract_desc_value(e.description, "Инженер")
         osmotr = _extract_desc_value(e.description, "Осмотр")
         result_osmotr = _extract_desc_value(e.description, "Результат")
@@ -743,6 +765,8 @@ async def build_alarm_messages_xlsx_bytes(
                 "result_text": _first_non_empty([getattr(e, "result_text", None) for e in reversed(group)]),
                 "description": _first_non_empty([getattr(e, "description", None) for e in reversed(group)]),
                 "code_text": _first_non_empty([getattr(e, "code_text", None) for e in group]),
+                "line": _first_non_empty([getattr(e, "line", None) for e in group]),
+                "zone": next((getattr(e, "zone", None) for e in group if getattr(e, "zone", None) is not None), None),
                 "eventIds": [str(e.id) for e in group if getattr(e, "id", None)],
                 "acceptedEventId": str(getattr(group[0], "id", "") or ""),
                 "created_at": timestamp,
@@ -1004,7 +1028,7 @@ async def build_alarm_messages_xlsx_bytes(
                 travel_seconds = None
 
         description = str(e.get("description") or "")
-        shleif = _extract_desc_value(description, "Шлейф")
+        shleif = _event_line_label(e, description)
         engineer = _extract_desc_value(description, "Инженер")
         system_name = _extract_desc_value(description, "Система")
         osmotr = _extract_desc_value(description, "Осмотр")
@@ -1110,6 +1134,8 @@ def _event_to_out(e: Event) -> dict[str, Any]:
         "status": e.status,
         "code": getattr(e, "code", None),
         "codeText": getattr(e, "code_text", None),
+        "line": getattr(e, "line", None),
+        "zone": getattr(e, "zone", None),
         "stateName": getattr(e, "state_name", None),
         "resultText": getattr(e, "result_text", None),
         "meterCount": getattr(e, "meter_count", None),
@@ -1578,6 +1604,8 @@ async def export_events_export(
         "Контрагент",
         "Код",
         "Расшифровка кода",
+        "Шлейф (Line)",
+        "Зона (Zone)",
         "Статус (агентство)",
         "Важность",
         "Статус",
@@ -1605,6 +1633,8 @@ async def export_events_export(
                 e.client_name,
                 getattr(e, "code", "") or "",
                 getattr(e, "code_text", "") or "",
+                getattr(e, "line", "") or "",
+                getattr(e, "zone", "") if getattr(e, "zone", None) is not None else "",
                 getattr(e, "state_name", "") or "",
                 e.severity,
                 e.status,

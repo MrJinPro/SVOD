@@ -18,10 +18,12 @@ from app.integrations.agency_mssql import (
     fetch_alarm_stands_analysis as fetch_alarm_stands_analysis_mssql,
     fetch_gbr_archive_trips as fetch_gbr_archive_trips_mssql,
     fetch_gbr_group_statuses as fetch_gbr_group_statuses_mssql,
+    fetch_gbr_names as fetch_gbr_names_mssql,
 )
 from app.integrations.agency_sqlite import (
     fetch_gbr_archive_trips as fetch_gbr_archive_trips_sqlite,
     fetch_gbr_group_statuses,
+    fetch_gbr_names as fetch_gbr_names_sqlite,
 )
 from app.models.event import Event
 from app.models.event_action import EventAction
@@ -1052,12 +1054,28 @@ async def analytics_filters(
         )
     ).scalars().all()
 
+    archive_gbr_names: list[str] = []
+    url = (settings.agency_database_url or "").strip()
+    if url:
+        scheme = (url.split(":", 1)[0] or "").lower()
+        try:
+            if scheme.startswith("mssql"):
+                archive_gbr_names = await asyncio.to_thread(fetch_gbr_names_mssql, url)
+            elif scheme.startswith("sqlite"):
+                archive_gbr_names = await asyncio.to_thread(fetch_gbr_names_sqlite, url)
+        except Exception:
+            archive_gbr_names = []
+
     min_ts, max_ts = (
         await session.execute(select(func.min(EventAction.action_time), func.max(EventAction.action_time)))
     ).one()
 
     real_gbr_names = sorted(
-        {str(g).strip() for g in gbr_names if g and _is_real_gbr_name(g)},
+        {
+            str(g).strip()
+            for g in (*gbr_names, *archive_gbr_names)
+            if g and _is_real_gbr_name(g)
+        },
         key=str.lower,
     )
 
